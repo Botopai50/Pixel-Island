@@ -310,7 +310,7 @@ export const DEFAULT_FORGE_PARAMS: ForgeParams = {
 
 export const MARGIN = 12;
 export const WALL = 128;
-export const DEFAULT_D = 3.0; // 3 texels por metro (chunk de 64m = 192x192 texels)
+export const DEFAULT_D = 6.0; // 6 texels por metro (chunk de 64m = 384x384 texels de alta densidade)
 
 /* =========================================================================
    TEXTURAS DE ENCOSTA (PAREDES VERTICAIS)

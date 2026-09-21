@@ -190,8 +190,8 @@ export class TextureForgeWidget {
               <label for="fg-density">Densidade de Texels</label>
               <b id="fg-density-v">${this.state.density.toFixed(1)} tx/m (${Math.round(64 * this.state.density)}² px)</b>
             </div>
-            <input id="fg-density" type="range" min="1.0" max="6.0" step="0.5" value="${this.state.density}">
-            <span class="forge-hint">64px = 12 tx/un (padrão HTML) | 128px = 24 tx/un (máx HTML) | 192px+ = HD</span>
+            <input id="fg-density" type="range" min="1.0" max="24.0" step="0.5" value="${this.state.density}">
+            <span class="forge-hint">128px = 24 tx/un (HTML) | 384px = 6.0 tx/m (Padrão) | até 24.0 tx/m (1536² px)</span>
           </div>
         </div>
 
