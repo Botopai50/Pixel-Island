@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { VegetationManager } from '../vegetation/vegetationManager.ts';
 import { CONFIG } from '../../config.ts';
+import { TerrainTextureForge } from './terrainTextureForge.ts';
+import { createChunkTerrainMaterial } from '../shaders/terrainShader.ts';
 
 export type ChunkLOD = 'HIGH' | 'MED' | 'LOW';
 
@@ -15,27 +17,35 @@ export class Chunk {
   private vegetationGroup: THREE.Group = new THREE.Group();
   private isDestroyed: boolean = false;
 
+  private forge: TerrainTextureForge;
+  private chunkMaterial?: THREE.MeshToonMaterial;
+  private topTex?: THREE.DataTexture;
+  private topDarkTex?: THREE.DataTexture;
+  private bioTex?: THREE.DataTexture;
+
   constructor(
     cx: number,
     cz: number,
     terrainGen: TerrainGenerator,
     vegetationMgr: VegetationManager,
-    terrainMaterial: THREE.Material,
+    _terrainMaterial: THREE.Material,
     _waterMaterial: THREE.Material,
-    enableVegetation: boolean = true
+    enableVegetation: boolean = true,
+    forge?: TerrainTextureForge
   ) {
     this.cx = cx;
     this.cz = cz;
     this.group = new THREE.Group();
     this.group.name = `chunk_${cx}_${cz}`;
 
+    this.forge = forge || TerrainTextureForge.getInstance(terrainGen.getSeed());
+
     const size = CONFIG.CHUNK_SIZE;
     const half = size / 2;
     const startX = this.cx * size;
     const startZ = this.cz * size;
 
-    // Teste ultrarrápido: se o chunk inteiro estiver em oceano sob a água (centro e 4 cantos < -1.0m)
-    // O plano global do oceano já cobre tudo com perfeição. Pula malha E vegetação instantaneamente!
+    // Teste ultrarrápido: se o chunk inteiro estiver em oceano sob a água (centro e 4 cantos < -2.5m)
     const hCenter = terrainGen.getHeight(startX, startZ);
     const hC1 = terrainGen.getHeight(startX - half, startZ - half);
     const hC2 = terrainGen.getHeight(startX + half, startZ - half);
@@ -47,8 +57,8 @@ export class Chunk {
       return;
     }
 
-    // Constrói o relevo procedural do chunk
-    this.buildTerrain(terrainGen, terrainMaterial);
+    // Constrói o relevo procedural do chunk com o sistema de texturas procedurais
+    this.buildTerrain(terrainGen);
 
     this.group.add(this.vegetationGroup);
 
@@ -64,10 +74,13 @@ export class Chunk {
     vegetationMgr.populateChunk(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationGroup);
   }
 
-  private buildTerrain(terrainGen: TerrainGenerator, material: THREE.Material): void {
+  private buildTerrain(terrainGen: TerrainGenerator): void {
     const size = CONFIG.CHUNK_SIZE;
+    const half = size / 2;
     const startX = this.cx * size;
     const startZ = this.cz * size;
+    const originX = startX - half;
+    const originZ = startZ - half;
 
     const segments = CONFIG.CHUNK_SEGMENTS;
 
@@ -85,7 +98,7 @@ export class Chunk {
     const deltaX = size / segments;
     const deltaZ = size / segments;
 
-    // Passo 1: Calcula as alturas dos vértices, clima e relevos especiais em UMA ÚNICA PASSAGEM!
+    // Passo 1: Calcula as alturas dos vértices, clima e relevos especiais
     for (let i = 0; i < count; i++) {
       const localX = posAttr.getX(i);
       const localZ = posAttr.getZ(i);
@@ -105,7 +118,7 @@ export class Chunk {
       extraMap[i * 4 + 3] = vData.extra[3];
     }
 
-    // Passo 2: Calcula as normais analíticas perfeitas usando o mapa de alturas (zero chamadas repetidas no interior!)
+    // Passo 2: Calcula as normais analíticas
     for (let iy = 0; iy < gridDim; iy++) {
       for (let ix = 0; ix < gridDim; ix++) {
         const i = iy * gridDim + ix;
@@ -154,12 +167,26 @@ export class Chunk {
     geo.setAttribute('aClimate', new THREE.BufferAttribute(climateMap, 2));
     geo.setAttribute('aExtra', new THREE.BufferAttribute(extraMap, 4));
 
-    // Recomputar bounding volumes para o relevo deformado (alturas até +160m),
-    // impedindo que montanhas altas sofram frustum culling prematuro ao olhar para cima
     geo.computeBoundingSphere();
     geo.computeBoundingBox();
 
-    this.terrainMesh = new THREE.Mesh(geo, material);
+    // Geração procedural das texturas do chunk via Pixel Terrain Forge
+    const textures = this.forge.generateChunkTextures(originX, originZ, size, terrainGen);
+    this.topTex = textures.topTex;
+    this.topDarkTex = textures.topDarkTex;
+    this.bioTex = textures.bioTex;
+
+    this.chunkMaterial = createChunkTerrainMaterial(
+      this.forge,
+      this.topTex,
+      this.topDarkTex,
+      this.bioTex,
+      originX,
+      originZ,
+      size
+    );
+
+    this.terrainMesh = new THREE.Mesh(geo, this.chunkMaterial);
     this.terrainMesh.position.set(startX, 0, startZ);
     this.terrainMesh.castShadow = true;
     this.terrainMesh.receiveShadow = true;
@@ -175,7 +202,21 @@ export class Chunk {
       this.terrainMesh.geometry.dispose();
     }
 
-    // Para a vegetação, desvincula as instâncias sem descartar as geometrias estáticas globais compartilhadas!
+    // Descarta material e texturas locais do chunk para liberação total de VRAM
+    if (this.chunkMaterial) {
+      this.chunkMaterial.dispose();
+    }
+    if (this.topTex) {
+      this.topTex.dispose();
+    }
+    if (this.topDarkTex) {
+      this.topDarkTex.dispose();
+    }
+    if (this.bioTex) {
+      this.bioTex.dispose();
+    }
+
+    // Para a vegetação, desvincula as instâncias sem descartar as geometrias compartilhadas
     this.vegetationGroup.traverse((obj) => {
       if (obj instanceof THREE.InstancedMesh) {
         if (obj.instanceMatrix) obj.instanceMatrix.needsUpdate = false;

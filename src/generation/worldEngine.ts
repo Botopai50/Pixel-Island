@@ -11,6 +11,7 @@ import { InlandWaterManager } from './hydrology/inlandWaterManager.ts';
 import { createTerrainMaterial } from './shaders/terrainShader.ts';
 import { createWaterMaterial, WATER_PRESETS } from './shaders/waterShader.ts';
 import { createSeamlessCascadedWaterGeometry } from './waterGeometry.ts';
+import { TerrainTextureForge } from './terrain/terrainTextureForge.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
 import { CONFIG } from '../config.ts';
 
@@ -30,8 +31,9 @@ export class WorldEngine {
   private terrainGen: TerrainGenerator;
   private vegetationMgr: VegetationManager;
   private chunkMgr: ChunkManager;
-  private terrainMaterial: THREE.ShaderMaterial;
+  private terrainMaterial: THREE.Material;
   private waterMaterial: THREE.ShaderMaterial;
+  public forge: TerrainTextureForge;
 
   // Novos Subsistemas Geológicos, Hidrológicos e Biológicos
   public geothermalMgr: GeothermalManager;
@@ -56,6 +58,7 @@ export class WorldEngine {
     this.terrainGen = new TerrainGenerator(numericSeed);
     this.vegetationMgr = new VegetationManager();
 
+    this.forge = TerrainTextureForge.getInstance(numericSeed);
     this.terrainMaterial = createTerrainMaterial();
     this.waterMaterial = createWaterMaterial();
 
@@ -64,7 +67,8 @@ export class WorldEngine {
       this.terrainGen,
       this.vegetationMgr,
       this.terrainMaterial,
-      this.waterMaterial
+      this.waterMaterial,
+      this.forge
     );
 
     // Inicializa todos os subsistemas especiais do mundo de forma 100% procedural
@@ -168,6 +172,10 @@ export class WorldEngine {
     this.geothermalMgr.reseed(newSeed);
     this.lavaFluidMgr.rebuild(this.terrainGen.getVolcanoGenerator());
     this.inlandWaterMgr.rebuild(this.terrainGen.getHydrology());
+    
+    this.forge.dispose();
+    this.forge = new TerrainTextureForge(newSeed);
+    this.chunkMgr.setForge(this.forge);
     this.chunkMgr.clearAll();
 
     const spawn = this.getSpawnCoordinate();
@@ -195,8 +203,8 @@ export class WorldEngine {
 
   public updateSimulation(dt: number): void {
     this.waterMaterial.uniforms.uTime.value += dt;
-    if (this.terrainMaterial && this.terrainMaterial.uniforms.uTime) {
-      this.terrainMaterial.uniforms.uTime.value += dt;
+    if ((this.terrainMaterial as any)?.uniforms?.uTime) {
+      (this.terrainMaterial as any).uniforms.uTime.value += dt;
     }
 
     // Atualização física das ondulações interativas portadas de untitled
@@ -228,10 +236,13 @@ export class WorldEngine {
     ambientColor: THREE.Color,
     fogColor: THREE.Color
   ): void {
-    this.terrainMaterial.uniforms.uSunDirection.value.copy(sunDirection);
-    this.terrainMaterial.uniforms.uSunColor.value.copy(sunColor);
-    this.terrainMaterial.uniforms.uAmbientColor.value.copy(ambientColor);
-    this.terrainMaterial.uniforms.uFogColor.value.copy(fogColor);
+    const tm = this.terrainMaterial as any;
+    if (tm?.uniforms) {
+      if (tm.uniforms.uSunDirection) tm.uniforms.uSunDirection.value.copy(sunDirection);
+      if (tm.uniforms.uSunColor) tm.uniforms.uSunColor.value.copy(sunColor);
+      if (tm.uniforms.uAmbientColor) tm.uniforms.uAmbientColor.value.copy(ambientColor);
+      if (tm.uniforms.uFogColor) tm.uniforms.uFogColor.value.copy(fogColor);
+    }
 
     this.waterMaterial.uniforms.uLightDir.value.copy(sunDirection).normalize();
 

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Chunk } from './chunk.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { VegetationManager } from '../vegetation/vegetationManager.ts';
+import { TerrainTextureForge } from './terrainTextureForge.ts';
 import { CONFIG } from '../../config.ts';
 
 interface ChunkQueueItem {
@@ -17,6 +18,7 @@ export class ChunkManager {
   private vegetationMgr: VegetationManager;
   private terrainMaterial: THREE.Material;
   private waterMaterial: THREE.Material;
+  private forge: TerrainTextureForge;
 
   private chunks: Map<string, Chunk> = new Map();
   private buildQueue: ChunkQueueItem[] = [];
@@ -30,13 +32,15 @@ export class ChunkManager {
     terrainGen: TerrainGenerator,
     vegetationMgr: VegetationManager,
     terrainMaterial: THREE.Material,
-    waterMaterial: THREE.Material
+    waterMaterial: THREE.Material,
+    forge?: TerrainTextureForge
   ) {
     this.scene = scene;
     this.terrainGen = terrainGen;
     this.vegetationMgr = vegetationMgr;
     this.terrainMaterial = terrainMaterial;
     this.waterMaterial = waterMaterial;
+    this.forge = forge || TerrainTextureForge.getInstance(terrainGen.getSeed());
   }
 
   public update(targetX: number, targetZ: number, forceReload: boolean = false): void {
@@ -152,7 +156,8 @@ export class ChunkManager {
         this.vegetationMgr,
         this.terrainMaterial,
         this.waterMaterial,
-        enableVeg
+        enableVeg,
+        this.forge
       );
 
       this.chunks.set(item.key, chunk);
@@ -177,6 +182,10 @@ export class ChunkManager {
     this.queuedKeys.clear();
     this.currentCenterCx = 999999;
     this.currentCenterCz = 999999;
+  }
+
+  public setForge(forge: TerrainTextureForge): void {
+    this.forge = forge;
   }
 
   public getLoadedChunkCount(): number {
