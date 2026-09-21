@@ -888,14 +888,14 @@ export function makeTexture(
    ========================================================================= */
 export class TerrainTextureForge {
   private static instance?: TerrainTextureForge;
-  public readonly params: ForgeParams;
+  public params: ForgeParams;
   public readonly perlin: { noise: (x: number, y: number) => number; fbm: (x: number, y: number, oct?: number) => number };
   public readonly wallA: THREE.DataTexture;
   public readonly wallB: THREE.DataTexture;
   public readonly wallC: THREE.DataTexture;
   public readonly wallD: THREE.DataTexture;
   public readonly gradMap: THREE.DataTexture;
-  public readonly density: number;
+  public density: number;
 
   constructor(seed: number = 42, density: number = DEFAULT_D) {
     this.density = density;
@@ -923,6 +923,31 @@ export class TerrainTextureForge {
     this.gradMap.minFilter = THREE.NearestFilter;
     this.gradMap.generateMipmaps = false;
     this.gradMap.needsUpdate = true;
+  }
+
+  public updateParams(newParams: Partial<ForgeParams>, newDensity?: number): void {
+    Object.assign(this.params, newParams);
+    if (newDensity !== undefined && newDensity > 0) {
+      this.density = newDensity;
+    }
+    this.rebuildWallAtlases();
+  }
+
+  public rebuildWallAtlases(): void {
+    const a = buildWallAtlas(this.params, 'wallHi', 0);
+    const b = buildWallAtlas(this.params, 'wallLo', 0);
+    const c = buildWallAtlas(this.params, 'wallLo', 2);
+    const d = buildWallAtlas(this.params, 'wallHi', 1);
+
+    (this.wallA.image as any).data.set(a);
+    (this.wallB.image as any).data.set(b);
+    (this.wallC.image as any).data.set(c);
+    (this.wallD.image as any).data.set(d);
+
+    this.wallA.needsUpdate = true;
+    this.wallB.needsUpdate = true;
+    this.wallC.needsUpdate = true;
+    this.wallD.needsUpdate = true;
   }
 
   public static getInstance(seed?: number): TerrainTextureForge {

@@ -50,6 +50,9 @@ export class WorldEngine {
   // Sistema de ripples interativas portado de untitled
   private ripples: RipplePoint[] = [];
 
+  private lastObserverX: number = 0;
+  private lastObserverZ: number = 0;
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
     this.seedManager = SeedManager.getInstance();
@@ -97,6 +100,8 @@ export class WorldEngine {
   }
 
   public updateObserverPosition(x: number, z: number): void {
+    this.lastObserverX = x;
+    this.lastObserverZ = z;
     this.chunkMgr.update(x, z);
     // Move a malha de água com snap na grade de 8m (tamanho exato dos quads centrais).
     // Isso mantém os vértices 100% estáticos no espaço de mundo durante a caminhada,
@@ -106,6 +111,12 @@ export class WorldEngine {
     const snapZ = Math.floor(z / snap) * snap;
     this.localWater.position.x = snapX;
     this.localWater.position.z = snapZ;
+  }
+
+  public updateTextureForgeParams(params: Partial<import('./terrain/terrainTextureForge.ts').ForgeParams>, density?: number): void {
+    this.forge.updateParams(params, density);
+    this.chunkMgr.clearAll();
+    this.chunkMgr.update(this.lastObserverX, this.lastObserverZ, true);
   }
 
   public queryPoint(x: number, z: number): TerrainPoint {
