@@ -1,0 +1,25 @@
+{
+  "name": "pixel-island",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Botopai50/Pixel-Island.git"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "npx tsx src/test/verifyProcedural.ts"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.170.0",
+    "puppeteer-core": "^25.10.0",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  }
+}
