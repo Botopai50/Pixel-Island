@@ -188,10 +188,10 @@ export class TextureForgeWidget {
           <div class="forge-row">
             <div class="forge-label-row">
               <label for="fg-density">Densidade de Texels</label>
-              <b id="fg-density-v">${this.state.density.toFixed(1)} tx/m</b>
+              <b id="fg-density-v">${this.state.density.toFixed(1)} tx/m (${Math.round(64 * this.state.density)}² px)</b>
             </div>
             <input id="fg-density" type="range" min="1.0" max="6.0" step="0.5" value="${this.state.density}">
-            <span class="forge-hint">Maior = pixels menores, Menor = pixels mais graúdos</span>
+            <span class="forge-hint">64px = 12 tx/un (padrão HTML) | 128px = 24 tx/un (máx HTML) | 192px+ = HD</span>
           </div>
         </div>
 
@@ -279,7 +279,7 @@ export class TextureForgeWidget {
     registerSlider('fg-massif', 'massif', (v) => v.toFixed(2));
     registerSlider('fg-polar', 'polar', (v) => v.toFixed(2));
     registerSlider('fg-hang', 'hang', (v) => v.toFixed(2));
-    registerSlider('fg-density', 'density', (v) => v.toFixed(1) + ' tx/m');
+    registerSlider('fg-density', 'density', (v) => `${v.toFixed(1)} tx/m (${Math.round(64 * v)}² px)`);
 
     // Botão Copiar JSON
     const copyBtn = this.panel.querySelector('#fg-btn-copy');
@@ -420,7 +420,7 @@ export class TextureForgeWidget {
     updateInput('fg-massif', this.state.massif, (v) => v.toFixed(2));
     updateInput('fg-polar', this.state.polar, (v) => v.toFixed(2));
     updateInput('fg-hang', this.state.hang, (v) => v.toFixed(2));
-    updateInput('fg-density', this.state.density, (v) => v.toFixed(1) + ' tx/m');
+    updateInput('fg-density', this.state.density, (v) => `${v.toFixed(1)} tx/m (${Math.round(64 * v)}² px)`);
   }
 
   public togglePanel(): void {
