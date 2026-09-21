@@ -4,7 +4,7 @@ export const CONFIG = {
   CHUNK_SIZE: 64, // Tamanho de cada chunk no espaço do mundo (unidades)
   CHUNK_SEGMENTS: 32, // Resolução facetada de alta fidelidade e excelente performance
   
-  VIEW_RADIUS_CHUNKS: 12,   // Raio equilibrado de visão (~768m / 1.54km de diâmetro panorâmico)
+  VIEW_RADIUS_CHUNKS: 8,   // Raio equilibrado de visão (~512m / 1.02km de diâmetro panorâmico)
   VEGETATION_RADIUS_CHUNKS: 6, // Raio de instanciamento botânico otimizado (~384m)
   UNLOAD_MARGIN_CHUNKS: 1, // Margem antes de descarregar chunk da memória
   

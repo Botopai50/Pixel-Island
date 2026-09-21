@@ -27,6 +27,7 @@ export class ChunkManager {
   private currentCenterCx: number = 999999;
   private currentCenterCz: number = 999999;
   private viewRadius: number = CONFIG.VIEW_RADIUS_CHUNKS;
+  private framePacer: number = 0;
 
   constructor(
     scene: THREE.Scene,
@@ -146,10 +147,17 @@ export class ChunkManager {
 
     if (this.buildQueue.length === 0) return;
 
-    const startTime = performance.now();
     // Burst inicial: no spawn (poucos chunks carregados), permitimos processamento acelerado para abrir a cena imediatamente
-    const isInitialBurst = this.chunks.size < 45;
-    const MAX_TIME_MS = isInitialBurst ? 32.0 : 6.0;
+    const isInitialBurst = this.chunks.size < 35;
+    if (!isInitialBurst) {
+      this.framePacer = (this.framePacer + 1) % 2;
+      if (this.framePacer !== 0) {
+        return;
+      }
+    }
+
+    const startTime = performance.now();
+    const MAX_TIME_MS = isInitialBurst ? 32.0 : 8.0;
     const maxChunksPerFrame = isInitialBurst ? 4 : 1;
     let chunksBuilt = 0;
 

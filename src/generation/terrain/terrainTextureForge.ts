@@ -431,6 +431,85 @@ export interface ChunkTextureResult {
   height: number;
 }
 
+// Buffers de scratch pré-alocados para eliminar 100% da pressão sobre o Garbage Collector
+let scratchCapacity = 0;
+let sMat: Uint8Array;
+let sIdx: Uint8Array;
+let sGl: Uint8Array;
+let sBio: Uint8Array;
+let sGv: Float32Array;
+let sHt: Float32Array;
+let sSlT: Float32Array;
+let sColdT: Float32Array;
+let sMacroM: Float32Array;
+let sMacroRk: Float32Array;
+let sMacroSn: Float32Array;
+let sMacroBig: Float32Array;
+let sMacroCh1: Float32Array;
+let sMacroChL: Float32Array;
+let sMacroWide: Float32Array;
+
+let scratchGridCap = 0;
+let sGridH: Float32Array;
+let sGridCold: Float32Array;
+let sGridM: Float32Array;
+let sGridRk: Float32Array;
+let sGridSn: Float32Array;
+let sGridBig: Float32Array;
+let sGridCh1: Float32Array;
+let sGridChL: Float32Array;
+let sGridWide: Float32Array;
+
+let scratchWCap = 0;
+let sGx: Int32Array;
+let sTx: Float32Array;
+let sOtx: Float32Array;
+let sGy: Int32Array;
+let sTy: Float32Array;
+let sOty: Float32Array;
+
+function ensureScratch(nT: number, nG: number, W: number) {
+  if (scratchCapacity < nT) {
+    scratchCapacity = Math.max(nT, 65536);
+    sMat = new Uint8Array(scratchCapacity);
+    sIdx = new Uint8Array(scratchCapacity);
+    sGl = new Uint8Array(scratchCapacity);
+    sBio = new Uint8Array(scratchCapacity);
+    sGv = new Float32Array(scratchCapacity);
+    sHt = new Float32Array(scratchCapacity);
+    sSlT = new Float32Array(scratchCapacity);
+    sColdT = new Float32Array(scratchCapacity);
+    sMacroM = new Float32Array(scratchCapacity);
+    sMacroRk = new Float32Array(scratchCapacity);
+    sMacroSn = new Float32Array(scratchCapacity);
+    sMacroBig = new Float32Array(scratchCapacity);
+    sMacroCh1 = new Float32Array(scratchCapacity);
+    sMacroChL = new Float32Array(scratchCapacity);
+    sMacroWide = new Float32Array(scratchCapacity);
+  }
+  if (scratchGridCap < nG) {
+    scratchGridCap = Math.max(nG, 4096);
+    sGridH = new Float32Array(scratchGridCap);
+    sGridCold = new Float32Array(scratchGridCap);
+    sGridM = new Float32Array(scratchGridCap);
+    sGridRk = new Float32Array(scratchGridCap);
+    sGridSn = new Float32Array(scratchGridCap);
+    sGridBig = new Float32Array(scratchGridCap);
+    sGridCh1 = new Float32Array(scratchGridCap);
+    sGridChL = new Float32Array(scratchGridCap);
+    sGridWide = new Float32Array(scratchGridCap);
+  }
+  if (scratchWCap < W) {
+    scratchWCap = Math.max(W, 512);
+    sGx = new Int32Array(scratchWCap);
+    sTx = new Float32Array(scratchWCap);
+    sOtx = new Float32Array(scratchWCap);
+    sGy = new Int32Array(scratchWCap);
+    sTy = new Float32Array(scratchWCap);
+    sOty = new Float32Array(scratchWCap);
+  }
+}
+
 export function genChunkTexture(
   P: ForgeParams,
   per: { fbm: (x: number, y: number, oct?: number) => number },
@@ -449,56 +528,96 @@ export function genChunkTexture(
   const PX = GX0 - M, PY = GY0 - M;
   const nT = W * W;
 
-  const mat = new Uint8Array(nT), idx = new Uint8Array(nT);
-  const gl  = new Uint8Array(nT);
-  const bio = new Uint8Array(nT);
-  const gv  = new Float32Array(nT);
-  const hT  = new Float32Array(nT), slT = new Float32Array(nT);
+  const step = Math.max(2, Math.round(D * 1.5));
+  const GW = Math.ceil(W / step) + 1;
+  const nG = GW * GW;
+
+  ensureScratch(nT, nG, W);
+
+  const mat = sMat, idx = sIdx, gl = sGl, bio = sBio, gv = sGv;
+  const hT = sHt, slT = sSlT, coldT = sColdT;
+  const macroM = sMacroM, macroRk = sMacroRk, macroSn = sMacroSn, macroBig = sMacroBig;
+  const macroCh1 = sMacroCh1, macroChL = sMacroChL, macroWide = sMacroWide;
+
+  const gridH = sGridH, gridCold = sGridCold, gridM = sGridM, gridRk = sGridRk;
+  const gridSn = sGridSn, gridBig = sGridBig, gridCh1 = sGridCh1, gridChL = sGridChL, gridWide = sGridWide;
+
   const sd  = P.seed;
   const warp = 0.55 + P.edge * 1.9;
   const mf   = 1 / Math.max(1.4, P.pscale);
   const ditA = 0.085 + 0.30 * P.edge;
   const ROCK_CELL = clamp(Math.round(D * 0.62), 4, 10);
 
-  /* ---- passo 1: campos (otimizado via grade bilinear + derivadas em memória) ---- */
-  const step = Math.max(2, Math.round(D * 1.5));
-  const GW = Math.ceil(W / step) + 1;
-  const gridH = new Float32Array(GW * GW);
-  const gridCold = new Float32Array(GW * GW);
-
+  /* ---- passo 1: campos (otimizado via grade bilinear para relevo e ruídos macro) ---- */
   for (let gy = 0; gy < GW; gy++) {
     const wy = (PY + gy * step) / D;
     const gRow = gy * GW;
     for (let gx = 0; gx < GW; gx++) {
       const wx = (PX + gx * step) / D;
       const gh = terrainGen.getHeight(wx, wy);
-      gridH[gRow + gx] = gh;
+      const gIdx = gRow + gx;
+      gridH[gIdx] = gh;
       const gClim = terrainGen.getClimate(wx, wy, gh);
-      gridCold[gRow + gx] = clamp(1.0 - gClim.temperature, 0, 1);
+      gridCold[gIdx] = clamp(1.0 - gClim.temperature, 0, 1);
+
+      // Domain warp e máscaras macro
+      const ox = per.fbm(wx * 0.21 + 11.3, wy * 0.21 + 4.1, 2) * warp;
+      const oy = per.fbm(wx * 0.21 + 27.7, wy * 0.21 + 18.9, 2) * warp;
+      const ax = wx + ox, ay = wy + oy;
+
+      let m = per.fbm(ax * mf, ay * mf, 3) * 0.5 + 0.5;
+      m += per.fbm(ax * mf * 3.4 + 5.1, ay * mf * 3.4 + 9.7, 2) * 0.14 * (0.35 + P.edge);
+      gridM[gIdx] = m;
+
+      gridRk[gIdx] = per.fbm(wx * 0.17 + 71.2, wy * 0.17 + 33.8, 3) * 0.5 + 0.5;
+      gridSn[gIdx] = per.fbm(wx * 0.26 + 9.4, wy * 0.26 + 3.2, 2) * 0.5 + 0.5;
+      gridBig[gIdx] = per.fbm(wx * 0.33 + 5.5, wy * 0.33 + 2.2, 2);
+
+      // Erosão e modulações na terra
+      const wu = wx + per.fbm(wx * 0.60 + 3.1,  wy * 0.60 + 8.7,  2) * 1.2;
+      const wv = wy + per.fbm(wx * 0.60 + 19.3, wy * 0.60 + 2.9,  2) * 1.2;
+      gridCh1[gIdx] = 1 - Math.abs(per.fbm(wu * 0.80 + 5.0,  wv * 0.80 + 11.0, 3));
+      gridChL[gIdx] = 1 - Math.abs(per.fbm((wu + 0.20) * 0.80 + 5.0, (wv - 0.20) * 0.80 + 11.0, 3));
+      gridWide[gIdx] = per.fbm(wx * 0.72 + 41.3, wy * 0.72 + 7.9, 2);
     }
   }
 
-  // Interpolação bilinear das alturas e frio
-  const coldT = new Float32Array(nT);
+  // Pré-computa tabela 1D para eliminar divisões e modulos
+  const invStep = 1.0 / step;
+  for (let l = 0; l < W; l++) {
+    const g = (l * invStep) | 0;
+    const t = (l % step) * invStep;
+    sGx[l] = g; sTx[l] = t; sOtx[l] = 1.0 - t;
+    sGy[l] = g; sTy[l] = t; sOty[l] = 1.0 - t;
+  }
+
+  // Interpolação bilinear vetorizada dos campos contínuos
   for (let ly = 0; ly < W; ly++) {
-    const gy = Math.floor(ly / step);
-    const ty = (ly % step) / step;
+    const gy = sGy[ly];
+    const ty = sTy[ly];
+    const oty = sOty[ly];
     const gRow0 = gy * GW;
     const gRow1 = (gy + 1) * GW;
     const row = ly * W;
     for (let lx = 0; lx < W; lx++) {
-      const gx = Math.floor(lx / step);
-      const tx = (lx % step) / step;
+      const gx = sGx[lx];
+      const tx = sTx[lx];
+      const otx = sOtx[lx];
       const i00 = gRow0 + gx;
       const i01 = gRow1 + gx;
 
-      const h00 = gridH[i00], h10 = gridH[i00 + 1];
-      const h01 = gridH[i01], h11 = gridH[i01 + 1];
-      hT[row + lx] = (h00 * (1 - tx) + h10 * tx) * (1 - ty) + (h01 * (1 - tx) + h11 * tx) * ty;
+      const w00 = otx * oty, w10 = tx * oty, w01 = otx * ty, w11 = tx * ty;
+      const idx = row + lx;
 
-      const c00 = gridCold[i00], c10 = gridCold[i00 + 1];
-      const c01 = gridCold[i01], c11 = gridCold[i01 + 1];
-      coldT[row + lx] = (c00 * (1 - tx) + c10 * tx) * (1 - ty) + (c01 * (1 - tx) + c11 * tx) * ty;
+      hT[idx] = gridH[i00]*w00 + gridH[i00+1]*w10 + gridH[i01]*w01 + gridH[i01+1]*w11;
+      coldT[idx] = gridCold[i00]*w00 + gridCold[i00+1]*w10 + gridCold[i01]*w01 + gridCold[i01+1]*w11;
+      macroM[idx] = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11;
+      macroRk[idx] = gridRk[i00]*w00 + gridRk[i00+1]*w10 + gridRk[i01]*w01 + gridRk[i01+1]*w11;
+      macroSn[idx] = gridSn[i00]*w00 + gridSn[i00+1]*w10 + gridSn[i01]*w01 + gridSn[i01+1]*w11;
+      macroBig[idx] = gridBig[i00]*w00 + gridBig[i00+1]*w10 + gridBig[i01]*w01 + gridBig[i01+1]*w11;
+      macroCh1[idx] = gridCh1[i00]*w00 + gridCh1[i00+1]*w10 + gridCh1[i01]*w01 + gridCh1[i01+1]*w11;
+      macroChL[idx] = gridChL[i00]*w00 + gridChL[i00+1]*w10 + gridChL[i01]*w01 + gridChL[i01+1]*w11;
+      macroWide[idx] = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
     }
   }
 
@@ -523,7 +642,6 @@ export function genChunkTexture(
     for (let lx = 0; lx < W; lx++) {
       const i = row + lx;
       const tx = PX + lx, ty = PY + ly;
-      const wx = tx / D, wy = ty / D;
 
       const h = hT[i];
       const sl = slT[i];
@@ -541,17 +659,8 @@ export function genChunkTexture(
       bio[i] = b;
       const BI = BIOMES[b];
 
-      // Domain warp
-      const ox = per.fbm(wx * 0.21 + 11.3, wy * 0.21 + 4.1, 2) * warp;
-      const oy = per.fbm(wx * 0.21 + 27.7, wy * 0.21 + 18.9, 2) * warp;
-      const ax = wx + ox, ay = wy + oy;
-
       // Máscara macro de vegetação
-      let m = per.fbm(ax * mf, ay * mf, 3) * 0.5 + 0.5;
-      m += per.fbm(ax * mf * 3.4 + 5.1, ay * mf * 3.4 + 9.7, 2) * 0.14 * (0.35 + P.edge);
-      m += (hn - 0.40) * 0.30;
-      m -= clamp(sl - 0.95, 0, 2) * 0.20;
-      m += P.grass + BI.vegBias;
+      let m = macroM[i] + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + P.grass + BI.vegBias;
       gv[i] = m;
 
       // Quantização com dither em cluster
@@ -559,14 +668,11 @@ export function genChunkTexture(
       gl[i] = d > 0.70 ? 4 : d > 0.61 ? 3 : d > 0.535 ? 2 : d > 0.475 ? 1 : 0;
 
       // Rocha: encosta + ruído
-      let rk = per.fbm(wx * 0.17 + 71.2, wy * 0.17 + 33.8, 3) * 0.5 + 0.5;
-      rk += clamp(sl - 0.95, 0, 2) * 0.30 + (0.28 - hn) * 0.30;
-      rk += (cluster(tx + 91, ty + 17, sd + 5) - 0.5) * 0.26;
+      let rk = macroRk[i] + clamp(sl - 0.95, 0, 2) * 0.30 + (0.28 - hn) * 0.30 + (cluster(tx + 91, ty + 17, sd + 5) - 0.5) * 0.26;
       const isRock = rk > (1.10 - P.rock * 0.80 - BI.rockBias);
 
       // Areia na faixa da praia
-      let sn = per.fbm(wx * 0.26 + 9.4, wy * 0.26 + 3.2, 2) * 0.5 + 0.5;
-      sn += (cluster(tx + 41, ty + 63, sd + 9) - 0.5) * 0.30;
+      let sn = macroSn[i] + (cluster(tx + 41, ty + 63, sd + 9) - 0.5) * 0.30;
       const isSand = h < CONFIG.SEA_LEVEL + (1.85 + sn * 1.1) && sl < 1.45;
 
       if (isSand) { mat[i] = M_SAND; gl[i] = Math.min(gl[i], 1); }
@@ -581,7 +687,7 @@ export function genChunkTexture(
       const i = ly * W + lx;
       const tx = PX + lx, ty = PY + ly;
       const wx = tx / D, wy = ty / D;
-      const big = per.fbm(wx * 0.33 + 5.5, wy * 0.33 + 2.2, 2);
+      const big = macroBig[i];
       const bay = bayer(tx, ty);
       const cl  = cluster(tx + 7, ty + 11, sd + 21);
       const BI  = BIOMES[bio[i]];
@@ -595,7 +701,7 @@ export function genChunkTexture(
         idx[i] = clamp(v, 0, RL - 1);
 
       } else if (mat[i] === M_SAND) {
-        const s1 = per.fbm(wx * 0.55 + 61.1, wy * 0.55 + 12.7, 2) * 0.5 + 0.5;
+        const s1 = macroSn[i];
         let v = 3;
         if (s1 + bay * 0.30 > 0.58) v = 4;
         else if (s1 + bay * 0.30 < 0.34) v = 2;
@@ -628,12 +734,9 @@ export function genChunkTexture(
         idx[i] = clamp(v, 0, RL - 1);
 
       } else {
-        // canais de erosão na terra
-        const wu = wx + per.fbm(wx * 0.60 + 3.1,  wy * 0.60 + 8.7,  2) * 1.2;
-        const wv = wy + per.fbm(wx * 0.60 + 19.3, wy * 0.60 + 2.9,  2) * 1.2;
-        const ch1 = 1 - Math.abs(per.fbm(wu * 0.80 + 5.0,  wv * 0.80 + 11.0, 3));
-        const ch2 = 1 - Math.abs(per.fbm(wu * 2.15 + 31.0, wv * 2.15 + 17.0, 2));
-        const chL = 1 - Math.abs(per.fbm((wu + 0.20) * 0.80 + 5.0, (wv - 0.20) * 0.80 + 11.0, 3));
+        // canais de erosão na terra (alimentados por interpolação bilinear ultra-rápida)
+        const ch1 = macroCh1[i];
+        const chL = macroChL[i];
         const dith = (cluster(tx, ty, sd + 27) - 0.5) * 0.085;
 
         let v = 4;
@@ -643,7 +746,10 @@ export function genChunkTexture(
         if (c1 > 0.905)      v -= 2;
         else if (c1 > 0.815) v -= 1;
         else if (chL > 0.86) v += 1;
-        if (ch2 + dith * 0.8 > 0.935) v -= 1;
+        else {
+          const ch2 = cluster(tx * 2.1 + 31, ty * 2.1 + 17, sd + 51);
+          if (ch2 > 0.94) v -= 1;
+        }
         idx[i] = clamp(v, 0, RL - 1);
       }
 
@@ -654,7 +760,7 @@ export function genChunkTexture(
         const holeThr = g === 2 ? 0.20 : (g === 3 ? 0.11 : 0.05);
         if (hole > holeThr) {
           mat[i] = M_GRASS;
-          const wide = per.fbm(wx * 0.72 + 41.3, wy * 0.72 + 7.9, 2);
+          const wide = macroWide[i];
           const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
           const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
           const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
@@ -772,8 +878,7 @@ export function genChunkTexture(
       if (x - PX < -8 || y - PY < -8 || x - PX >= W + 8 || y - PY >= W + 8) continue;
       const i = at(x, y);
 
-      const wx = x / D, wy = y / D;
-      const clump = per.fbm(wx * 0.42 + 61.3, wy * 0.42 + 22.7, 2) * 0.5 + 0.5;
+      const clump = macroBig[i] * 0.5 + 0.5;
       const lvl = gl[i];
       let spill = false, ox = 0, oy = 0;
 

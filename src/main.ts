@@ -158,8 +158,8 @@ class App {
       this.pegmanWidget.onModeChange(mode);
       this.touchControlsWidget.onModeChange(mode);
       if (mode === CameraMode.FIRST_PERSON) {
-        // Em primeira pessoa, raio adaptativo de 7 chunks (~448m) cobre até o fog e poupa 75% dos chunks
-        this.worldEngine.setViewRadius(7);
+        // Em primeira pessoa, raio adaptativo de 5 chunks (~320m) cobre perfeitamente a distância de névoa e poupa recursos
+        this.worldEngine.setViewRadius(5);
       } else if (mode === CameraMode.OBSERVER) {
         // No modo aéreo panorâmico, restaura o raio amplo para visualização continental completa
         this.worldEngine.setViewRadius(CONFIG.VIEW_RADIUS_CHUNKS);
@@ -261,7 +261,7 @@ class App {
 
     // Verificação de histerese para atualização de sombras sob demanda
     const distSq = playerPos.distanceToSquared(this.lastShadowPos);
-    if (distSq > 0.04) { // ~0.20m de deslocamento do jogador
+    if (distSq > 0.36) { // ~0.60m de deslocamento do jogador
       this.shadowsNeedUpdate = true;
       this.lastShadowPos.copy(playerPos);
     }
