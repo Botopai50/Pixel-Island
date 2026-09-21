@@ -4,9 +4,9 @@ export const CONFIG = {
   CHUNK_SIZE: 64, // Tamanho de cada chunk no espaço do mundo (unidades)
   CHUNK_SEGMENTS: 32, // Resolução facetada de alta fidelidade e excelente performance
   
-  VIEW_RADIUS_CHUNKS: 16,   // Raio equilibrado de visão (~1024m / 2.05km de diâmetro panorâmico)
-  VEGETATION_RADIUS_CHUNKS: 7, // Raio de instanciamento botânico otimizado (~448m, sincronizado com a cascata de sombras de 450m)
-  UNLOAD_MARGIN_CHUNKS: 3, // Margem antes de descarregar chunk da memória
+  VIEW_RADIUS_CHUNKS: 12,   // Raio equilibrado de visão (~768m / 1.54km de diâmetro panorâmico)
+  VEGETATION_RADIUS_CHUNKS: 6, // Raio de instanciamento botânico otimizado (~384m)
+  UNLOAD_MARGIN_CHUNKS: 1, // Margem antes de descarregar chunk da memória
   
   // Níveis de Altura e Relevo
   SEA_LEVEL: 0.0,

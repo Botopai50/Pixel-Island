@@ -31,7 +31,8 @@ export class Chunk {
     _terrainMaterial: THREE.Material,
     _waterMaterial: THREE.Material,
     enableVegetation: boolean = true,
-    forge?: TerrainTextureForge
+    forge?: TerrainTextureForge,
+    enableDetailFlora: boolean = true
   ) {
     this.cx = cx;
     this.cz = cz;
@@ -64,14 +65,14 @@ export class Chunk {
 
     // Popula árvores, arbustos e rochas apenas se permitido pelo LOD de distância
     if (enableVegetation) {
-      this.populateVegetation(vegetationMgr, terrainGen);
+      this.populateVegetation(vegetationMgr, terrainGen, enableDetailFlora);
     }
   }
 
-  public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator): void {
+  public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator, enableDetailFlora: boolean = true): void {
     if (this.hasVegetation || this.isSubmerged || this.isDestroyed) return;
     this.hasVegetation = true;
-    vegetationMgr.populateChunk(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationGroup);
+    vegetationMgr.populateChunk(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationGroup, enableDetailFlora);
   }
 
   private buildTerrain(terrainGen: TerrainGenerator): void {

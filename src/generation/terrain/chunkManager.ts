@@ -26,6 +26,7 @@ export class ChunkManager {
 
   private currentCenterCx: number = 999999;
   private currentCenterCz: number = 999999;
+  private viewRadius: number = CONFIG.VIEW_RADIUS_CHUNKS;
 
   constructor(
     scene: THREE.Scene,
@@ -43,6 +44,19 @@ export class ChunkManager {
     this.forge = forge || TerrainTextureForge.getInstance(terrainGen.getSeed());
   }
 
+  public setViewRadius(r: number): void {
+    if (this.viewRadius !== r) {
+      this.viewRadius = r;
+      if (this.currentCenterCx !== 999999) {
+        this.refreshChunkPlan(this.currentCenterCx, this.currentCenterCz);
+      }
+    }
+  }
+
+  public getViewRadius(): number {
+    return this.viewRadius;
+  }
+
   public update(targetX: number, targetZ: number, forceReload: boolean = false): void {
     const cx = Math.floor((targetX + CONFIG.CHUNK_SIZE / 2) / CONFIG.CHUNK_SIZE);
     const cz = Math.floor((targetZ + CONFIG.CHUNK_SIZE / 2) / CONFIG.CHUNK_SIZE);
@@ -58,7 +72,7 @@ export class ChunkManager {
   }
 
   private refreshChunkPlan(cx: number, cz: number): void {
-    const r = CONFIG.VIEW_RADIUS_CHUNKS;
+    const r = this.viewRadius;
     const unloadDistSq = (r + CONFIG.UNLOAD_MARGIN_CHUNKS) * (r + CONFIG.UNLOAD_MARGIN_CHUNKS);
 
     // 1. Identifica chunks no raio de visão que precisam ser gerados
@@ -118,7 +132,8 @@ export class ChunkManager {
           const dx = chunk.cx - this.currentCenterCx;
           const dz = chunk.cz - this.currentCenterCz;
           if (dx * dx + dz * dz <= vegRadiusSq) {
-            chunk.populateVegetation(this.vegetationMgr, this.terrainGen);
+            const enableDetail = (dx * dx + dz * dz) <= 16;
+            chunk.populateVegetation(this.vegetationMgr, this.terrainGen, enableDetail);
             vegPopulated++;
             if (vegPopulated >= 2 || (performance.now() - startTime >= 6.0)) {
               break;
@@ -133,9 +148,9 @@ export class ChunkManager {
 
     const startTime = performance.now();
     // Burst inicial: no spawn (poucos chunks carregados), permitimos processamento acelerado para abrir a cena imediatamente
-    const isInitialBurst = this.chunks.size < 35;
-    const MAX_TIME_MS = isInitialBurst ? 22.0 : 7.5;
-    const maxChunksPerFrame = isInitialBurst ? 35 : 12;
+    const isInitialBurst = this.chunks.size < 45;
+    const MAX_TIME_MS = isInitialBurst ? 32.0 : 6.0;
+    const maxChunksPerFrame = isInitialBurst ? 4 : 1;
     let chunksBuilt = 0;
 
     const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
@@ -148,6 +163,7 @@ export class ChunkManager {
 
       const distSq = (item.cx - this.currentCenterCx) ** 2 + (item.cz - this.currentCenterCz) ** 2;
       const enableVeg = distSq <= vegRadiusSq;
+      const enableDetail = distSq <= 16;
 
       const chunk = new Chunk(
         item.cx,
@@ -157,7 +173,8 @@ export class ChunkManager {
         this.terrainMaterial,
         this.waterMaterial,
         enableVeg,
-        this.forge
+        this.forge,
+        enableDetail
       );
 
       this.chunks.set(item.key, chunk);

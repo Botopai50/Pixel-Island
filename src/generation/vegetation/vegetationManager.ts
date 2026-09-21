@@ -240,6 +240,7 @@ function setupCartoonMaterial(mat: THREE.MeshLambertMaterial): THREE.MeshLambert
 
     // 2. Injeta a função de revectorização de silhueta de sombra (SMSR) com compensação de plano receptor
     const smsrFunction = /* glsl */ `
+      #if defined( USE_SHADOWMAP ) && ( NUM_DIR_LIGHT_SHADOWS > 0 )
       vec2 computeReceiverPlaneDepthSlope(vec3 shadowCoord) {
         vec3 dcdx = dFdx(shadowCoord);
         vec3 dcdy = dFdy(shadowCoord);
@@ -297,6 +298,7 @@ function setupCartoonMaterial(mat: THREE.MeshLambertMaterial): THREE.MeshLambert
         const float w = 0.08;
         return smoothstep(-w, w, dist);
       }
+      #endif
     `;
 
     shader.fragmentShader = shader.fragmentShader.replace(
@@ -507,7 +509,8 @@ export class VegetationManager {
     chunkZ: number,
     chunkSize: number,
     terrainGen: ITerrainQueryable,
-    parentGroup: THREE.Group
+    parentGroup: THREE.Group,
+    enableDetailFlora: boolean = true
   ): void {
     const chunkSeed = PRNG.hash2D(chunkX, chunkZ, 0x85ebca6b);
     const prng = new PRNG(chunkSeed * 100000);
@@ -593,7 +596,7 @@ export class VegetationManager {
         const isBeach = biome.type === 'Praia Arenosa' && (pt.iceInfluence || 0) < 0.15;
 
         // Juncos aquáticos / Taboas nas margens úmidas (0.12m a 1.40m de altitude)
-        if (pt.height >= 0.12 && pt.height <= 1.40 && pt.slope < 0.32 && !isBeach) {
+        if (enableDetailFlora && pt.height >= 0.12 && pt.height <= 1.40 && pt.slope < 0.32 && !isBeach) {
           if (prng.chance(0.065)) {
             const rScale = prng.range(0.85, 1.35);
             dummy.position.set(wx, pt.height - 0.02, wz);
@@ -1013,14 +1016,14 @@ export class VegetationManager {
           const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST;
           const isMeadow = biome.type === BiomeType.COASTAL_MEADOW || biome.type === BiomeType.SAVANNAH;
 
-          if (isForest && pt.slope < 0.45 && prng.chance(0.14)) {
+          if (enableDetailFlora && isForest && pt.slope < 0.45 && prng.chance(0.14)) {
             const fScale = prng.range(0.85, 1.35);
             dummy.position.set(wx, pt.height + 0.02, wz);
             dummy.scale.set(fScale, fScale * prng.range(0.9, 1.15), fScale);
             dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
             dummy.updateMatrix();
             fernTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x42b828) });
-          } else if (isMeadow && pt.slope < 0.38 && prng.chance(0.12)) {
+          } else if (enableDetailFlora && isMeadow && pt.slope < 0.38 && prng.chance(0.12)) {
             const wScale = prng.range(0.9, 1.3);
             dummy.position.set(wx, pt.height + 0.02, wz);
             dummy.scale.set(wScale, wScale, wScale);

@@ -454,28 +454,78 @@ export function genChunkTexture(
   const ditA = 0.085 + 0.30 * P.edge;
   const ROCK_CELL = clamp(Math.round(D * 0.62), 4, 10);
 
-  /* ---- passo 1: campos ---- */
+  /* ---- passo 1: campos (otimizado via grade bilinear + derivadas em memória) ---- */
+  const step = 3;
+  const GW = Math.ceil(W / step) + 1;
+  const gridH = new Float32Array(GW * GW);
+  const gridCold = new Float32Array(GW * GW);
+
+  for (let gy = 0; gy < GW; gy++) {
+    const wy = (PY + gy * step) / D;
+    const gRow = gy * GW;
+    for (let gx = 0; gx < GW; gx++) {
+      const wx = (PX + gx * step) / D;
+      const gh = terrainGen.getHeight(wx, wy);
+      gridH[gRow + gx] = gh;
+      const gClim = terrainGen.getClimate(wx, wy, gh);
+      gridCold[gRow + gx] = clamp(1.0 - gClim.temperature, 0, 1);
+    }
+  }
+
+  // Interpolação bilinear das alturas e frio
+  const coldT = new Float32Array(nT);
   for (let ly = 0; ly < W; ly++) {
+    const gy = Math.floor(ly / step);
+    const ty = (ly % step) / step;
+    const gRow0 = gy * GW;
+    const gRow1 = (gy + 1) * GW;
+    const row = ly * W;
     for (let lx = 0; lx < W; lx++) {
-      const i = ly * W + lx;
+      const gx = Math.floor(lx / step);
+      const tx = (lx % step) / step;
+      const i00 = gRow0 + gx;
+      const i01 = gRow1 + gx;
+
+      const h00 = gridH[i00], h10 = gridH[i00 + 1];
+      const h01 = gridH[i01], h11 = gridH[i01 + 1];
+      hT[row + lx] = (h00 * (1 - tx) + h10 * tx) * (1 - ty) + (h01 * (1 - tx) + h11 * tx) * ty;
+
+      const c00 = gridCold[i00], c10 = gridCold[i00 + 1];
+      const c01 = gridCold[i01], c11 = gridCold[i01 + 1];
+      coldT[row + lx] = (c00 * (1 - tx) + c10 * tx) * (1 - ty) + (c01 * (1 - tx) + c11 * tx) * ty;
+    }
+  }
+
+  // Derivadas de inclinação analítica em memória (0 chamadas adicionais de ruído)
+  const deltaMeters = 1.0 / D;
+  for (let ly = 0; ly < W; ly++) {
+    const lyD = Math.max(0, ly - 1), lyU = Math.min(W - 1, ly + 1);
+    const rowD = lyD * W, rowU = lyU * W, rowCur = ly * W;
+    const dy = (lyU - lyD) * deltaMeters;
+    for (let lx = 0; lx < W; lx++) {
+      const lxL = Math.max(0, lx - 1), lxR = Math.min(W - 1, lx + 1);
+      const hL = hT[rowCur + lxL], hR = hT[rowCur + lxR];
+      const hD = hT[rowD + lx], hU = hT[rowU + lx];
+      const dx = (lxR - lxL) * deltaMeters;
+      slT[rowCur + lx] = Math.sqrt(((hR - hL) / dx) ** 2 + ((hU - hD) / dy) ** 2);
+    }
+  }
+
+  // Avaliação dos biomas e máscaras de materiais
+  for (let ly = 0; ly < W; ly++) {
+    const row = ly * W;
+    for (let lx = 0; lx < W; lx++) {
+      const i = row + lx;
       const tx = PX + lx, ty = PY + ly;
       const wx = tx / D, wy = ty / D;
-      const px = wx, pz = wy;
 
-      const h = terrainGen.getHeight(px, pz);
-      // Inclinação analítica por diferenças finitas
-      const e = 1.0;
-      const hL = terrainGen.getHeight(px - e, pz), hR = terrainGen.getHeight(px + e, pz);
-      const hD = terrainGen.getHeight(px, pz - e), hU = terrainGen.getHeight(px, pz + e);
-      const sl = Math.sqrt(((hR - hL) / (2 * e)) ** 2 + ((hU - hD) / (2 * e)) ** 2);
-
-      hT[i] = h; slT[i] = sl;
+      const h = hT[i];
+      const sl = slT[i];
       const hn = clamp(h / 65.0, 0, 1);
 
       /* ---- BIOMA ---- */
       const bd = (cluster(tx + 7, ty + 3, sd + 70) - 0.5) * 0.17;
-      const climate = terrainGen.getClimate(px, pz, h);
-      const coldVal = clamp(1.0 - climate.temperature, 0, 1);
+      const coldVal = coldT[i];
       const massifVal = clamp((h - 22.0) / 45.0 + sl * 0.25, 0, 1);
 
       let b = B_TEMP;

@@ -5,6 +5,7 @@ import { SkyAtmosphere } from './atmosphere/skyAtmosphere.ts';
 import { DropReticle } from './player/dropReticle.ts';
 import { PegmanWidget } from './ui/pegmanWidget.ts';
 import { TextureForgeWidget } from './ui/textureForgeWidget.ts';
+import { CONFIG } from './config.ts';
 
 /**
  * Aplicação Principal: Procedural Island Explorer
@@ -142,9 +143,16 @@ class App {
       getTerrain: () => this.worldEngine.getTerrainGenerator()
     });
 
-    // Sincroniza estados de HUD com os modos de câmera do jogador
+    // Sincroniza estados de HUD e raio de chunks com os modos de câmera do jogador
     this.playerController.onModeChange = (mode) => {
       this.pegmanWidget.onModeChange(mode);
+      if (mode === CameraMode.FIRST_PERSON) {
+        // Em primeira pessoa, raio adaptativo de 7 chunks (~448m) cobre até o fog e poupa 75% dos chunks
+        this.worldEngine.setViewRadius(7);
+      } else if (mode === CameraMode.OBSERVER) {
+        // No modo aéreo panorâmico, restaura o raio amplo para visualização continental completa
+        this.worldEngine.setViewRadius(CONFIG.VIEW_RADIUS_CHUNKS);
+      }
     };
 
     // Inicialização do Widget de Ajuste e Exportação de Texturas

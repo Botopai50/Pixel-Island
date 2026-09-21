@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
+// Previne emissão repetida de warnings quando toNonIndexed() é chamado em geometrias já não-indexadas
+const origToNonIndexed = THREE.BufferGeometry.prototype.toNonIndexed;
+THREE.BufferGeometry.prototype.toNonIndexed = function(): THREE.BufferGeometry {
+  if (!this.getIndex()) return this;
+  return origToNonIndexed.call(this);
+};
+
 /**
  * BotanicalGeometryFactory
  * Gerador de alta fidelidade botânica e artística para os 19 espécimes vegetais.
