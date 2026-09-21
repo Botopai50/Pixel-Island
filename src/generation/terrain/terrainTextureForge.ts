@@ -167,7 +167,13 @@ export function clusterT(x: number, y: number, W: number, H: number, s: number):
 }
 
 export const BAYER4 = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
-export const bayer = (x: number, y: number) => BAYER4[((y & 3) << 2) | (x & 3)] / 16 - 0.46875;
+export const BAYER4_F32 = new Float32Array([
+  0/16 - 0.46875,  8/16 - 0.46875,  2/16 - 0.46875, 10/16 - 0.46875,
+ 12/16 - 0.46875,  4/16 - 0.46875, 14/16 - 0.46875,  6/16 - 0.46875,
+  3/16 - 0.46875, 11/16 - 0.46875,  1/16 - 0.46875,  9/16 - 0.46875,
+ 15/16 - 0.46875,  7/16 - 0.46875, 13/16 - 0.46875,  5/16 - 0.46875
+]);
+export const bayer = (x: number, y: number) => BAYER4_F32[((y & 3) << 2) | (x & 3)];
 
 export function cobble(x: number, y: number, cell: number, seed: number, wrap: number = 0) {
   const fx = x / cell, fy = y / cell;
@@ -304,7 +310,7 @@ export const DEFAULT_FORGE_PARAMS: ForgeParams = {
 
 export const MARGIN = 12;
 export const WALL = 128;
-export const DEFAULT_D = 2.0; // 2 texels por metro (chunk de 64m = 128x128 texels)
+export const DEFAULT_D = 3.0; // 3 texels por metro (chunk de 64m = 192x192 texels)
 
 /* =========================================================================
    TEXTURAS DE ENCOSTA (PAREDES VERTICAIS)
@@ -455,7 +461,7 @@ export function genChunkTexture(
   const ROCK_CELL = clamp(Math.round(D * 0.62), 4, 10);
 
   /* ---- passo 1: campos (otimizado via grade bilinear + derivadas em memória) ---- */
-  const step = 3;
+  const step = Math.max(2, Math.round(D * 1.5));
   const GW = Math.ceil(W / step) + 1;
   const gridH = new Float32Array(GW * GW);
   const gridCold = new Float32Array(GW * GW);
@@ -873,40 +879,43 @@ export function genChunkTexture(
     idx[i] = clamp(idx[i] - 1, 0, RL - 1);
   }
 
-  /* ---- passo 5: cavidade + encosta escurecem ---- */
-  const blur = new Float32Array(nT);
-  const RB = Math.max(2, Math.round(D * 0.20));
-  for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-    let s = 0, n = 0;
-    for (let k = -RB; k <= RB; k += 2) {
-      const a = clamp(lx + k, 0, W - 1), b = clamp(ly + k, 0, W - 1);
-      s += hT[ly * W + a] + hT[b * W + lx]; n += 2;
-    }
-    blur[ly * W + lx] = s / n;
-  }
-
-  /* ---- passo 6: índices -> RGB, recortando a margem ---- */
+  /* ---- passo 5 & 6: cavidade + encosta escurecem & índices -> RGB, recortando a margem ---- */
   const nC  = CW * CW;
   const img  = new Uint8ClampedArray(nC * 4);
   const imgD = new Uint8ClampedArray(nC * 4);
   const bimg = new Uint8ClampedArray(nC * 4);
-  for (let cy = 0; cy < CW; cy++) for (let cx = 0; cx < CW; cx++) {
-    const lx = cx + M, ly = cy + M, i = ly * W + lx, o = (cy * CW + cx) * 4;
-    const dth = (cluster(PX + lx + 55, PY + ly + 77, sd + 33) - 0.5) * 0.085;
-    const cav = hT[i] - blur[i] + dth;
-    let sh = 0;
-    if (cav < -0.055) sh = 1;
-    if (cav < -0.180) sh = 2;
-    if (slT[i] + (cluster(PX + lx + 3, PY + ly + 91, sd + 34) - 0.5) * 0.55 > 1.45) sh += 1;
+  const RB = Math.max(2, Math.round(D * 0.20));
 
-    const ramp = RAMPS[bio[i]][mat[i]];
-    const v0 = clamp(idx[i] - sh, 0, ramp.length - 1);
-    const c  = ramp[v0];
-    const cd = ramp[clamp(v0 - 1, 0, ramp.length - 1)];
-    const a  = (mat[i] === M_GRASS || mat[i] === M_ACC) ? 255 : 0;
-    img[o]     = c[0];  img[o + 1] = c[1];  img[o + 2] = c[2];  img[o + 3] = a;
-    imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = a;
-    bimg[o]    = bio[i]; bimg[o + 3] = 255;
+  for (let cy = 0; cy < CW; cy++) {
+    const ly = cy + M;
+    const row = ly * W;
+    const cRow = cy * CW;
+    for (let cx = 0; cx < CW; cx++) {
+      const lx = cx + M, i = row + lx, o = (cRow + cx) * 4;
+
+      let s = 0, n = 0;
+      for (let k = -RB; k <= RB; k += 2) {
+        const a = clamp(lx + k, 0, W - 1), b = clamp(ly + k, 0, W - 1);
+        s += hT[row + a] + hT[b * W + lx]; n += 2;
+      }
+      const blurVal = s / n;
+
+      const dth = (cluster(PX + lx + 55, PY + ly + 77, sd + 33) - 0.5) * 0.085;
+      const cav = hT[i] - blurVal + dth;
+      let sh = 0;
+      if (cav < -0.055) sh = 1;
+      if (cav < -0.180) sh = 2;
+      if (slT[i] + (cluster(PX + lx + 3, PY + ly + 91, sd + 34) - 0.5) * 0.55 > 1.45) sh += 1;
+
+      const ramp = RAMPS[bio[i]][mat[i]];
+      const v0 = clamp(idx[i] - sh, 0, ramp.length - 1);
+      const c  = ramp[v0];
+      const cd = ramp[clamp(v0 - 1, 0, ramp.length - 1)];
+      const a  = (mat[i] === M_GRASS || mat[i] === M_ACC) ? 255 : 0;
+      img[o]     = c[0];  img[o + 1] = c[1];  img[o + 2] = c[2];  img[o + 3] = a;
+      imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = a;
+      bimg[o]    = bio[i]; bimg[o + 3] = 255;
+    }
   }
   return { img, imgD, bimg, width: CW, height: CW };
 }

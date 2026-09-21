@@ -190,7 +190,7 @@ export class TextureForgeWidget {
               <label for="fg-density">Densidade de Texels</label>
               <b id="fg-density-v">${this.state.density.toFixed(1)} tx/m</b>
             </div>
-            <input id="fg-density" type="range" min="1.0" max="4.0" step="0.5" value="${this.state.density}">
+            <input id="fg-density" type="range" min="1.0" max="6.0" step="0.5" value="${this.state.density}">
             <span class="forge-hint">Maior = pixels menores, Menor = pixels mais graúdos</span>
           </div>
         </div>
