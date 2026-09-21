@@ -100,33 +100,18 @@ export class FirstPersonController {
   }
 
   public update(dt: number, input: InputManager, terrain: ITerrainHeightQueryable): void {
-    // 1. Calcula direção de caminhada a partir do Yaw
+    // 1. Calcula direção de caminhada a partir do Yaw e vetor de entrada (analógico ou teclado)
     const forwardX = -Math.sin(this.yaw);
     const forwardZ = -Math.cos(this.yaw);
     const rightX = Math.cos(this.yaw);
     const rightZ = -Math.sin(this.yaw);
 
-    let moveDirX = 0;
-    let moveDirZ = 0;
-
-    if (input.isMovingForward()) {
-      moveDirX += forwardX;
-      moveDirZ += forwardZ;
-    }
-    if (input.isMovingBackward()) {
-      moveDirX -= forwardX;
-      moveDirZ -= forwardZ;
-    }
-    if (input.isMovingLeft()) {
-      moveDirX -= rightX;
-      moveDirZ -= rightZ;
-    }
-    if (input.isMovingRight()) {
-      moveDirX += rightX;
-      moveDirZ += rightZ;
-    }
+    const moveVec = input.getMovementVector();
+    let moveDirX = forwardX * moveVec.y + rightX * moveVec.x;
+    let moveDirZ = forwardZ * moveVec.y + rightZ * moveVec.x;
 
     const len = Math.hypot(moveDirX, moveDirZ);
+    const inputMagnitude = Math.min(1.0, len);
     if (len > 0.0001) {
       moveDirX /= len;
       moveDirZ /= len;
@@ -134,7 +119,8 @@ export class FirstPersonController {
 
     // 2. Velocidade e Aceleração
     const isSprinting = input.isSprinting();
-    const targetSpeed = len > 0 ? (isSprinting ? this.sprintSpeed : this.walkSpeed) : 0;
+    const baseSpeed = isSprinting ? this.sprintSpeed : this.walkSpeed;
+    const targetSpeed = len > 0 ? baseSpeed * inputMagnitude : 0;
 
     const targetVelX = moveDirX * targetSpeed;
     const targetVelZ = moveDirZ * targetSpeed;

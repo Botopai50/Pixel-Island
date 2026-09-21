@@ -38,7 +38,7 @@ export class TextureForgeWidget {
     this.toggleBtn.className = 'forge-toggle-btn';
     this.toggleBtn.innerHTML = `
       <span class="forge-toggle-icon">🎨</span>
-      <span class="forge-toggle-text">Texturas (T)</span>
+      <span class="forge-toggle-text">Texturas<span class="key-hint"> (T)</span></span>
     `;
     this.toggleBtn.title = 'Abrir painel de controle e exportação de texturas (Tecla T)';
 

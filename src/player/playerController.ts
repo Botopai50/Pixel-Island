@@ -291,6 +291,14 @@ export class PlayerController {
     return this.observerCamera.camera;
   }
 
+  public getInputManager(): InputManager {
+    return this.input;
+  }
+
+  public getFirstPersonController(): FirstPersonController {
+    return this.firstPersonController;
+  }
+
   public onResize(): void {
     this.observerCamera.updateProjection();
     this.firstPersonController.onResize();

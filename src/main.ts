@@ -5,6 +5,7 @@ import { SkyAtmosphere } from './atmosphere/skyAtmosphere.ts';
 import { DropReticle } from './player/dropReticle.ts';
 import { PegmanWidget } from './ui/pegmanWidget.ts';
 import { TextureForgeWidget } from './ui/textureForgeWidget.ts';
+import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
 
 /**
@@ -31,6 +32,9 @@ class App {
 
   // 4.1. Widget de Ajuste e Exportação de Texturas Procedurais
   private textureForgeWidget!: TextureForgeWidget;
+
+  // 4.2. Controles Touch para Celulares / Telas Sensíveis ao Toque
+  private touchControlsWidget!: TouchControlsWidget;
 
   // 5. Render Target para o Pixel Water Shader (Refração, Profundidade e Espuma de Borda)
   private waterRenderTarget!: THREE.WebGLRenderTarget;
@@ -143,9 +147,16 @@ class App {
       getTerrain: () => this.worldEngine.getTerrainGenerator()
     });
 
+    // Inicialização dos Controles Touch para Celulares
+    this.touchControlsWidget = new TouchControlsWidget(
+      this.playerController,
+      this.playerController.getInputManager()
+    );
+
     // Sincroniza estados de HUD e raio de chunks com os modos de câmera do jogador
     this.playerController.onModeChange = (mode) => {
       this.pegmanWidget.onModeChange(mode);
+      this.touchControlsWidget.onModeChange(mode);
       if (mode === CameraMode.FIRST_PERSON) {
         // Em primeira pessoa, raio adaptativo de 7 chunks (~448m) cobre até o fog e poupa 75% dos chunks
         this.worldEngine.setViewRadius(7);
@@ -162,6 +173,7 @@ class App {
     (window as any).__WORLD__ = this.worldEngine;
     (window as any).__PLAYER__ = this.playerController;
     (window as any).__TEXTURE_WIDGET__ = this.textureForgeWidget;
+    (window as any).__TOUCH_CONTROLS__ = this.touchControlsWidget;
 
     // Clique interativo na água para gerar ondas e ondulações (Ripples)
     container.addEventListener('pointerdown', (e) => {

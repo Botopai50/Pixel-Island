@@ -14,6 +14,10 @@ export class InputManager {
   private prevPanMouseX: number = 0;
   private prevPanMouseY: number = 0;
 
+  // 3. Controles virtuais móveis (touch joystick e gestos)
+  private virtualVector: { x: number; y: number } = { x: 0, y: 0 };
+  private virtualSprint: boolean = false;
+
   constructor() {
     this.setupListeners();
   }
@@ -82,23 +86,80 @@ export class InputManager {
   }
 
   public isMovingForward(): boolean {
-    return this.keysPressed.has('ArrowUp') || this.keysPressed.has('KeyW');
+    return this.keysPressed.has('ArrowUp') || this.keysPressed.has('KeyW') || this.virtualVector.y > 0.15;
   }
 
   public isMovingBackward(): boolean {
-    return this.keysPressed.has('ArrowDown') || this.keysPressed.has('KeyS');
+    return this.keysPressed.has('ArrowDown') || this.keysPressed.has('KeyS') || this.virtualVector.y < -0.15;
   }
 
   public isMovingLeft(): boolean {
-    return this.keysPressed.has('ArrowLeft') || this.keysPressed.has('KeyA');
+    return this.keysPressed.has('ArrowLeft') || this.keysPressed.has('KeyA') || this.virtualVector.x < -0.15;
   }
 
   public isMovingRight(): boolean {
-    return this.keysPressed.has('ArrowRight') || this.keysPressed.has('KeyD');
+    return this.keysPressed.has('ArrowRight') || this.keysPressed.has('KeyD') || this.virtualVector.x > 0.15;
   }
 
   public isSprinting(): boolean {
-    return this.keysPressed.has('ShiftLeft') || this.keysPressed.has('ShiftRight');
+    return this.keysPressed.has('ShiftLeft') || this.keysPressed.has('ShiftRight') || this.virtualSprint;
+  }
+
+  /**
+   * Define o vetor analógico de movimentação virtual vindo do joystick touch.
+   * forward: -1.0 (trás) a +1.0 (frente)
+   * right: -1.0 (esquerda) a +1.0 (direita)
+   */
+  public setVirtualMovement(forward: number, right: number, sprint?: boolean): void {
+    this.virtualVector.x = right;
+    this.virtualVector.y = forward;
+    if (sprint !== undefined) {
+      this.virtualSprint = sprint;
+    }
+  }
+
+  public setVirtualSprint(sprint: boolean): void {
+    this.virtualSprint = sprint;
+  }
+
+  /**
+   * Retorna o vetor analógico composto (teclado + joystick virtual).
+   */
+  public getMovementVector(): { x: number; y: number } {
+    let x = 0;
+    let y = 0;
+    if (this.keysPressed.has('ArrowUp') || this.keysPressed.has('KeyW')) y += 1;
+    if (this.keysPressed.has('ArrowDown') || this.keysPressed.has('KeyS')) y -= 1;
+    if (this.keysPressed.has('ArrowLeft') || this.keysPressed.has('KeyA')) x -= 1;
+    if (this.keysPressed.has('ArrowRight') || this.keysPressed.has('KeyD')) x += 1;
+
+    const keyLen = Math.hypot(x, y);
+    if (keyLen > 0) {
+      x /= keyLen;
+      y /= keyLen;
+    }
+
+    // Se o joystick virtual estiver ativo, tem prioridade analógica suave
+    const virtLen = Math.hypot(this.virtualVector.x, this.virtualVector.y);
+    if (virtLen > 0.001) {
+      x = this.virtualVector.x;
+      y = this.virtualVector.y;
+    }
+
+    return { x, y };
+  }
+
+  public addPanDelta(dx: number, dy: number): void {
+    this.panDeltaX += dx;
+    this.panDeltaY += dy;
+  }
+
+  public addRotateDelta(deltaX: number): void {
+    this.rightDragDeltaX += deltaX;
+  }
+
+  public addWheelDelta(d: number): void {
+    this.wheelDelta += d;
   }
 
   public consumeWheelDelta(): number {

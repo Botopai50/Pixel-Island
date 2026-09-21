@@ -11,6 +11,9 @@ html, body {
   overflow: hidden;
   background-color: #000000;
   cursor: grab;
+  touch-action: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
 }
 
 body:active {
@@ -24,6 +27,7 @@ body:active {
   width: 100%;
   height: 100%;
   z-index: 1;
+  touch-action: none;
 }
 
 /* =========================================================
@@ -443,4 +447,166 @@ body:active {
   resize: vertical;
   line-height: 1.4;
   outline: none;
+}
+
+/* =========================================================
+   CONTROLES TOUCH / MOBILE (JOYSTICK & BOTÕES VIRTUAIS)
+   ========================================================= */
+
+.touch-controls-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 120;
+}
+
+.touch-joystick-zone {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 50vw;
+  height: 60vh;
+  pointer-events: none;
+}
+
+.touch-joystick-base {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  margin-left: -60px;
+  margin-top: -60px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.14) 0%, rgba(255, 255, 255, 0.04) 65%, rgba(56, 189, 248, 0.3) 100%);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45), inset 0 0 16px rgba(56, 189, 248, 0.25);
+  display: none;
+  pointer-events: none;
+  transform: translateZ(0);
+}
+
+.touch-joystick-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 52px;
+  height: 52px;
+  margin-left: -26px;
+  margin-top: -26px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #60a5fa 0%, #2563eb 100%);
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 14px rgba(96, 165, 250, 0.65);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+  transition: box-shadow 0.1s ease;
+}
+
+.touch-action-btn {
+  position: fixed;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.45);
+  background: rgba(15, 23, 42, 0.80);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #ffffff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.touch-sprint-btn {
+  bottom: 32px;
+  right: 32px;
+  width: 64px;
+  height: 64px;
+  z-index: 125;
+}
+
+.touch-sprint-btn.active {
+  background: #2563eb;
+  border-color: #93c5fd;
+  box-shadow: 0 0 24px rgba(37, 99, 235, 0.75);
+  transform: scale(1.08);
+}
+
+.touch-sprint-btn:active {
+  transform: scale(0.94);
+}
+
+/* =========================================================
+   ADAPTAÇÕES ESPECÍFICAS PARA DISPOSITIVOS TOUCH / CELULARES
+   ========================================================= */
+
+body.touch-device {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body.touch-device .key-hint {
+  display: none !important;
+}
+
+body.touch-device #canvas-container {
+  touch-action: none;
+}
+
+body.touch-device .pegman-pedestal {
+  width: 58px;
+  height: 58px;
+}
+
+body.touch-device .pegman-character {
+  width: 42px;
+  height: 52px;
+}
+
+body.touch-device .first-person-exit-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+/* Telas de Celular (Smartphones em Retrato e Paisagem) */
+@media (max-width: 768px) {
+  .forge-panel {
+    width: min(340px, 92vw);
+    max-height: calc(100vh - 80px);
+  }
+
+  .forge-toggle-btn {
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  .first-person-exit-btn {
+    top: 16px;
+    right: 16px;
+  }
+
+  .pegman-widget {
+    bottom: 20px;
+    right: 20px;
+  }
+
+  .touch-sprint-btn {
+    bottom: 24px;
+    right: 24px;
+  }
 }

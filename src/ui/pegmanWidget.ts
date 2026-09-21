@@ -26,6 +26,8 @@ export class PegmanWidget {
   private lastHit: RaycastHit | null = null;
   private prevMouseX: number = 0;
   private mouseVelX: number = 0;
+  private dragStartX: number = 0;
+  private dragStartY: number = 0;
 
   constructor(reticle: DropReticle, callbacks: PegmanCallbacks) {
     this.reticle = reticle;
@@ -95,7 +97,7 @@ export class PegmanWidget {
       <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
         <path d="M9 14l-4-4 4-4v3h8v2h-8v3zm11 7H4c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2h16c1.1 0 2 .9 2 2v14c0 1.1-.9 2-2 2z"/>
       </svg>
-      <span>Voltar à Visão Aérea (ESC)</span>
+      <span>Voltar à Visão Aérea</span><span class="key-hint"> (ESC)</span>
     `;
     this.exitBtn.style.display = 'none';
 
@@ -138,6 +140,8 @@ export class PegmanWidget {
     this.isDragging = true;
     this.prevMouseX = clientX;
     this.mouseVelX = 0;
+    this.dragStartX = clientX;
+    this.dragStartY = clientY;
 
     this.container.classList.add('is-dragging');
     this.ghost.style.display = 'block';
@@ -164,15 +168,25 @@ export class PegmanWidget {
     this.reticle.update(0.016, this.lastHit);
   }
 
-  private endDrag(_clientX: number, _clientY: number): void {
+  private endDrag(clientX: number, clientY: number): void {
     this.isDragging = false;
     this.ghost.style.display = 'none';
     this.container.classList.remove('is-dragging');
     this.reticle.setVisible(false);
 
-    if (this.lastHit && this.lastHit.hit) {
-      // Soltou sobre um ponto válido da ilha!
+    const dragDist = Math.hypot(clientX - this.dragStartX, clientY - this.dragStartY);
+
+    if (this.lastHit && this.lastHit.hit && dragDist > 15) {
+      // Soltou sobre um ponto válido da ilha via arrasto!
       this.callbacks.onDrop(this.lastHit.point.x, this.lastHit.point.z);
+    } else if (dragDist <= 15) {
+      // Toque direto no Pegman sem arrastar: pousa no ponto central visível da ilha
+      const camera = this.callbacks.getActiveCamera();
+      const terrain = this.callbacks.getTerrain();
+      const centerHit = this.raycaster.castFromScreen(window.innerWidth / 2, window.innerHeight / 2, camera, terrain);
+      if (centerHit && centerHit.hit) {
+        this.callbacks.onDrop(centerHit.point.x, centerHit.point.z);
+      }
     }
   }
 
