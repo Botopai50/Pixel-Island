@@ -1,4 +1,4 @@
-﻿# 🏝️ Pixel Island Explorer
+# 🏝️ Pixel Island Explorer
 
 > **An open-world 3D procedural island exploration game crafted with an authentic retro pixel-art aesthetic, vibrant cel-shaded visuals, and dynamic ecosystems.**
 
@@ -25,7 +25,7 @@ Built from the ground up using **Three.js**, **TypeScript**, **Vite**, and **cus
 - **Cascaded Ocean Geometry**: High-resolution central grid transitioning seamlessly into outer concentric rings up to 16 km diameter.
 - **True Planar Pixel Reflections**: Real-time inverted rendering capturing island terrain, cliffs, trees, and skybox reflections across all camera angles.
 - **Biome-Specific Chromatic Palettes**: Dynamic fragment evaluation maps water body hues in real time according to geographic and bioclimatic coordinates.
-- **Progressive Depth Darkening**: Physical vertical depth attenuation (erticalDepth) creates crystal-clear shallows that progressively darken into deep oceanic/lake abyss.
+- **Progressive Depth Darkening**: Physical vertical depth attenuation (`verticalDepth`) creates crystal-clear shallows that progressively darken into deep oceanic/lake abyss.
 - **Multi-Layer Stylized Foam**: Discrete cellular Voronoi patterns, animated wind wave drift, and crisp contact foam lining the shorelines.
 - **Interactive Ripples**: Real-time concentric rings and surface displacement reacting to player clicks and interactions.
 
@@ -89,7 +89,7 @@ Built from the ground up using **Three.js**, **TypeScript**, **Vite**, and **cus
 
 ### Installation
 
-`ash
+```bash
 # Clone the repository
 git clone https://github.com/Botopai50/Pixel-Island.git
 
@@ -98,32 +98,32 @@ cd Pixel-Island
 
 # Install dependencies
 npm install
-`
+```
 
 ### Running Locally
 
-`ash
+```bash
 # Start Vite development server
 npm run dev
-`
+```
 
-Open http://localhost:5173/ in your browser to explore the island!
+Open `http://localhost:5173/` in your browser to explore the island!
 
 ### Building for Production
 
-`ash
+```bash
 # Type check and build optimized bundle
 npm run build
 
 # Preview production build locally
 npm run preview
-`
+```
 
 ---
 
 ## 📁 Project Structure
 
-`
+```text
 src/
 ├── atmosphere/          # Pixelated Skybox, celestial bodies, clouds & lighting
 ├── generation/          # Procedural world generation engine
@@ -143,7 +143,7 @@ src/
 ├── ui/                  # HUD widgets, Pegman marker, and exploration UI
 ├── config.ts            # Global world, camera, and rendering configuration
 └── main.ts              # Three.js scene orchestration, dual-pass rendering & loops
-`
+```
 
 ---
 
