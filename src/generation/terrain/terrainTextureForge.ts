@@ -460,12 +460,13 @@ export function buildWallAtlas(P: ForgeParams, slot: 'wallHi' | 'wallLo', shade:
 }
 
 /* =========================================================================
-   GERAÇÃO DE TEXTURAS POR CHUNK (TOP, TOP_DARK, BIO)
+   GERAÇÃO DE TEXTURAS POR CHUNK (TOP, TOP_DARK + BIOMA)
    ========================================================================= */
 export interface ChunkTextureResult {
+  /** RGB = cor do topo, A = marca de vegetação (grama/acessório) */
   img: Uint8ClampedArray;
+  /** RGB = um degrau mais escuro da paleta, A = índice do bioma (lido com texelFetch, sem filtro) */
   imgD: Uint8ClampedArray;
-  bimg: Uint8ClampedArray;
   width: number;
   height: number;
 }
@@ -1173,7 +1174,6 @@ export function genChunkTexture(
   const nC  = CW * CW;
   const img  = new Uint8ClampedArray(nC * 4);
   const imgD = new Uint8ClampedArray(nC * 4);
-  const bimg = new Uint8ClampedArray(nC); // 1 canal: só o índice do bioma
   const RB = Math.max(2, Math.round(D * 0.20));
 
   for (let cy = 0; cy < CW; cy++) {
@@ -1203,11 +1203,10 @@ export function genChunkTexture(
       const cd = ramp[clamp(v0 - 1, 0, ramp.length - 1)];
       const a  = (mat[i] === M_GRASS || mat[i] === M_ACC) ? 255 : 0;
       img[o]     = c[0];  img[o + 1] = c[1];  img[o + 2] = c[2];  img[o + 3] = a;
-      imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = a;
-      bimg[cRow + cx] = bio[i];
+      imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = bio[i];
     }
   }
-  return { img, imgD, bimg, width: CW, height: CW };
+  return { img, imgD, width: CW, height: CW };
 }
 
 /* =========================================================================
@@ -1258,11 +1257,22 @@ export function makeTexture(
   return t;
 }
 
+/**
+ * Depois do envio para a GPU a cópia dos pixels na RAM não serve para mais nada (os mipmaps
+ * são gerados na GPU): liberá-la tira da heap JS dezenas a centenas de MB com o raio de visão
+ * grande. Se o contexto WebGL for perdido, o chunk é regerado ao sair/entrar do raio.
+ */
+function releaseAfterUpload(t: THREE.DataTexture): THREE.DataTexture {
+  t.onUpdate = () => {
+    (t.image as { data: unknown }).data = null;
+  };
+  return t;
+}
+
 function makeChunkTextures(res: ChunkTextureResult) {
   return {
-    topTex: makeTexture(res.img, res.width, res.height, false, 'color'),
-    topDarkTex: makeTexture(res.imgD, res.width, res.height, false, 'color'),
-    bioTex: makeTexture(res.bimg, res.width, res.height, false, 'category'),
+    topTex: releaseAfterUpload(makeTexture(res.img, res.width, res.height, false, 'color')),
+    topDarkTex: releaseAfterUpload(makeTexture(res.imgD, res.width, res.height, false, 'color')),
   };
 }
 
@@ -1382,7 +1392,7 @@ export class TerrainTextureForge {
     minWorldZ: number,
     chunkSize: number,
     terrainGen: TerrainGenerator
-  ): { topTex: THREE.DataTexture; topDarkTex: THREE.DataTexture; bioTex: THREE.DataTexture } {
+  ): { topTex: THREE.DataTexture; topDarkTex: THREE.DataTexture } {
     const res = genChunkTexture(
       this.params,
       this.perlin,

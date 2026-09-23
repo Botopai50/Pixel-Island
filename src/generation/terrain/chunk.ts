@@ -7,9 +7,9 @@ import { createChunkTerrainMaterial } from '../shaders/terrainShader.ts';
 
 export type ChunkLOD = 'HIGH' | 'MED' | 'LOW';
 
-// Fundo do mar dos chunks totalmente submersos: só precisa existir no depth buffer para a água
+// Fundo do mar das áreas totalmente submersas: só precisa existir no depth buffer para a água
 // calcular a profundidade (e escurecer gradualmente). Material único e barato, compartilhado.
-const SEABED_SEGMENTS = 8;
+const SEABED_SPACING = 8; // metros entre vértices
 // Densidade máxima da prévia de textura (tx/m) enquanto a textura final é gerada
 const PREVIEW_DENSITY = 6;
 const seabedMaterial = new THREE.MeshLambertMaterial({ color: 0x3d5c58 });
@@ -17,6 +17,24 @@ const seabedMaterial = new THREE.MeshLambertMaterial({ color: 0x3d5c58 });
 // não por coordenada: um chunk descarregado e recriado ganha um id novo)
 let nextVegetationOwner = 1;
 
+export interface ChunkOptions {
+  enableVegetation?: boolean;
+  enableDetailFlora?: boolean;
+  onSceneChanged?: () => void;
+  textureDensity?: number;
+  segments?: number;
+  /**
+   * Área coberta, quando não é o chunk padrão (cx, cz): usado pelos blocos distantes que juntam
+   * vários chunks numa malha e numa textura só.
+   */
+  area?: { centerX: number; centerZ: number; size: number };
+}
+
+/**
+ * Pedaço quadrado de relevo: malha e textura geradas num worker, vegetação opcional.
+ * Normalmente é um chunk de CONFIG.CHUNK_SIZE centrado em (cx, cz) * CHUNK_SIZE; com `area`
+ * vira um bloco maior de LOD distante.
+ */
 export class Chunk {
   public readonly cx: number;
   public readonly cz: number;
@@ -28,11 +46,14 @@ export class Chunk {
   private vegetationMgr?: VegetationManager;
   private isDestroyed: boolean = false;
 
+  private readonly centerX: number;
+  private readonly centerZ: number;
+  private readonly size: number;
+
   private forge: TerrainTextureForge;
   private chunkMaterial?: THREE.MeshToonMaterial;
   private topTex?: THREE.DataTexture;
   private topDarkTex?: THREE.DataTexture;
-  private bioTex?: THREE.DataTexture;
   private cancelRequest?: () => void;
   private onSceneChanged?: () => void;
   private terrainGeo?: THREE.BufferGeometry;
@@ -48,50 +69,51 @@ export class Chunk {
     cz: number,
     terrainGen: TerrainGenerator,
     vegetationMgr: VegetationManager,
-    _terrainMaterial: THREE.Material,
-    _waterMaterial: THREE.Material,
-    enableVegetation: boolean = true,
-    forge?: TerrainTextureForge,
-    enableDetailFlora: boolean = true,
-    onSceneChanged?: () => void,
-    textureDensity?: number,
-    segments?: number
+    forge: TerrainTextureForge,
+    options: ChunkOptions = {}
   ) {
     this.cx = cx;
     this.cz = cz;
-    this.onSceneChanged = onSceneChanged;
+    this.onSceneChanged = options.onSceneChanged;
     this.group = new THREE.Group();
-    this.group.name = `chunk_${cx}_${cz}`;
+    this.group.name = options.area ? `farTile_${cx}_${cz}` : `chunk_${cx}_${cz}`;
+    this.forge = forge;
 
-    this.forge = forge || TerrainTextureForge.getInstance(terrainGen.getSeed());
+    this.size = options.area?.size ?? CONFIG.CHUNK_SIZE;
+    this.centerX = options.area?.centerX ?? cx * CONFIG.CHUNK_SIZE;
+    this.centerZ = options.area?.centerZ ?? cz * CONFIG.CHUNK_SIZE;
 
-    const size = CONFIG.CHUNK_SIZE;
-    const half = size / 2;
-    const startX = this.cx * size;
-    const startZ = this.cz * size;
-
-    // Teste ultrarrápido: se o chunk inteiro estiver em oceano sob a água (centro e 4 cantos < -2.5m)
-    const hCenter = terrainGen.getHeight(startX, startZ);
-    const hC1 = terrainGen.getHeight(startX - half, startZ - half);
-    const hC2 = terrainGen.getHeight(startX + half, startZ - half);
-    const hC3 = terrainGen.getHeight(startX - half, startZ + half);
-    const hC4 = terrainGen.getHeight(startX + half, startZ + half);
-
-    if (hCenter < -2.5 && hC1 < -2.5 && hC2 < -2.5 && hC3 < -2.5 && hC4 < -2.5) {
+    if (this.isAllUnderwater(terrainGen)) {
+      // Só geometria (sem textura), com o material barato de fundo do mar
       this.isSubmerged = true;
-      this.buildSeabed(terrainGen);
+      this.targetSegments = Math.max(8, Math.round(this.size / SEABED_SPACING));
+      this.refine();
       return;
     }
 
     // Malha e textura são geradas juntas num worker; a malha aparece quando as duas chegam.
-    this.targetDensity = textureDensity ?? this.forge.density;
-    this.targetSegments = segments ?? CONFIG.CHUNK_SEGMENTS;
+    this.targetDensity = options.textureDensity ?? this.forge.density;
+    this.targetSegments = options.segments ?? CONFIG.CHUNK_SEGMENTS;
     this.refine();
 
     // Popula árvores, arbustos e rochas apenas se permitido pelo LOD de distância
-    if (enableVegetation) {
-      this.populateVegetation(vegetationMgr, terrainGen, enableDetailFlora);
+    if (options.enableVegetation) {
+      this.populateVegetation(vegetationMgr, terrainGen, options.enableDetailFlora ?? true);
     }
+  }
+
+  /** Teste rápido numa grade com no máx. 32m entre pontos: tudo abaixo de -2.5m? */
+  private isAllUnderwater(terrainGen: TerrainGenerator): boolean {
+    const n = Math.max(2, Math.ceil(this.size / 32));
+    const x0 = this.centerX - this.size / 2;
+    const z0 = this.centerZ - this.size / 2;
+    const step = this.size / n;
+    for (let iz = 0; iz <= n; iz++) {
+      for (let ix = 0; ix <= n; ix++) {
+        if (terrainGen.getHeight(x0 + ix * step, z0 + iz * step) >= -2.5) return false;
+      }
+    }
+    return true;
   }
 
   public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator, enableDetailFlora: boolean = true): void {
@@ -102,26 +124,9 @@ export class Chunk {
     this.onSceneChanged?.();
   }
 
-  private buildSeabed(terrainGen: TerrainGenerator): void {
-    const size = CONFIG.CHUNK_SIZE;
-    const startX = this.cx * size;
-    const startZ = this.cz * size;
-
-    const geo = new THREE.PlaneGeometry(size, size, SEABED_SEGMENTS, SEABED_SEGMENTS);
-    geo.rotateX(-Math.PI / 2);
-    const pos = geo.attributes.position;
-    for (let i = 0; i < pos.count; i++) {
-      pos.setY(i, terrainGen.getHeight(startX + pos.getX(i), startZ + pos.getZ(i)));
-    }
-    pos.needsUpdate = true;
-    geo.computeVertexNormals();
-    geo.computeBoundingSphere();
-    geo.computeBoundingBox();
-
-    this.terrainMesh = new THREE.Mesh(geo, seabedMaterial);
-    this.terrainMesh.position.set(startX, 0, startZ);
-    this.group.add(this.terrainMesh);
-    this.onSceneChanged?.();
+  /** A malha já está na cena (primeira resposta do worker chegou). */
+  public isReady(): boolean {
+    return !!this.terrainMesh;
   }
 
   /** Sobe o LOD desejado (densidade de texels e subdivisões da malha); nunca desce. */
@@ -138,7 +143,7 @@ export class Chunk {
    * pedido. A primeira resposta cria a malha; as seguintes trocam textura/geometria sem piscar.
    */
   private refine(): void {
-    if (this.isSubmerged || this.isDestroyed || this.cancelRequest) return;
+    if (this.isDestroyed || this.cancelRequest) return;
 
     let density = this.targetDensity > this.appliedDensity ? this.targetDensity : 0;
     // Primeira textura: prévia barata (no máx. 6 tx/m) para o mundo aparecer rápido
@@ -148,10 +153,10 @@ export class Chunk {
     const segments = this.targetSegments > this.appliedSegments ? this.targetSegments : 0;
     if (density === 0 && segments === 0) return;
 
-    const size = CONFIG.CHUNK_SIZE;
-    const originX = this.cx * size - size / 2;
-    const originZ = this.cz * size - size / 2;
-    // Primeiro pedido (chunk ainda invisível) tem prioridade sobre upgrades de LOD
+    const size = this.size;
+    const originX = this.centerX - size / 2;
+    const originZ = this.centerZ - size / 2;
+    // Primeiro pedido (ainda invisível) tem prioridade sobre upgrades de LOD
     const priority = this.terrainMesh ? 1 : 0;
     const { promise, cancel } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments);
     this.cancelRequest = cancel;
@@ -160,7 +165,6 @@ export class Chunk {
       if (this.isDestroyed) {
         textures?.topTex.dispose();
         textures?.topDarkTex.dispose();
-        textures?.bioTex.dispose();
         return;
       }
       this.cancelRequest = undefined;
@@ -181,12 +185,11 @@ export class Chunk {
 
       if (textures) {
         const oldMaterial = this.chunkMaterial;
-        const oldTextures = [this.topTex, this.topDarkTex, this.bioTex];
+        const oldTextures = [this.topTex, this.topDarkTex];
         this.topTex = textures.topTex;
         this.topDarkTex = textures.topDarkTex;
-        this.bioTex = textures.bioTex;
         this.chunkMaterial = createChunkTerrainMaterial(
-          this.forge, this.topTex, this.topDarkTex, this.bioTex, originX, originZ, size, density
+          this.forge, this.topTex, this.topDarkTex, originX, originZ, size, density
         );
         this.appliedDensity = density;
         if (this.terrainMesh) this.terrainMesh.material = this.chunkMaterial;
@@ -194,10 +197,11 @@ export class Chunk {
         for (const t of oldTextures) t?.dispose();
       }
 
-      if (!this.terrainMesh && this.terrainGeo && this.chunkMaterial) {
-        this.terrainMesh = new THREE.Mesh(this.terrainGeo, this.chunkMaterial);
-        this.terrainMesh.position.set(this.cx * size, 0, this.cz * size);
-        this.terrainMesh.castShadow = true;
+      const material = this.isSubmerged ? seabedMaterial : this.chunkMaterial;
+      if (!this.terrainMesh && this.terrainGeo && material) {
+        this.terrainMesh = new THREE.Mesh(this.terrainGeo, material);
+        this.terrainMesh.position.set(this.centerX, 0, this.centerZ);
+        this.terrainMesh.castShadow = !this.isSubmerged;
         this.terrainMesh.receiveShadow = true;
         this.group.add(this.terrainMesh);
         this.onSceneChanged?.();
@@ -209,7 +213,7 @@ export class Chunk {
     }).catch((err) => {
       this.cancelRequest = undefined;
       if (!this.isDestroyed && err?.message !== 'cancelled') {
-        console.error(`Falha ao gerar o chunk ${this.cx}_${this.cz}:`, err);
+        console.error(`Falha ao gerar ${this.group.name}:`, err);
       }
     });
   }
@@ -224,31 +228,17 @@ export class Chunk {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
 
-    // Cancela a requisição de textura no worker pool se o chunk ainda não estiver pronto
+    // Cancela a requisição no worker pool se ainda não tiver chegado
     if (this.cancelRequest) {
       this.cancelRequest();
       this.cancelRequest = undefined;
     }
 
-    // Descarta a geometria do chunk (existe mesmo se a malha ainda esperava a primeira textura)
-    if (this.terrainMesh && this.terrainMesh.geometry) {
-      this.terrainMesh.geometry.dispose();
-    }
+    // Geometria, material e texturas locais (o material de fundo do mar é compartilhado)
     this.terrainGeo?.dispose();
-
-    // Descarta material e texturas locais do chunk para liberação total de VRAM
-    if (this.chunkMaterial) {
-      this.chunkMaterial.dispose();
-    }
-    if (this.topTex) {
-      this.topTex.dispose();
-    }
-    if (this.topDarkTex) {
-      this.topDarkTex.dispose();
-    }
-    if (this.bioTex) {
-      this.bioTex.dispose();
-    }
+    this.chunkMaterial?.dispose();
+    this.topTex?.dispose();
+    this.topDarkTex?.dispose();
 
     // Libera as instâncias de vegetação deste chunk no pool compartilhado
     this.vegetationMgr?.releaseChunk(this.vegetationOwner);

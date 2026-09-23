@@ -31,7 +31,6 @@ const GLSL_NOISE = `
 export interface ChunkMaterialUniforms {
   uTop: { value: THREE.DataTexture };
   uTopD: { value: THREE.DataTexture };
-  uBio: { value: THREE.DataTexture };
   uWallA: { value: THREE.DataTexture };
   uWallB: { value: THREE.DataTexture };
   uWallC: { value: THREE.DataTexture };
@@ -53,7 +52,6 @@ export function createChunkTerrainMaterial(
   forge: TerrainTextureForge,
   topTex: THREE.DataTexture,
   topDarkTex: THREE.DataTexture,
-  bioTex: THREE.DataTexture,
   originX: number,
   originZ: number,
   chunkSize: number = CONFIG.CHUNK_SIZE,
@@ -76,7 +74,6 @@ export function createChunkTerrainMaterial(
   const customUniforms: ChunkMaterialUniforms = {
     uTop:   { value: topTex },
     uTopD:  { value: topDarkTex },
-    uBio:   { value: bioTex },
     uWallA: { value: forge.wallA },
     uWallB: { value: forge.wallB },
     uWallC: { value: forge.wallC },
@@ -120,8 +117,11 @@ export function createChunkTerrainMaterial(
     vec2 dWallX = (wallOnX ? dFdx(vWPos.zy) : dFdx(vWPos.xy)) * wallScale * wallRowScale;
     vec2 dWallY = (wallOnX ? dFdy(vWPos.zy) : dFdy(vWPos.xy)) * wallScale * wallRowScale;
 
-    // Faixa vertical do atlas correspondente ao bioma lido da textura de bioma
-    float bi = floor(texture2D(uBio, uvTop).r * 255.0 + 0.5);
+    // Faixa vertical do atlas correspondente ao bioma, guardado no alfa da textura escura.
+    // texelFetch lê o valor exato do texel (sem filtro nem mipmap misturando índices).
+    ivec2 topSize = textureSize(uTopD, 0);
+    ivec2 bioTexel = clamp(ivec2(uvTop * vec2(topSize)), ivec2(0), topSize - 1);
+    float bi = floor(texelFetch(uTopD, bioTexel, 0).a * 255.0 + 0.5);
     uvW = vec2(uvW.x, (fract(uvW.y) + bi) / ${NB.toFixed(1)});
 
     // Rocha na base, solo/estratos acima — limite com dither
@@ -234,7 +234,6 @@ export function createChunkTerrainMaterial(
     Object.assign(sh.uniforms, {
       uTop: customUniforms.uTop,
       uTopD: customUniforms.uTopD,
-      uBio: customUniforms.uBio,
       uWallA: customUniforms.uWallA,
       uWallB: customUniforms.uWallB,
       uWallC: customUniforms.uWallC,
@@ -258,7 +257,6 @@ export function createChunkTerrainMaterial(
     const uniformDecls = `
       uniform sampler2D uTop;
       uniform sampler2D uTopD;
-      uniform sampler2D uBio;
       uniform sampler2D uWallA;
       uniform sampler2D uWallB;
       uniform sampler2D uWallC;
@@ -293,6 +291,6 @@ export function createChunkTerrainMaterial(
 export function createTerrainMaterial(): THREE.ShaderMaterial {
   const forge = TerrainTextureForge.getInstance(42);
   const dummyTex = forge.gradMap;
-  const mat = createChunkTerrainMaterial(forge, dummyTex, dummyTex, dummyTex, 0, 0, CONFIG.CHUNK_SIZE);
+  const mat = createChunkTerrainMaterial(forge, dummyTex, dummyTex, 0, 0, CONFIG.CHUNK_SIZE);
   return mat as unknown as THREE.ShaderMaterial;
 }
