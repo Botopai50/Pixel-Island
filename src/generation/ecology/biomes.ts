@@ -21,6 +21,17 @@ export class BiomeManager {
     return this.seed;
   }
 
+  /**
+   * Latitude usada para as regras polares, deslocada por ruído em duas escalas: ±140m em ondas
+   * longas (~450m) e ±45m em ondas curtas (~110m), criando penínsulas e reentrâncias.
+   * Com o z puro, a fronteira da tundra era uma linha reta perfeita atravessando o mapa.
+   */
+  public polarLatitudeZ(x: number, z: number): number {
+    return z
+      + this.noise.fbm2D(x * 0.0022 + 311.0, z * 0.0022 - 97.0, 3) * 140.0
+      + this.noise.fbm2D(x * 0.009 - 53.0, z * 0.009 + 171.0, 2) * 45.0;
+  }
+
   public getClimate(x: number, z: number, elevation: number, moistureBonus: number = 0.0): { temperature: number; moisture: number } {
     const latitudeGrad = Math.sin(z * 0.0006) * 0.28;
     const climateNoise = this.noise.fbm2D(x * 0.0012, z * 0.0012, 3) * 0.28;
@@ -119,6 +130,7 @@ export class BiomeManager {
     const moisture = clamp(moistureNoise * 0.75 + moistureBonus * 0.45, 0.0, 1.0);
 
     const isSteepSlope = slope > CONFIG.VEGETATION.MAX_SLOPE_FOR_TREES;
+    const polarZ = this.polarLatitudeZ(x, z);
 
     // 1. Zonas Vulcânicas Especiais (Caldeira & Campos de Basalto)
     if (specialEnv?.volcanoInfluence && specialEnv.volcanoInfluence > 0.18) {
@@ -180,7 +192,7 @@ export class BiomeManager {
     }
 
     // 4. Planície Ártica de Gelo ao Nível do Mar (Sem ser picos nevados)
-    if ((specialEnv?.iceInfluence && specialEnv.iceInfluence > 0.15) || (z < -520.0 && elevation < 35.0) || (temperature < 0.28 && elevation < 25.0)) {
+    if ((specialEnv?.iceInfluence && specialEnv.iceInfluence > 0.15) || (polarZ < -520.0 && elevation < 35.0) || (temperature < 0.28 && elevation < 25.0)) {
       return {
         type: BiomeType.FROZEN_TUNDRA,
         moisture: 0.75,
@@ -262,7 +274,7 @@ export class BiomeManager {
     // 8. Faixa Costeira Imediata (Praia Arenosa Tropical Clássica ou Costa Polar Glacial)
     if (elevation <= CONFIG.BEACH_HEIGHT && slope < 0.55) {
       // Se a costa estiver em zona de frio polar ou sob influência de gelo ártico, é tundra gelada, NUNCA praia tropical com coqueiros!
-      if ((specialEnv?.iceInfluence && specialEnv.iceInfluence > 0.08) || z <= -480.0 || temperature < 0.32) {
+      if ((specialEnv?.iceInfluence && specialEnv.iceInfluence > 0.08) || polarZ <= -480.0 || temperature < 0.32) {
         return {
           type: BiomeType.FROZEN_TUNDRA,
           moisture: 0.65,

@@ -54,10 +54,11 @@ export class TerrainGenerator {
   public getHeight(x: number, z: number): number {
     const { landFactor, coastDist, spineFactor } = this.macroGeo.getLandmassMask(x, z);
 
-    // 1. Mar aberto profundo / fundo abissal do oceano
-    if (landFactor <= 0.001 || coastDist <= -200.0) {
-      const oceanFloorNoise = this.noise.fbm2D(x * 0.004, z * 0.004, 3) * 8.0;
-      return CONFIG.OCEAN_FLOOR + oceanFloorNoise;
+    // 1. Mar aberto profundo / fundo abissal do oceano. Só depois de 200m da costa: o landFactor
+    // zera já a ~24m, e retornar aqui antes criava um penhasco submarino (de -2m para -40m em
+    // poucos metros) - a água passava de rasa a abismo de uma vez.
+    if (coastDist <= -200.0) {
+      return this.oceanFloor(x, z);
     }
 
     const macroRelief = this.macroGeo.getMacroRelief(x, z, spineFactor, landFactor);
@@ -76,14 +77,7 @@ export class TerrainGenerator {
 
     // 2. Transição Costeira Perfeitamente Contínua C1 (Sem degraus, falésias artificiais ou dentes de serra)
     if (coastDist <= 0.0) {
-      // Mar adentro: declive subaquático suave a partir de 0.0m na arrebentação
-      const oceanDist = -coastDist;
-      const shallowBed = -oceanDist * 0.08;
-      const deepProg = smoothstep(15.0, 180.0, oceanDist);
-      const deepBed = lerp(-1.2, CONFIG.OCEAN_FLOOR, deepProg);
-      const bedNoiseDamp = smoothstep(15.0, 60.0, oceanDist);
-      const bedNoise = (mesoNoise * 0.25) * bedNoiseDamp;
-      rawElevation = lerp(shallowBed, deepBed + bedNoise, deepProg);
+      rawElevation = this.continentalShelf(x, z, coastDist, mesoNoise);
     } else {
       // Em terra firme: rampa suave da praia com inclinação idêntica na linha d'água
       const beachSlope = 0.08;
@@ -95,14 +89,7 @@ export class TerrainGenerator {
     }
 
     const hydro = this.hydrology.queryHydrology(x, z, rawElevation);
-    if (hydro.lakeOffset !== 0 && hydro.riverCarving > 0) {
-      const riverH = rawElevation - hydro.riverCarving;
-      rawElevation = Math.min(rawElevation + hydro.lakeOffset, riverH);
-    } else if (hydro.lakeOffset !== 0) {
-      rawElevation += hydro.lakeOffset;
-    } else if (hydro.riverCarving > 0) {
-      rawElevation = rawElevation - hydro.riverCarving;
-    }
+    rawElevation = this.applyHydrology(rawElevation, hydro, coastDist);
 
     // 3. Aplicação de Relevos Geológicos Especiais (Vulcões, Cânions, Termalismo)
     const vRes = this.volcanoGen.query(x, z);
@@ -128,127 +115,54 @@ export class TerrainGenerator {
     return clamp(rawElevation, CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
   }
 
+  /**
+   * Lagos e rios entalhando o relevo. O leito do rio some aos poucos nos primeiros 35m mar
+   * adentro: sem isso ele continuava como uma vala reta e escura pela plataforma rasa.
+   */
+  private applyHydrology(
+    elevation: number,
+    hydro: { lakeOffset: number; riverCarving: number },
+    coastDist: number
+  ): number {
+    const seaFade = coastDist < 0.0 ? smoothstep(-35.0, 0.0, coastDist) : 1.0;
+    const riverCarving = hydro.riverCarving * seaFade;
+    if (hydro.lakeOffset !== 0 && riverCarving > 0) {
+      return Math.min(elevation + hydro.lakeOffset, elevation - riverCarving);
+    }
+    if (hydro.lakeOffset !== 0) return elevation + hydro.lakeOffset;
+    if (riverCarving > 0) return elevation - riverCarving;
+    return elevation;
+  }
+
+  private oceanFloor(x: number, z: number): number {
+    return CONFIG.OCEAN_FLOOR + this.noise.fbm2D(x * 0.004, z * 0.004, 3) * 8.0;
+  }
+
+  /**
+   * Plataforma continental: da arrebentação (0m) até 200m mar adentro, o fundo desce aos poucos
+   * até o assoalho oceânico, terminando exatamente em oceanFloor() para não haver degrau.
+   */
+  private continentalShelf(x: number, z: number, coastDist: number, mesoNoise: number): number {
+    const oceanDist = -coastDist;
+    const shallowBed = -oceanDist * 0.08;
+    const deepProg = smoothstep(15.0, 180.0, oceanDist);
+    const deepBed = lerp(-1.2, CONFIG.OCEAN_FLOOR, deepProg);
+    const nearNoise = (mesoNoise * 0.25) * smoothstep(15.0, 60.0, oceanDist);
+    const farNoise = deepProg > 0.0 ? this.oceanFloor(x, z) - CONFIG.OCEAN_FLOOR : 0.0;
+    const bedNoise = lerp(nearNoise, farNoise, deepProg);
+    return lerp(shallowBed, deepBed + bedNoise, deepProg);
+  }
+
   public queryGeothermal(x: number, z: number, currentElevation: number) {
     return this.geothermalGen.query(x, z, currentElevation);
   }
 
-  public getIceInfluence(_x: number, z: number, y: number): number {
-    if (z > -480.0) return 0.0;
-    const latProg = clamp((-z - 480.0) / 280.0, 0.0, 1.0);
+  public getIceInfluence(x: number, z: number, y: number): number {
+    const polarZ = this.biomeMgr.polarLatitudeZ(x, z);
+    if (polarZ > -480.0) return 0.0;
+    const latProg = clamp((-polarZ - 480.0) / 280.0, 0.0, 1.0);
     const lowAltBonus = smoothstep(32.0, 4.0, y);
     return latProg * (0.4 + 0.6 * lowAltBonus);
-  }
-
-  public getTerrainExtra(x: number, z: number, y: number): [number, number, number, number] {
-    const vRes = this.volcanoGen.query(x, z);
-    const volcanoVal = vRes.isLava ? 1.0 : (vRes.influence * 0.85);
-
-    const cRes = this.canyonGen.query(x, z, y);
-    const canyonVal = cRes.influence;
-
-    const gRes = this.queryGeothermal(x, z, y);
-    const geothermalVal = gRes.influence > 0 ? (gRes.isThermalPool ? 0.9 : 0.5) : 0.0;
-
-    const iceVal = this.getIceInfluence(x, z, y);
-
-    return [volcanoVal, canyonVal, geothermalVal, iceVal];
-  }
-
-  /**
-   * Avaliação unificada de vértice para malhas de chunk:
-   * Calcula elevação, clima e atributos especiais em uma ÚNICA passagem,
-   * poupando 50% de chamadas redundantes de ruído e consultas geológicas por vértice.
-   */
-  public getVertexData(x: number, z: number): {
-    height: number;
-    temperature: number;
-    moisture: number;
-    extra: [number, number, number, number];
-  } {
-    const { landFactor, coastDist, spineFactor } = this.macroGeo.getLandmassMask(x, z);
-
-    if (landFactor <= 0.001 || coastDist <= -200.0) {
-      const oceanFloorNoise = this.noise.fbm2D(x * 0.004, z * 0.004, 3) * 8.0;
-      const h = CONFIG.OCEAN_FLOOR + oceanFloorNoise;
-      const iceVal = this.getIceInfluence(x, z, h);
-      return {
-        height: h,
-        temperature: 0.5,
-        moisture: 1.0,
-        extra: [0, 0, 0, iceVal]
-      };
-    }
-
-    const macroRelief = this.macroGeo.getMacroRelief(x, z, spineFactor, landFactor);
-    const mesoNoise = this.noise.fbm2D(x * 0.015, z * 0.015, 4, 0.45, 2.1) * 7.5;
-    const microNoise = this.noise.noise2D(x * 0.06, z * 0.06) * 1.4;
-
-    let rawElevation: number;
-
-    // 2. Transição Costeira Perfeitamente Contínua C1 (Sem degraus, falésias artificiais ou dentes de serra)
-    if (coastDist <= 0.0) {
-      // Mar adentro: declive subaquático suave a partir de 0.0m na arrebentação
-      const oceanDist = -coastDist;
-      const shallowBed = -oceanDist * 0.08;
-      const deepProg = smoothstep(15.0, 180.0, oceanDist);
-      const deepBed = lerp(-1.2, CONFIG.OCEAN_FLOOR, deepProg);
-      const bedNoiseDamp = smoothstep(15.0, 60.0, oceanDist);
-      const bedNoise = (mesoNoise * 0.25) * bedNoiseDamp;
-      rawElevation = lerp(shallowBed, deepBed + bedNoise, deepProg);
-    } else {
-      // Em terra firme: rampa suave da praia com inclinação idêntica na linha d'água
-      const beachSlope = 0.08;
-      const beachRamp = coastDist * beachSlope;
-      const inlandProg = smoothstep(25.0, 75.0, coastDist);
-      const noiseDamp = smoothstep(0.0, 25.0, coastDist);
-      const inlandRelief = (macroRelief + mesoNoise + microNoise * noiseDamp) * landFactor;
-      rawElevation = lerp(beachRamp, Math.max(beachRamp, inlandRelief), inlandProg);
-    }
-
-    const hydro = this.hydrology.queryHydrology(x, z, rawElevation);
-    if (hydro.lakeOffset !== 0 && hydro.riverCarving > 0) {
-      const riverH = rawElevation - hydro.riverCarving;
-      rawElevation = Math.min(rawElevation + hydro.lakeOffset, riverH);
-    } else if (hydro.lakeOffset !== 0) {
-      rawElevation += hydro.lakeOffset;
-    } else if (hydro.riverCarving > 0) {
-      rawElevation = rawElevation - hydro.riverCarving;
-    }
-
-    const vRes = this.volcanoGen.query(x, z);
-    if (vRes.influence > 0.0) {
-      const tVolcano = smoothstep(0.0, 0.40, vRes.influence);
-      rawElevation = lerp(rawElevation, Math.max(rawElevation, vRes.heightOffset), tVolcano);
-      if (vRes.isCaldera) {
-        rawElevation = vRes.heightOffset;
-      }
-    }
-
-    const cRes = this.canyonGen.query(x, z, rawElevation);
-    if (cRes.carveDepth > 0.0) {
-      rawElevation = Math.max(rawElevation - cRes.carveDepth, 2.5);
-    }
-
-    const gRes = this.queryGeothermal(x, z, rawElevation);
-    if (gRes.heightOffset !== 0) {
-      rawElevation += gRes.heightOffset;
-    }
-
-    const height = clamp(rawElevation, CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
-
-    const volcanoVal = vRes.isLava ? 1.0 : (vRes.influence * 0.85);
-    const canyonVal = cRes.influence;
-    const geothermalVal = gRes.influence > 0 ? (gRes.isThermalPool ? 0.9 : 0.5) : 0.0;
-    const iceVal = this.getIceInfluence(x, z, height);
-
-    const climate = this.biomeMgr.getClimate(x, z, height, hydro.moistureBonus);
-
-    return {
-      height,
-      temperature: climate.temperature,
-      moisture: climate.moisture,
-      extra: [volcanoVal, canyonVal, geothermalVal, iceVal]
-    };
   }
 
   /**

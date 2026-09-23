@@ -188,7 +188,9 @@ let beachOnlyPalms = true;
 for (let bx = -600; bx <= 600; bx += 20) {
   for (let bz = -440; bz <= 600; bz += 20) {
     const p = terrain.getPoint(bx, bz);
-    if (p.height > 0.05 && p.height <= CONFIG.BEACH_HEIGHT && p.slope < 0.50) {
+    // Costa ártica (fronteira polar sinuosa) é tundra congelada por regra, não praia tropical
+    const isPolarCoast = terrain.getBiomeManager().polarLatitudeZ(bx, bz) <= -480.0;
+    if (!isPolarCoast && p.height > 0.05 && p.height <= CONFIG.BEACH_HEIGHT && p.slope < 0.50) {
       beachSampleCount++;
       if (p.biome.type !== BiomeType.BEACH || p.biome.treeTypeDistribution.cactus !== 0.0 || p.biome.treeTypeDistribution.coastalPalm !== 1.0) {
         beachOnlyPalms = false;
@@ -203,8 +205,9 @@ assert(beachOnlyPalms, 'Toda a orla da praia possui 100% BiomeType.BEACH com exc
 // Verificação Rigorosa do Bioma de Gelo / Ártico (NENHUM coqueiro no gelo)
 let arcticSampleCount = 0;
 let arcticZeroPalms = true;
+// A fronteira polar é sinuosa (até ±185m em torno de z=-520); amostra só o interior garantidamente polar.
 for (let ax = -600; ax <= 600; ax += 20) {
-  for (let az = -900; az <= -520; az += 20) {
+  for (let az = -900; az <= -720; az += 20) {
     const p = terrain.getPoint(ax, az);
     if (p.height > 0.05 && !p.isWater) {
       arcticSampleCount++;
@@ -275,8 +278,8 @@ const clipmap = new ShadowClipmap(mockScene);
 
 assert(clipmap.getCascadeCount() === 3, 'ShadowClipmap gerencia exatamente 3 níveis concêntricos');
 assert(clipmap.getConfigs()[0].radius === 35, 'Nível 0 (Near) cobre raio de 35m (frustum 70x70m, resolução 3.4cm/px)');
-assert(clipmap.getConfigs()[1].radius === 120, 'Nível 1 (Mid) cobre raio de 120m (frustum 240x240m, resolução 11.7cm/px)');
-assert(clipmap.getConfigs()[2].radius === 450, 'Nível 2 (Far) cobre raio de 450m (frustum 900x900m, resolução 43.9cm/px)');
+assert(clipmap.getConfigs()[1].radius === 200, 'Nível 1 (Mid) cobre raio de 200m (frustum 400x400m, resolução 19.5cm/px)');
+assert(clipmap.getConfigs()[2].radius === 600, 'Nível 2 (Far) cobre raio de 600m (frustum 1200x1200m, resolução 58.6cm/px)');
 
 const lights = clipmap.getLights();
 assert(lights.every(l => l.castShadow === true), 'Todas as 3 luzes do Clipmap possuem castShadow ativo');

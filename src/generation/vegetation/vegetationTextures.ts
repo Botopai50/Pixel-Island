@@ -18,16 +18,16 @@ export class VegetationTextures {
   private static weatheredWoodTex: THREE.CanvasTexture | null = null;
 
   /**
-   * Configura e retorna uma textura Three.js com filtragem estritamente Nearest Neighbor
-   * para preservar a nitidez e a aparência pixelada dos texels em 3D.
+   * Pixel nítido de perto (magFilter Nearest) e mipmap de longe, para a textura não cintilar
+   * quando cada pixel da tela cobre vários texels.
    */
   private static createPixelTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
     const tex = new THREE.CanvasTexture(canvas);
     tex.wrapS = THREE.RepeatWrapping;
     tex.wrapT = THREE.RepeatWrapping;
     tex.magFilter = THREE.NearestFilter;
-    tex.minFilter = THREE.NearestFilter;
-    tex.generateMipmaps = false;
+    tex.minFilter = THREE.NearestMipmapLinearFilter;
+    tex.generateMipmaps = true;
     return tex;
   }
 

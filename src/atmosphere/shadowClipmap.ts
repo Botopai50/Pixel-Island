@@ -12,37 +12,45 @@ export interface ClipmapCascadeConfig {
 
 export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
   // Nível 0: Detalhes próximos - texels ultra-nítidos de ~3.4cm (personagem, folhas, galhos, rochas)
-  // normalBias calibrado para 0.005 (5mm) para ancoragem de contato rente ao solo (Peter Panning zero)
+  // normalBias ~1.5 texel: o terreno projeta sombra pelas faces da frente (shadowSide
+  // FrontSide), então sem essa folga o chão iluminado se auto-sombrearia em listras (acne).
   {
     radius: 35,
     mapSize: 2048,
     bias: -0.00002,
-    normalBias: 0.005,
-    near: 5,
-    far: 240,
-    lightDistance: 120
+    normalBias: 0.05,
+    near: 1,
+    far: 1050,
+    lightDistance: 800
   },
-  // Nível 1: Detalhes intermediários - LOD balanceado (1024x1024, economia de 75% de texels)
+  // Nível 1: Detalhes intermediários (2048 → ~0.2m/texel). Com 1024 (~0.4m) e a folga
+  // necessária contra acne, ondulações de poucos metros perdiam a sombra nessa faixa, e a
+  // mesma sombra aparecia/sumia conforme a câmera trocava de faixa.
   {
-    radius: 120,
-    mapSize: 1024,
+    radius: 200,
+    mapSize: 2048,
     bias: -0.00005,
-    normalBias: 0.012,
-    near: 10,
-    far: 480,
-    lightDistance: 240
-  },
-  // Nível 2: Paisagem distante - LOD balanceado (1024x1024, economia de 75% de texels)
-  {
-    radius: 450,
-    mapSize: 1024,
-    bias: -0.00010,
-    normalBias: 0.025,
-    near: 10,
+    normalBias: 0.25,
+    near: 1,
     far: 1200,
-    lightDistance: 600
+    lightDistance: 800
+  },
+  // Nível 2: Paisagem distante - agora efetivamente usado (antes renderizava sem nenhum efeito
+  // visual, pois a luz ficava com intensidade 0 e o resultado nunca era lido pelo shader).
+  // Raio ampliado para cobrir todo o raio de desenho padrão (~512m) e além.
+  {
+    radius: 600,
+    mapSize: 2048,
+    bias: -0.00010,
+    normalBias: 0.75,
+    near: 1,
+    far: 2000,
+    lightDistance: 1000
   }
 ];
+// lightDistance grande em todas as faixas: a câmera do sol precisa começar ANTES de qualquer
+// obstáculo alto na direção da luz. Com 120m (faixa 0) um vulcão a ~150m do lado do sol ficava
+// atrás do plano near, e a sombra dele sumia justamente perto do jogador.
 
 /**
  * Sistema de Shadow Clipmap Concêntrico (Hierarchical Concentric Cascaded Shadow Maps).

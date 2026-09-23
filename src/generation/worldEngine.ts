@@ -12,6 +12,7 @@ import { createTerrainMaterial } from './shaders/terrainShader.ts';
 import { createWaterMaterial, WATER_PRESETS } from './shaders/waterShader.ts';
 import { createSeamlessCascadedWaterGeometry } from './waterGeometry.ts';
 import { TerrainTextureForge } from './terrain/terrainTextureForge.ts';
+import { WaterBiomeMap } from './hydrology/waterBiomeMap.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
 import { CONFIG } from '../config.ts';
 
@@ -33,6 +34,7 @@ export class WorldEngine {
   private chunkMgr: ChunkManager;
   private terrainMaterial: THREE.Material;
   private waterMaterial: THREE.ShaderMaterial;
+  private waterBiomeMap: WaterBiomeMap;
   public forge: TerrainTextureForge;
 
   // Novos Subsistemas Geológicos, Hidrológicos e Biológicos
@@ -64,6 +66,10 @@ export class WorldEngine {
     this.forge = TerrainTextureForge.getInstance(numericSeed);
     this.terrainMaterial = createTerrainMaterial();
     this.waterMaterial = createWaterMaterial();
+    this.waterBiomeMap = new WaterBiomeMap(this.terrainGen);
+    this.waterMaterial.uniforms.uBiomeMap.value = this.waterBiomeMap.texture;
+    this.waterMaterial.uniforms.uBiomeMapOrigin.value = this.waterBiomeMap.origin;
+    this.waterMaterial.uniforms.uBiomeMapSpan.value = this.waterBiomeMap.span;
 
     this.chunkMgr = new ChunkManager(
       this.scene,
@@ -117,6 +123,16 @@ export class WorldEngine {
     this.forge.updateParams(params, density);
     this.chunkMgr.clearAll();
     this.chunkMgr.update(this.lastObserverX, this.lastObserverZ, true);
+  }
+
+  /** Texels por metro efetivamente desenhados no chão (densidade do forge × escala do pixel). */
+  public getTexelDensity(): number {
+    return this.forge.density * (this.forge.params.pixelScale || 1.0);
+  }
+
+  public updatePixelScale(scale: number): void {
+    this.forge.params.pixelScale = scale;
+    this.chunkMgr.updatePixelScale(scale);
   }
 
   public queryPoint(x: number, z: number): TerrainPoint {
@@ -180,6 +196,7 @@ export class WorldEngine {
     }
     const newSeed = this.seedManager.getNumericSeed();
     this.terrainGen.reseed(newSeed);
+    this.waterBiomeMap.invalidate();
     this.geothermalMgr.reseed(newSeed);
     this.lavaFluidMgr.rebuild(this.terrainGen.getVolcanoGenerator());
     this.inlandWaterMgr.rebuild(this.terrainGen.getHydrology());
@@ -214,6 +231,9 @@ export class WorldEngine {
 
   public updateSimulation(dt: number): void {
     this.waterMaterial.uniforms.uTime.value += dt;
+    this.waterMaterial.uniforms.uTexelDensity.value = this.getTexelDensity();
+    this.waterBiomeMap.update(this.lastObserverX, this.lastObserverZ);
+    this.waterMaterial.uniforms.uBiomeMapReady.value = this.waterBiomeMap.ready ? 1.0 : 0.0;
     if ((this.terrainMaterial as any)?.uniforms?.uTime) {
       (this.terrainMaterial as any).uniforms.uTime.value += dt;
     }

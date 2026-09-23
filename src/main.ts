@@ -7,6 +7,7 @@ import { PegmanWidget } from './ui/pegmanWidget.ts';
 import { TextureForgeWidget } from './ui/textureForgeWidget.ts';
 import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
+import { setForgeTextureAnisotropy, DEFAULT_D } from './generation/terrain/terrainTextureForge.ts';
 
 /**
  * Aplicação Principal: Procedural Island Explorer
@@ -46,14 +47,20 @@ class App {
   private reflectionCameraPerspective!: THREE.PerspectiveCamera;
   private reflectionRenderTarget!: THREE.WebGLRenderTarget;
   private reflectTextureMatrix: THREE.Matrix4 = new THREE.Matrix4();
+  private reflectionClipPlane: THREE.Plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private reflectionClipPlanes: THREE.Plane[] = [this.reflectionClipPlane];
+  private noClipPlanes: THREE.Plane[] = [];
   private lastRipplePos: THREE.Vector3 | null = null;
   private shadowsNeedUpdate: boolean = true;
+  private lastShadowSceneVersion: number = -1;
+  private lastSceneShadowRefresh: number = 0;
   private lastShadowPos: THREE.Vector3 = new THREE.Vector3();
 
   private clock: THREE.Clock = new THREE.Clock();
 
   constructor() {
     this.init();
+    (window as any).__app = this;
   }
 
   private init(): void {
@@ -74,6 +81,8 @@ class App {
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap;
     container.appendChild(this.renderer.domElement);
+    // Precisa vir antes do WorldEngine: o forge cria os atlas de parede no construtor.
+    setForgeTextureAnisotropy(Math.min(8, this.renderer.capabilities.getMaxAnisotropy()));
 
     // Criação da Cena Three.js
     this.scene = new THREE.Scene();
@@ -258,12 +267,25 @@ class App {
     this.syncAtmosphereWithWorld();
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
     this.atmosphere.update(dt, this.playerController.getCamera().position);
+    // Pixels do céu acompanham a densidade de texels do chão (1.0 = densidade padrão)
+    this.atmosphere.getSkybox().setPixelScale(this.worldEngine.getTexelDensity() / DEFAULT_D);
 
     // Verificação de histerese para atualização de sombras sob demanda
     const distSq = playerPos.distanceToSquared(this.lastShadowPos);
     if (distSq > 0.36) { // ~0.60m de deslocamento do jogador
       this.shadowsNeedUpdate = true;
       this.lastShadowPos.copy(playerPos);
+    }
+
+    // Relevo/vegetação terminam de carregar de forma assíncrona (texturas nos workers): mesmo
+    // com o jogador parado, o shadow map precisa ser refeito quando algo novo entra na cena.
+    // Limitado a ~6x/s para não refazer os 3 mapas a cada frame durante um carregamento em massa.
+    const sceneVersion = this.worldEngine.getChunkManager().getSceneVersion();
+    const now = performance.now();
+    if (sceneVersion !== this.lastShadowSceneVersion && now - this.lastSceneShadowRefresh > 160) {
+      this.shadowsNeedUpdate = true;
+      this.lastShadowSceneVersion = sceneVersion;
+      this.lastSceneShadowRefresh = now;
     }
 
     const activeCamera = this.playerController.getCamera();
@@ -296,7 +318,12 @@ class App {
       this.renderer.shadowMap.enabled = false; // SOMBRAS DESATIVADAS NO PASSE DE REFLEXÃO
       this.renderer.setRenderTarget(this.reflectionRenderTarget);
       this.renderer.clear();
+      // Só o que está ACIMA da água pode refletir: sem esse corte, a parte submersa de rochas e
+      // o fundo do mar entravam no reflexo espelhado e apareciam "subindo" atrás dos objetos.
+      this.reflectionClipPlane.constant = 0.05 - seaLevel;
+      this.renderer.clippingPlanes = this.reflectionClipPlanes;
       this.renderer.render(this.scene, rPersp);
+      this.renderer.clippingPlanes = this.noClipPlanes;
       this.renderer.shadowMap.enabled = true; // RESTAURA SOMBRAS
 
       // Atualiza matriz de projeção de textura de reflexão

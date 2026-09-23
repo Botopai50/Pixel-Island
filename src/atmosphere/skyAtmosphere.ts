@@ -24,7 +24,7 @@ export interface TimePreset {
 export const TIME_PRESETS: Record<string, TimePreset> = {
   NOON: {
     name: 'Meio-dia Aberto (Demon\'s Mode 7)',
-    sunElevation: 62,
+    sunElevation: 45,
     sunAzimuth: 140,
     sunColor: '#fff9ed',
     ambientColor: '#94b8e0',
@@ -133,10 +133,12 @@ export class SkyAtmosphere {
     this.skybox = new CartoonSkybox();
     this.scene.add(this.skybox.getMesh());
 
-    this.hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.95);
+    // Luz uniforme (hemisférica + ambiente) bem abaixo da luz do sol: é a razão sol/uniforme
+    // que dá contraste entre encostas iluminadas e de costas, e não o brilho total.
+    this.hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.50);
     this.scene.add(this.hemiLight);
 
-    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.70);
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.28);
     this.scene.add(this.ambientLight);
 
     this.applyPreset(TIME_PRESETS.NOON);
@@ -157,7 +159,7 @@ export class SkyAtmosphere {
 
     // Sincroniza luz solar e cascatas do clipmap com o preset atual
     this.shadowClipmap.setSunDirection(sunDir);
-    this.shadowClipmap.setSunColor(preset.sunColor, 1.35);
+    this.shadowClipmap.setSunColor(preset.sunColor, 2.0);
 
     this.hemiLight.color.set(preset.skyColor);
     this.hemiLight.groundColor.set(preset.ambientColor);

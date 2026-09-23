@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { CONFIG } from '../../config.ts';
+import { getTextureWorkerPool } from './textureWorkerPool.ts';
+import { BiomeType } from '../types.ts';
 
 /* =========================================================================
    PALETAS (indexadas — 6 tons por rampa de material)
@@ -31,7 +33,14 @@ export const FROZEN: [number, number, number][]  = [[40,50,64],[64,78,96],[94,11
 export const CONIFER: [number, number, number][] = [[10,28,26],[18,46,38],[26,68,52],[38,92,66],[58,120,84],[92,152,110]];
 export const ACC_P: [number, number, number][]   = [[196,222,240],[224,240,250],[150,190,220]];
 
-export const B_TEMP = 0, B_MOUNT = 1, B_POLAR = 2;
+// Deserto
+export const DUNE: [number, number, number][]      = [[172,104,52],[200,130,66],[220,154,82],[234,176,102],[243,196,128],[249,216,158]];
+export const SANDSTONE: [number, number, number][] = [[112,52,28],[146,72,36],[180,98,50],[208,128,68],[228,158,92],[242,190,128]];
+export const REDROCK: [number, number, number][]   = [[70,36,28],[104,54,38],[138,76,50],[170,102,66],[198,132,90],[222,166,122]];
+export const SCRUB: [number, number, number][]     = [[58,58,28],[82,82,36],[110,106,46],[140,132,58],[170,160,78],[200,190,110]];
+export const ACC_D: [number, number, number][]     = [[226,190,96],[240,214,140],[196,118,70]];
+
+export const B_TEMP = 0, B_MOUNT = 1, B_POLAR = 2, B_DESERT = 3;
 
 export interface BiomeForgeDef {
   key: string;
@@ -61,10 +70,37 @@ export const BIOMES: BiomeForgeDef[] = [
     ramps:[ICE,   SNOW,  FROZEN,  CONIFER, ACC_P],
     ground:'neve',   wallHi:'gelo',    wallLo:'seixo',
     veg:'conifera', vegBias:-0.30, rockBias: 0.12, vegDens:0.30, bushes:false },
+  { key:'deserto',   label:'Deserto', swatch:'#d08a4a',
+    ramps:[DUNE,  SANDSTONE, REDROCK, SCRUB, ACC_D],
+    ground:'dunas',  wallHi:'fratura', wallLo:'bloco',
+    veg:'tufo',     vegBias:-0.35, rockBias: 0.10, vegDens:0.20, bushes:false },
 ];
 
 export const NB = BIOMES.length;
 export const RAMPS = BIOMES.map(b => b.ramps);
+
+/**
+ * Mapeia o bioma ECOLÓGICO real (o mesmo BiomeType usado pela vegetação, via
+ * BiomeManager.evaluateBiome) para uma das paletas de chão do Pixel Terrain Forge.
+ * Antes, a textura decidia sozinha (com seu próprio limiar de altura/temperatura) se um pixel
+ * era "polar" - podendo discordar da vegetação, que já plantava pinheiros nevados sobre chão
+ * pintado de areia/terra temperada. Usar a MESMA fonte de verdade elimina essa divergência.
+ */
+export const BIOME_TYPE_TO_FORGE: Partial<Record<BiomeType, number>> = {
+  [BiomeType.FROZEN_TUNDRA]: 2,
+  [BiomeType.SNOW_SUMMIT]: 2,
+  [BiomeType.CANYON_DESERT]: B_DESERT,
+  [BiomeType.DESERT_DUNES]: B_DESERT,
+  [BiomeType.VOLCANIC_FIELD]: 1,
+  [BiomeType.VOLCANIC_CALDERA]: 1,
+  // Deliberadamente de fora: ROCKY_PEAKS dispara em QUALQUER encosta íngreme (slope > 0.56),
+  // não só em maciços de verdade — a parede já ganha rocha própria no shader via biplanar,
+  // independente do bioma. ALPINE_TUNDRA e GEOTHERMAL_VALLEY cobrem áreas enormes e contínuas
+  // (qualquer terreno alto e frio, ou perto de qualquer fonte termal) — virar talus/granito
+  // cinza sólido numa região tão grande ficava monótono e nada natural; melhor deixar essas
+  // no chão temperado normal e confiar só na vegetação (líquens, pinheiros esparsos) pra
+  // comunicar "tundra alpina", como o resto do jogo já faz.
+};
 
 /* =========================================================================
    PRNG & RUÍDOS DETERMINÍSTICOS
@@ -281,6 +317,8 @@ export interface ForgeParams {
   edge: number;
   pscale: number;
   grass: number;
+  grassMountain: number;
+  grassPolar: number;
   rock: number;
   dirt: number;
   tuft: number;
@@ -288,15 +326,16 @@ export interface ForgeParams {
   spill: number;
   greens: number;
   hang: number;
-  polar: number;
-  massif: number;
+  pixelScale: number;
 }
 
 export const DEFAULT_FORGE_PARAMS: ForgeParams = {
   seed: 42,
   edge: 0.50,
   pscale: 2.2,
-  grass: 0.05,
+  grass: 0.33,
+  grassMountain: 0.00,
+  grassPolar: -0.10,
   rock: 0.00,
   dirt: 0.45,
   tuft: 0.85,
@@ -304,8 +343,7 @@ export const DEFAULT_FORGE_PARAMS: ForgeParams = {
   spill: 0.65,
   greens: 4,
   hang: 0.20,
-  polar: 0.50,
-  massif: 0.50,
+  pixelScale: 1.0,
 };
 
 export const MARGIN = 12;
@@ -440,7 +478,6 @@ let sBio: Uint8Array;
 let sGv: Float32Array;
 let sHt: Float32Array;
 let sSlT: Float32Array;
-let sColdT: Float32Array;
 let sMacroM: Float32Array;
 let sMacroRk: Float32Array;
 let sMacroSn: Float32Array;
@@ -448,10 +485,13 @@ let sMacroBig: Float32Array;
 let sMacroCh1: Float32Array;
 let sMacroChL: Float32Array;
 let sMacroWide: Float32Array;
+let sSpecialRock: Float32Array;
+let sCanyon: Float32Array;
 
 let scratchGridCap = 0;
 let sGridH: Float32Array;
-let sGridCold: Float32Array;
+let sGridSpecialRock: Float32Array;
+let sGridCanyon: Float32Array;
 let sGridM: Float32Array;
 let sGridRk: Float32Array;
 let sGridSn: Float32Array;
@@ -460,6 +500,9 @@ let sGridCh1: Float32Array;
 let sGridChL: Float32Array;
 let sGridWide: Float32Array;
 
+let scratchBioGridCap = 0;
+let sBioGridCat: Uint8Array;
+
 let scratchWCap = 0;
 let sGx: Int32Array;
 let sTx: Float32Array;
@@ -467,8 +510,14 @@ let sOtx: Float32Array;
 let sGy: Int32Array;
 let sTy: Float32Array;
 let sOty: Float32Array;
+let sBGx: Int32Array;
+let sBTx: Float32Array;
+let sBOtx: Float32Array;
+let sBGy: Int32Array;
+let sBTy: Float32Array;
+let sBOty: Float32Array;
 
-function ensureScratch(nT: number, nG: number, W: number) {
+function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
   if (scratchCapacity < nT) {
     scratchCapacity = Math.max(nT, 65536);
     sMat = new Uint8Array(scratchCapacity);
@@ -478,7 +527,6 @@ function ensureScratch(nT: number, nG: number, W: number) {
     sGv = new Float32Array(scratchCapacity);
     sHt = new Float32Array(scratchCapacity);
     sSlT = new Float32Array(scratchCapacity);
-    sColdT = new Float32Array(scratchCapacity);
     sMacroM = new Float32Array(scratchCapacity);
     sMacroRk = new Float32Array(scratchCapacity);
     sMacroSn = new Float32Array(scratchCapacity);
@@ -486,11 +534,14 @@ function ensureScratch(nT: number, nG: number, W: number) {
     sMacroCh1 = new Float32Array(scratchCapacity);
     sMacroChL = new Float32Array(scratchCapacity);
     sMacroWide = new Float32Array(scratchCapacity);
+    sSpecialRock = new Float32Array(scratchCapacity);
+    sCanyon = new Float32Array(scratchCapacity);
   }
   if (scratchGridCap < nG) {
     scratchGridCap = Math.max(nG, 4096);
     sGridH = new Float32Array(scratchGridCap);
-    sGridCold = new Float32Array(scratchGridCap);
+    sGridSpecialRock = new Float32Array(scratchGridCap);
+    sGridCanyon = new Float32Array(scratchGridCap);
     sGridM = new Float32Array(scratchGridCap);
     sGridRk = new Float32Array(scratchGridCap);
     sGridSn = new Float32Array(scratchGridCap);
@@ -498,6 +549,10 @@ function ensureScratch(nT: number, nG: number, W: number) {
     sGridCh1 = new Float32Array(scratchGridCap);
     sGridChL = new Float32Array(scratchGridCap);
     sGridWide = new Float32Array(scratchGridCap);
+  }
+  if (scratchBioGridCap < nBG) {
+    scratchBioGridCap = Math.max(nBG, 256);
+    sBioGridCat = new Uint8Array(scratchBioGridCap);
   }
   if (scratchWCap < W) {
     scratchWCap = Math.max(W, 512);
@@ -507,6 +562,12 @@ function ensureScratch(nT: number, nG: number, W: number) {
     sGy = new Int32Array(scratchWCap);
     sTy = new Float32Array(scratchWCap);
     sOty = new Float32Array(scratchWCap);
+    sBGx = new Int32Array(scratchWCap);
+    sBTx = new Float32Array(scratchWCap);
+    sBOtx = new Float32Array(scratchWCap);
+    sBGy = new Int32Array(scratchWCap);
+    sBTy = new Float32Array(scratchWCap);
+    sBOty = new Float32Array(scratchWCap);
   }
 }
 
@@ -532,21 +593,55 @@ export function genChunkTexture(
   const GW = Math.ceil(W / step) + 1;
   const nG = GW * GW;
 
-  ensureScratch(nT, nG, W);
+  // Grade própria e bem mais grossa (~24m por célula) só para o bioma ecológico: getPointFast é
+  // a chamada mais cara desta função, então amostrá-la na resolução fina de todo o resto seria
+  // desperdício. A borda entre biomas não vem do contorno desta grade grossa (isso ficaria em
+  // blocos) - vem da mistura bilinear + dither em "tufos" aplicada por pixel mais abaixo.
+  // A origem é ANCORADA numa malha global (múltiplo de bioStep), não relativa a este chunk:
+  // caso contrário, dois chunks vizinhos amostrariam a grade com fases diferentes e a escolha
+  // discreta de bioma "vencedor" podia divergir bem perto da borda, criando costuras visíveis
+  // (faixas diagonais) exatamente na fronteira entre chunks.
+  const bioStep = Math.max(4, Math.round(D * 24));
+  const bioOriginX = Math.floor(PX / bioStep) * bioStep;
+  const bioOriginY = Math.floor(PY / bioStep) * bioStep;
+  const bioOffX = PX - bioOriginX, bioOffY = PY - bioOriginY;
+  const bioGW = Math.ceil((W + Math.max(bioOffX, bioOffY)) / bioStep) + 1;
+  const nBG = bioGW * bioGW;
+
+  ensureScratch(nT, nG, nBG, W);
 
   const mat = sMat, idx = sIdx, gl = sGl, bio = sBio, gv = sGv;
-  const hT = sHt, slT = sSlT, coldT = sColdT;
+  const hT = sHt, slT = sSlT;
   const macroM = sMacroM, macroRk = sMacroRk, macroSn = sMacroSn, macroBig = sMacroBig;
   const macroCh1 = sMacroCh1, macroChL = sMacroChL, macroWide = sMacroWide;
 
-  const gridH = sGridH, gridCold = sGridCold, gridM = sGridM, gridRk = sGridRk;
+  const gridH = sGridH, gridSpecialRock = sGridSpecialRock, gridM = sGridM, gridRk = sGridRk;
   const gridSn = sGridSn, gridBig = sGridBig, gridCh1 = sGridCh1, gridChL = sGridChL, gridWide = sGridWide;
+  const specialRock = sSpecialRock, canyonT = sCanyon, gridCanyon = sGridCanyon;
+  const bioGridCat = sBioGridCat;
 
   const sd  = P.seed;
   const warp = 0.55 + P.edge * 1.9;
   const mf   = 1 / Math.max(1.4, P.pscale);
   const ditA = 0.085 + 0.30 * P.edge;
   const ROCK_CELL = clamp(Math.round(D * 0.62), 4, 10);
+  const volcanoGen = terrainGen.getVolcanoGenerator();
+  const canyonGen = terrainGen.getCanyonGenerator();
+
+  /* ---- passo 0: bioma ecológico numa grade própria, bem mais grossa ---- */
+  for (let gy = 0; gy < bioGW; gy++) {
+    const wy = (bioOriginY + gy * bioStep) / D;
+    const gRow = gy * bioGW;
+    for (let gx = 0; gx < bioGW; gx++) {
+      const wx = (bioOriginX + gx * bioStep) / D;
+      // getPointFast já calcula altura + bioma ecológico REAL numa única passagem - o mesmo
+      // BiomeManager.evaluateBiome() que decide quais árvores a vegetação planta. Usar essa
+      // MESMA fonte de verdade (em vez de um limiar de altura/temperatura próprio e independente)
+      // garante que o chão nunca discorde da vegetação (ex.: pinheiros nevados sobre areia).
+      const gPt = terrainGen.getPointFast(wx, wy);
+      bioGridCat[gRow + gx] = BIOME_TYPE_TO_FORGE[gPt.biome.type] ?? B_TEMP;
+    }
+  }
 
   /* ---- passo 1: campos (otimizado via grade bilinear para relevo e ruídos macro) ---- */
   for (let gy = 0; gy < GW; gy++) {
@@ -557,8 +652,18 @@ export function genChunkTexture(
       const gh = terrainGen.getHeight(wx, wy);
       const gIdx = gRow + gx;
       gridH[gIdx] = gh;
-      const gClim = terrainGen.getClimate(wx, wy, gh);
-      gridCold[gIdx] = clamp(1.0 - gClim.temperature, 0, 1);
+
+      // Vulcão/cânion são feições estreitas e dramáticas - a grade grossa do bioma (~24m) pode
+      // simplesmente "pular" por cima delas sem nunca amostrar exatamente em cima (ex.: um
+      // cânion de deserto de uns poucos metros de largura cortando uma região gelada acaba sem
+      // NENHUM ponto de grade dentro dele, e o chão herda o bioma gelado ao redor por engano,
+      // enquanto a vegetação - que usa a posição exata de cada planta - já acerta e planta
+      // cactos). Aqui reamostramos essas duas influências na grade FINA (mesma resolução do
+      // relevo) e usamos como um "empurrão" extra para rocha, independente do bioma ecológico.
+      const vRes = volcanoGen.query(wx, wy);
+      const cRes = canyonGen.query(wx, wy, gh);
+      gridSpecialRock[gIdx] = vRes.influence > 0.18 ? (vRes.influence - 0.18) / 0.82 : 0;
+      gridCanyon[gIdx] = (gh > CONFIG.BEACH_HEIGHT && cRes.influence > 0.45) ? (cRes.influence - 0.45) / 0.55 : 0;
 
       // Domain warp e máscaras macro
       const ox = per.fbm(wx * 0.21 + 11.3, wy * 0.21 + 4.1, 2) * warp;
@@ -590,6 +695,15 @@ export function genChunkTexture(
     sGx[l] = g; sTx[l] = t; sOtx[l] = 1.0 - t;
     sGy[l] = g; sTy[l] = t; sOty[l] = 1.0 - t;
   }
+  // Mesma tabela, só que para a grade (grossa e ancorada globalmente) do bioma
+  const invBioStep = 1.0 / bioStep;
+  for (let l = 0; l < W; l++) {
+    const lgx = l + bioOffX, lgy = l + bioOffY;
+    const bgx = (lgx * invBioStep) | 0, bgy = (lgy * invBioStep) | 0;
+    const btx = (lgx % bioStep) * invBioStep, bty = (lgy % bioStep) * invBioStep;
+    sBGx[l] = bgx; sBTx[l] = btx; sBOtx[l] = 1.0 - btx;
+    sBGy[l] = bgy; sBTy[l] = bty; sBOty[l] = 1.0 - bty;
+  }
 
   // Interpolação bilinear vetorizada dos campos contínuos
   for (let ly = 0; ly < W; ly++) {
@@ -610,7 +724,60 @@ export function genChunkTexture(
       const idx = row + lx;
 
       hT[idx] = gridH[i00]*w00 + gridH[i00+1]*w10 + gridH[i01]*w01 + gridH[i01+1]*w11;
-      coldT[idx] = gridCold[i00]*w00 + gridCold[i00+1]*w10 + gridCold[i01]*w01 + gridCold[i01+1]*w11;
+      specialRock[idx] = gridSpecialRock[i00]*w00 + gridSpecialRock[i00+1]*w10 + gridSpecialRock[i01]*w01 + gridSpecialRock[i01+1]*w11;
+      canyonT[idx] = gridCanyon[i00]*w00 + gridCanyon[i00+1]*w10 + gridCanyon[i01]*w01 + gridCanyon[i01+1]*w11;
+
+      // Bioma: mistura os 4 cantos da grade grossa por ÁREA bilinear (não dá pra misturar as
+      // CORES de dois biomas, mas dá pra usar a área como probabilidade de tufos). Em vez de
+      // "o canto de maior peso individual vence" (isso cria um ziguezague de diamantes - artefato
+      // clássico de escolher por argmax bilinear), somamos o peso de TODOS os cantos que
+      // pertencem a cada categoria e sorteamos por pixel com probabilidade proporcional a essa
+      // área - perto da fronteira (~50/50) sai um tufo bem denso e pontilhado, longe dela a
+      // probabilidade do bioma vizinho cai a zero suavemente. Mesmo estilo de dither em cluster()
+      // (blobs arredondados, não ruído fino) já usado no preenchimento de grama/terra abaixo.
+      const bgx = sBGx[lx], btx = sBTx[lx], botx = sBOtx[lx];
+      const bgy = sBGy[ly], bty = sBTy[ly], boty = sBOty[ly];
+      const bRow0 = bgy * bioGW, bRow1 = (bgy + 1) * bioGW;
+      const j00 = bRow0 + bgx, j01 = bRow1 + bgx;
+      const bw00 = botx * boty, bw10 = btx * boty, bw01 = botx * bty, bw11 = btx * bty;
+      const c00 = bioGridCat[j00], c10 = bioGridCat[j00 + 1], c01 = bioGridCat[j01], c11 = bioGridCat[j01 + 1];
+
+      let b: number;
+      if (c00 === c10 && c00 === c01 && c00 === c11) {
+        b = c00; // os 4 cantos concordam: interior estável, sem nenhum sorteio necessário
+      } else {
+        // Agrupa o peso dos 4 cantos por categoria (no máximo 4 categorias distintas, geralmente 2)
+        let catA = c00, wA = 0, catB = -1, wB = 0;
+        const add = (c: number, w: number) => {
+          if (c === catA) { wA += w; }
+          else if (c === catB) { wB += w; }
+          else if (catB === -1) { catB = c; wB += w; }
+          else if (w > 0) { // 3ª categoria rara: funde na mais próxima já registrada
+            if (wA <= wB) wA += w; else wB += w;
+          }
+        };
+        add(c00, bw00); add(c10, bw10); add(c01, bw01); add(c11, bw11);
+
+        const total = wA + wB;
+        const pB = total > 0 ? wB / total : 0;
+        const worldTx = PX + lx, worldTy = PY + ly;
+        // Mesma escala de tufo (sem multiplicar a frequência) usada no preenchimento de
+        // grama/terra deste arquivo - blobs arredondados de bom tamanho, não pontinhos finos.
+        const tuft = cluster(worldTx + 91.0, worldTy + 47.0, sd + 84);
+        b = tuft < pB ? catB : catA;
+      }
+
+      // Vulcão/cânion sempre vencem, mesmo se a grade grossa achava que aqui era outra coisa
+      // (ex.: gelo) - essas feições são geológicas, não climáticas, e não podem sumir por
+      // amostragem grossa demais. Dither suave na borda em vez de um corte duro.
+      if (specialRock[idx] > 0.02 || canyonT[idx] > 0.02) {
+        const rockDither = (cluster(PX + lx + 201.0, PY + ly + 77.0, sd + 85) - 0.5) * 0.30;
+        if (canyonT[idx] + rockDither > 0.15) b = B_DESERT;
+        if (specialRock[idx] + rockDither > 0.15) b = B_MOUNT;
+      }
+
+      bio[idx] = b;
+
       macroM[idx] = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11;
       macroRk[idx] = gridRk[i00]*w00 + gridRk[i00+1]*w10 + gridRk[i01]*w01 + gridRk[i01+1]*w11;
       macroSn[idx] = gridSn[i00]*w00 + gridSn[i00+1]*w10 + gridSn[i01]*w01 + gridSn[i01+1]*w11;
@@ -647,20 +814,19 @@ export function genChunkTexture(
       const sl = slT[i];
       const hn = clamp(h / 65.0, 0, 1);
 
-      /* ---- BIOMA ---- */
-      const bd = (cluster(tx + 7, ty + 3, sd + 70) - 0.5) * 0.17;
-      const coldVal = coldT[i];
-      const massifVal = clamp((h - 22.0) / 45.0 + sl * 0.25, 0, 1);
-
-      let b = B_TEMP;
-      if (massifVal > 1.02 - P.massif * 0.72 + bd * 0.8) b = B_MOUNT;
-      if (coldVal   > 0.92 - P.polar * 0.42  + bd)       b = B_POLAR;
-      if (h > 48.0 + bd * 8.0)                           b = B_POLAR; // calota no cume
-      bio[i] = b;
+      // Bioma já resolvido na etapa de grade (mesma fonte de verdade da vegetação) - só lê.
+      const b = bio[i];
       const BI = BIOMES[b];
 
-      // Máscara macro de vegetação
-      let m = macroM[i] + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + P.grass + BI.vegBias;
+      // Máscara macro de vegetação: quantidade de grama controlada por slider PRÓPRIO de
+      // cada bioma (temperado/montanha/polar), em vez de um único slider global escalado.
+      // Isso evita que subir a grama do temperado tire a neve da montanha (e vice-versa) —
+      // cada bioma tem seu próprio intervalo de ajuste, independente dos outros.
+      const biomeGrassAmt = b === B_MOUNT ? P.grassMountain
+        : b === B_POLAR ? P.grassPolar
+        : b === B_DESERT ? 0
+        : P.grass;
+      let m = macroM[i] + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + biomeGrassAmt + BI.vegBias;
       gv[i] = m;
 
       // Quantização com dither em cluster
@@ -733,6 +899,23 @@ export function genChunkTexture(
         if (ihash(tx, ty, sd + 75) > 0.9955) v = 5;
         idx[i] = clamp(v, 0, RL - 1);
 
+      } else if (BI.ground === 'dunas') {
+        // Areia (rampa de duna), não terra: grandes dunas sombreadas + ondulações finas de vento
+        // perpendiculares a uma direção de vento fixa por seed.
+        mat[i] = M_SAND;
+        const wa = (P.seed % 628) / 100 + 1.3;
+        const rx =  wx * Math.cos(wa) + wy * Math.sin(wa);
+        const ry = -wx * Math.sin(wa) + wy * Math.cos(wa);
+        const dune = per.fbm(rx * 0.06 + 17.3, ry * 0.06 + 3.9, 2);
+        const ripple = Math.sin(rx * 2.4 + per.fbm(rx * 0.30 + 5.1, ry * 0.30 + 9.7, 2) * 3.0);
+        let v = 3;
+        if (dune + bay * 0.12 > 0.16) v += 1;
+        else if (dune + bay * 0.12 < -0.16) v -= 1;
+        if (ripple + bay * 0.5 > 0.78) v += 1;
+        else if (ripple + bay * 0.5 < -0.82) v -= 1;
+        if (ihash(tx, ty, sd + 77) > 0.996) v -= 2;
+        idx[i] = clamp(v, 0, RL - 1);
+
       } else {
         // canais de erosão na terra (alimentados por interpolação bilinear ultra-rápida)
         const ch1 = macroCh1[i];
@@ -757,7 +940,7 @@ export function genChunkTexture(
       const g = gl[i];
       if (g >= 2) {
         const hole = cluster(tx + 23, ty + 37, sd + 13);
-        const holeThr = g === 2 ? 0.20 : (g === 3 ? 0.11 : 0.05);
+        const holeThr = g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
         if (hole > holeThr) {
           mat[i] = M_GRASS;
           const wide = macroWide[i];
@@ -830,7 +1013,8 @@ export function genChunkTexture(
         }
       } else {
         const w2 = 2 + ((ihash(x, y, sd + 76) * 3) | 0);
-        for (let k = 0; k < w2; k++) put(x + k, y + (k === 1 ? 1 : 0), M_DIRT, 1);
+        const streakMat = mat[at(x, y)] === M_SAND ? M_SAND : M_DIRT;
+        for (let k = 0; k < w2; k++) put(x + k, y + (k === 1 ? 1 : 0), streakMat, 1);
       }
     }
   }
@@ -988,7 +1172,7 @@ export function genChunkTexture(
   const nC  = CW * CW;
   const img  = new Uint8ClampedArray(nC * 4);
   const imgD = new Uint8ClampedArray(nC * 4);
-  const bimg = new Uint8ClampedArray(nC * 4);
+  const bimg = new Uint8ClampedArray(nC); // 1 canal: só o índice do bioma
   const RB = Math.max(2, Math.round(D * 0.20));
 
   for (let cy = 0; cy < CW; cy++) {
@@ -1019,7 +1203,7 @@ export function genChunkTexture(
       const a  = (mat[i] === M_GRASS || mat[i] === M_ACC) ? 255 : 0;
       img[o]     = c[0];  img[o + 1] = c[1];  img[o + 2] = c[2];  img[o + 3] = a;
       imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = a;
-      bimg[o]    = bio[i]; bimg[o + 3] = 255;
+      bimg[cRow + cx] = bio[i];
     }
   }
   return { img, imgD, bimg, width: CW, height: CW };
@@ -1028,23 +1212,57 @@ export function genChunkTexture(
 /* =========================================================================
    FABRICANTE DE TEXTURAS DATA_TEXTURE (THREE.JS)
    ========================================================================= */
+// Definida pelo main.ts a partir da GPU (renderer.capabilities.getMaxAnisotropy) antes de o
+// mundo ser criado. Filtragem anisotrópica mantém o chão nítido em ângulos rasantes (1ª pessoa),
+// onde só o mipmap deixaria tudo borrado.
+let textureAnisotropy = 1;
+export function setForgeTextureAnisotropy(value: number): void {
+  textureAnisotropy = Math.max(1, value);
+}
+
+/**
+ * 'color'    - cor sRGB com mipmap trilinear (chão visto de longe sem cintilar).
+ * 'pixel'    - cor sRGB, pixel nítido de perto e mipmap de longe (paredes pixel-art).
+ * 'category' - dado bruto de 1 canal (índice de bioma): SEM mipmap e SEM sRGB, pois mipmap
+ *              faria média entre índices e a conversão sRGB corromperia os valores.
+ */
+export type ForgeTextureKind = 'color' | 'pixel' | 'category';
+
 export function makeTexture(
   data: Uint8Array | Uint8ClampedArray,
   w: number,
   h: number,
   repeat: boolean,
-  mips: boolean
+  kind: ForgeTextureKind
 ): THREE.DataTexture {
-  const t = new THREE.DataTexture(data as any, w, h, THREE.RGBAFormat);
-  t.magFilter = THREE.NearestFilter;
-  t.minFilter = mips ? THREE.NearestMipmapNearestFilter : THREE.NearestFilter;
-  t.generateMipmaps = !!mips;
-  t.colorSpace = THREE.SRGBColorSpace;
+  const isCategory = kind === 'category';
+  const t = new THREE.DataTexture(data as any, w, h, isCategory ? THREE.RedFormat : THREE.RGBAFormat);
+  t.unpackAlignment = 1;
+  if (isCategory) {
+    t.magFilter = THREE.NearestFilter;
+    t.minFilter = THREE.NearestFilter;
+    t.generateMipmaps = false;
+    t.colorSpace = THREE.NoColorSpace;
+  } else {
+    t.magFilter = kind === 'color' ? THREE.LinearFilter : THREE.NearestFilter;
+    t.minFilter = kind === 'color' ? THREE.LinearMipmapLinearFilter : THREE.NearestMipmapLinearFilter;
+    t.generateMipmaps = true;
+    t.anisotropy = textureAnisotropy;
+    t.colorSpace = THREE.SRGBColorSpace;
+  }
   t.wrapS = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   t.wrapT = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   t.flipY = false;
   t.needsUpdate = true;
   return t;
+}
+
+function makeChunkTextures(res: ChunkTextureResult) {
+  return {
+    topTex: makeTexture(res.img, res.width, res.height, false, 'color'),
+    topDarkTex: makeTexture(res.imgD, res.width, res.height, false, 'color'),
+    bioTex: makeTexture(res.bimg, res.width, res.height, false, 'category'),
+  };
 }
 
 /* =========================================================================
@@ -1068,21 +1286,24 @@ export class TerrainTextureForge {
 
     // Atlas de paredes verticais (128 de largura, 128 * 3 = 384 de altura)
     const AH = WALL * NB;
-    this.wallA = makeTexture(buildWallAtlas(this.params, 'wallHi', 0), WALL, AH, true, false);
-    this.wallB = makeTexture(buildWallAtlas(this.params, 'wallLo', 0), WALL, AH, true, false);
-    this.wallC = makeTexture(buildWallAtlas(this.params, 'wallLo', 2), WALL, AH, true, false);
-    this.wallD = makeTexture(buildWallAtlas(this.params, 'wallHi', 1), WALL, AH, true, false);
+    this.wallA = makeTexture(buildWallAtlas(this.params, 'wallHi', 0), WALL, AH, true, 'pixel');
+    this.wallB = makeTexture(buildWallAtlas(this.params, 'wallLo', 0), WALL, AH, true, 'pixel');
+    this.wallC = makeTexture(buildWallAtlas(this.params, 'wallLo', 2), WALL, AH, true, 'pixel');
+    this.wallD = makeTexture(buildWallAtlas(this.params, 'wallHi', 1), WALL, AH, true, 'pixel');
 
     for (const t of [this.wallA, this.wallB, this.wallC, this.wallD]) {
       t.wrapT = THREE.ClampToEdgeWrapping;
       t.needsUpdate = true;
     }
 
-    // Rampa toon com 3 passos para iluminação em faixas planas
-    this.gradMap = new THREE.DataTexture(
-      new Uint8Array([126, 126, 126, 255, 196, 196, 196, 255, 255, 255, 255, 255]),
-      3, 1, THREE.RGBAFormat
-    );
+    // Rampa toon: o Three amostra em (N·L * 0.5 + 0.5), então a metade clara (texels 4-7)
+    // é quem responde à inclinação das faces voltadas ao sol. Com só 3 texels quase todo o
+    // terreno iluminado caía no tom máximo e o relevo ficava chapado; 4 degraus na metade
+    // clara deixam o volume das encostas legível sem perder o visual em faixas.
+    const ramp = [58, 70, 84, 98, 110, 150, 205, 255];
+    const rampData = new Uint8Array(ramp.length * 4);
+    ramp.forEach((v, k) => rampData.set([v, v, v, 255], k * 4));
+    this.gradMap = new THREE.DataTexture(rampData, ramp.length, 1, THREE.RGBAFormat);
     this.gradMap.magFilter = THREE.NearestFilter;
     this.gradMap.minFilter = THREE.NearestFilter;
     this.gradMap.generateMipmaps = false;
@@ -1121,6 +1342,35 @@ export class TerrainTextureForge {
     return TerrainTextureForge.instance;
   }
 
+  /**
+   * Geração assíncrona via Web Worker: move 100% do custo pesado de genChunkTexture
+   * (que escala com o quadrado da densidade de texel) para fora da main thread,
+   * eliminando travamentos ao carregar chunks em densidades altas.
+   */
+  public generateChunkTexturesAsync(
+    minWorldX: number,
+    minWorldZ: number,
+    chunkSize: number,
+    density: number = this.density,
+    priority: number = 0
+  ): { promise: Promise<{ topTex: THREE.DataTexture; topDarkTex: THREE.DataTexture; bioTex: THREE.DataTexture }>; cancel: () => void } {
+    const pool = getTextureWorkerPool();
+    const { promise, reqId } = pool.request(
+      this.params.seed,
+      this.params,
+      minWorldX,
+      minWorldZ,
+      chunkSize,
+      density,
+      priority
+    );
+
+    const wrapped = promise.then(makeChunkTextures);
+
+    return { promise: wrapped, cancel: () => pool.cancel(reqId) };
+  }
+
+  /** Variante síncrona (bloqueia a main thread) — mantida para o modo de teste/verificação procedural. */
   public generateChunkTextures(
     minWorldX: number,
     minWorldZ: number,
@@ -1137,11 +1387,7 @@ export class TerrainTextureForge {
       this.density
     );
 
-    const topTex = makeTexture(res.img, res.width, res.height, false, false);
-    const topDarkTex = makeTexture(res.imgD, res.width, res.height, false, false);
-    const bioTex = makeTexture(res.bimg, res.width, res.height, false, false);
-
-    return { topTex, topDarkTex, bioTex };
+    return makeChunkTextures(res);
   }
 
   public dispose(): void {

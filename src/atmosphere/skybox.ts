@@ -74,6 +74,8 @@ export class CartoonSkybox {
       uniform vec2 uWindOffset;
       uniform vec2 uWindOffset2;
       uniform vec3 uCameraPos;
+      // Escala das grades pixel-art do céu, relativa à densidade de texels padrão do terreno
+      uniform float uPixelScale;
 
       varying vec3 vWorldPosition;
       varying vec3 vRayDir;
@@ -152,10 +154,12 @@ export class CartoonSkybox {
         float az = atan(ray.z, ray.x);
         float azNorm = (az / 3.14159265359) * 0.5 + 0.5;
 
-        vec2 snesGrid = vec2(1920.0, 960.0);
+        vec2 snesGrid = vec2(1920.0, 960.0) * uPixelScale;
         vec2 snesTexel = floor(vec2(azNorm, height * 0.5 + 0.5) * snesGrid);
         vec2 snesUV = snesTexel / snesGrid;
-        float snesDither = (bayer4x4(snesTexel) - 0.5);
+        // O dither fica na grade PADRÃO: se encolhesse junto com o pixel, viraria um padrão
+        // mais fino que os pixels da tela e apareceria como listras (moiré).
+        float snesDither = (bayer4x4(floor(vec2(azNorm, height * 0.5 + 0.5) * vec2(1920.0, 960.0))) - 0.5);
 
         // 1. CÉU SNES: Gradiente HDMA com bandas celestes e dithering 16-bit
         vec3 sky;
@@ -182,7 +186,7 @@ export class CartoonSkybox {
 
           float sunForward = dot(ray, normSunDir);
           if (sunForward > 0.82) {
-            float sunGridRes = 360.0;
+            float sunGridRes = 360.0 * uPixelScale;
             vec2 sunTexel = floor(sunPlane * sunGridRes + 0.5);
             vec2 sunQuant = sunTexel / sunGridRes;
             float sunDist = length(sunQuant);
@@ -230,7 +234,7 @@ export class CartoonSkybox {
             vec3 mPerp2 = cross(normMoonDir, mPerp1);
             vec2 moonPlane = vec2(dot(ray, mPerp1), dot(ray, mPerp2));
 
-            float moonGridRes = 320.0;
+            float moonGridRes = 320.0 * uPixelScale;
             vec2 moonTexel = floor(moonPlane * moonGridRes + 0.5);
             vec2 moonQuant = moonTexel / moonGridRes;
             float moonDist = length(moonQuant);
@@ -255,7 +259,7 @@ export class CartoonSkybox {
           float hFade = smoothstep(0.04, 0.16, height);
           float coverageThresh = mix(0.58, 0.38, uCloudCoverage);
           vec2 sunDir2D = normalize(normSunDir.xz + vec2(0.001, 0.001));
-          float cloudGridRes = 320.0;
+          float cloudGridRes = 320.0 * uPixelScale;
 
           // =========================================================================
           // CAMADA 1: BASE E CORPO INFERIOR (SOMBRA E BASE DAS NUVENS)
@@ -271,11 +275,13 @@ export class CartoonSkybox {
 
           if (cloudDensity1 > 0.0 && hFade > 0.01) {
             // Sombra direcional da base
-            vec2 shadowUV1 = (cloudTexel1 - sunDir2D * 2.5) / cloudGridRes;
+            // Deslocamento da sombra e dither medidos na grade PADRÃO (320), não na grade escalada:
+            // senão a sombra afinava e o dither virava hachura conforme o pixel diminuía.
+            vec2 shadowUV1 = pixelUV1 - sunDir2D * (2.5 / 320.0);
             float shadowShape1 = billowFBM(shadowUV1) * (0.35 + 0.65 * macroMask1);
             float shadowDensity1 = (shadowShape1 - coverageThresh) / max(1.0 - coverageThresh, 0.001);
 
-            float cDither1 = (bayer4x4(cloudTexel1) - 0.5) * 0.12;
+            float cDither1 = (bayer4x4(floor(planeUV1 * 320.0)) - 0.5) * 0.12;
             float isShadow1 = 1.0 - step(0.18 + cDither1, shadowDensity1);
 
             // Camada 1: tom de sombra/base periwinkle característico do estilo cel-shaded
@@ -303,7 +309,7 @@ export class CartoonSkybox {
           float cloudDensity2 = (cloudShape2 - coverageThresh) / max(1.0 - coverageThresh, 0.001);
 
           // Dither Bayer 4x4 para a borda da camada clara
-          float cDither2 = (bayer4x4(cloudTexel2) - 0.5) * 0.12;
+          float cDither2 = (bayer4x4(floor(planeUV2 * 320.0)) - 0.5) * 0.12;
 
           // A camada 2 renderiza exclusivamente a parte mais clara (creme/branco iluminado)
           float isHighlight2 = step(0.15 + cDither2, cloudDensity2);
@@ -355,7 +361,8 @@ export class CartoonSkybox {
         uCloudCoverage: { value: 0.72 },
         uWindOffset: { value: new THREE.Vector2(0, 0) },
         uWindOffset2: { value: new THREE.Vector2(0, 0) },
-        uCameraPos: { value: new THREE.Vector3(0, 0, 0) }
+        uCameraPos: { value: new THREE.Vector3(0, 0, 0) },
+        uPixelScale: { value: 1.0 }
       },
       side: THREE.BackSide,
       depthWrite: false,
@@ -368,6 +375,11 @@ export class CartoonSkybox {
 
   public getMesh(): THREE.Mesh {
     return this.mesh;
+  }
+
+  public setPixelScale(scale: number): void {
+    // Acima de ~2.5x os pixels do céu ficam menores que os pixels da tela e passam a cintilar.
+    this.material.uniforms.uPixelScale.value = Math.min(scale, 2.5);
   }
 
   public getMoonDirection(): THREE.Vector3 {

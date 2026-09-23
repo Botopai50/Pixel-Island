@@ -128,6 +128,13 @@ export const WaterShader = {
     uResolution: { value: new THREE.Vector2(320, 240) },
     uFoamDistance: { value: 0.052 },
     uBiomeColorEnabled: { value: 1.0 },
+    // Pixels por metro da grade pixel-art da água: igual à densidade de texels do terreno
+    uTexelDensity: { value: 6.0 },
+    // Mapa de tons por bioma (ver WaterBiomeMap): atribuído pelo WorldEngine
+    uBiomeMap: { value: null as THREE.Texture | null },
+    uBiomeMapOrigin: { value: new THREE.Vector2(0, 0) },
+    uBiomeMapSpan: { value: 1.0 },
+    uBiomeMapReady: { value: 0.0 },
     // Ripple array: [x, z, radius, strength]
     uRipples: { value: new Float32Array(8 * 4) },
     uActiveRipples: { value: 0 },
@@ -143,6 +150,10 @@ export const WaterShader = {
     uniform vec4 uRipples[8];
     uniform int uActiveRipples;
     uniform mat4 uReflectTextureMatrix;
+    uniform sampler2D uBiomeMap;
+    uniform vec2 uBiomeMapOrigin;
+    uniform float uBiomeMapSpan;
+    uniform float uBiomeMapReady;
 
     varying vec3 vWorldPosition;
     varying vec3 vNormal;
@@ -194,6 +205,14 @@ export const WaterShader = {
       // Deslocamento físico vertical controlado: atenua suavemente para 0 antes da transição aos anéis externos
       float distFromCenter = length(pos.xy);
       float waveDispFade = 1.0 - smoothstep(400.0, 500.0, distFromCenter);
+
+      // Água rasa quase não sobe e desce: a onda cresce de 0 na linha da costa até o tamanho cheio
+      // por volta de 3.5m de profundidade (canal A do mapa = profundidade / 6m). Sem isso, numa praia
+      // suave a linha d'água andava 1-2m para frente e para trás.
+      vec2 depthUv = (worldCoord - uBiomeMapOrigin) / uBiomeMapSpan;
+      float seabedDepth = texture2D(uBiomeMap, clamp(depthUv, 0.0, 1.0)).a;
+      float insideMap = step(0.0, depthUv.x) * step(depthUv.x, 1.0) * step(0.0, depthUv.y) * step(depthUv.y, 1.0);
+      waveDispFade *= mix(1.0, smoothstep(0.03, 0.58, seabedDepth), insideMap * uBiomeMapReady);
       pos.z += (totalWave * min(uWaveHeight, 0.065) + rippleDisp) * waveDispFade;
       
       // Passa a altura de onda real para cálculo dos contrastes cel-shaded e agrupamento de espuma nas cristas
@@ -238,6 +257,11 @@ export const WaterShader = {
     uniform vec2 uResolution;
     uniform float uFoamDistance;
     uniform float uBiomeColorEnabled;
+    uniform float uTexelDensity;
+    uniform sampler2D uBiomeMap;
+    uniform vec2 uBiomeMapOrigin;
+    uniform float uBiomeMapSpan;
+    uniform float uBiomeMapReady;
     uniform vec4 uRipples[8];
     uniform int uActiveRipples;
 
@@ -256,22 +280,6 @@ export const WaterShader = {
         float z = depth * 2.0 - 1.0;
         return (2.0 * near * far) / max(far + near - z * (far - near), 0.00001);
       }
-    }
-
-    // 2D Continuous Noise for Macro Climate (Temperature and Moisture)
-    float noise2D(vec2 p) {
-      vec2 i = floor(p);
-      vec2 f = fract(p);
-      f = f * f * (3.0 - 2.0 * f);
-      float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
-      float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
-      float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
-      float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
-      return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-    }
-
-    float fbmClimate(vec2 p) {
-      return noise2D(p) * 0.57 + noise2D(p * 2.0 + vec2(13.5, 27.2)) * 0.29 + noise2D(p * 4.0 + vec2(37.8, 51.1)) * 0.14;
     }
 
     // 2D Cellular Voronoi Noise for stylized pixel foam
@@ -318,8 +326,9 @@ export const WaterShader = {
       // Stepped frame rate (12 fps retro pixel animation)
       float animTime = floor(uTime * 12.0) / 12.0;
       
-      // World-space pixel grid density: chunky pixels scaled to camera mode
-      float pixelDensity = (uIsOrthographic > 0.5) ? 5.0 : 16.0;
+      // Grade pixel-art em espaço de mundo com a MESMA densidade do terreno: o pixel da água
+      // tem o mesmo tamanho do texel do chão ao lado, em qualquer modo de câmera.
+      float pixelDensity = uTexelDensity;
       vec2 worldGrid = floor(vWorldPosition.xz * pixelDensity) / pixelDensity;
 
       // Contorno em degraus pixel-art ESTÁVEL ancorado no espaço de mundo
@@ -336,8 +345,14 @@ export const WaterShader = {
       // Movimento dinâmico intensificado da ESPUMA DE DENTRO (fluxo ágil + vaivém de surf + turbulência de vórtices):
       vec2 waveSurge = vec2(cos(uWindAngle), sin(uWindAngle)) * (sin(animTime * 2.2) * 0.55 + cos(animTime * 1.1) * 0.28);
       
+      // A espuma usa uma grade própria de no máximo 8 px/m: com pixels menores as células viram
+      // pontinhos finos que somem visualmente (principalmente de longe) e parece haver menos
+      // espuma. Assim ela mantém a leitura em blocos enquanto a superfície segue o chão.
+      float foamDensity = min(uTexelDensity, 8.0);
+      vec2 foamGrid = floor(vWorldPosition.xz * foamDensity) / foamDensity;
+
       // Noise coordinates adapted for camera mode:
-      vec2 noiseCoord = (uIsOrthographic > 0.5) ? (worldGrid * 0.18) : (worldGrid * 0.95);
+      vec2 noiseCoord = (uIsOrthographic > 0.5) ? (foamGrid * 0.18) : (foamGrid * 0.95);
       
       // Vórtices e turbulência ativa que deformam, esticam e recombinam as células de dentro continuamente
       vec2 warp1 = vec2(sin(noiseCoord.y * 1.6 + animTime * 1.8) * 0.32, cos(noiseCoord.x * 1.6 + animTime * 1.4) * 0.32);
@@ -405,23 +420,23 @@ export const WaterShader = {
       float diffuse = max(dot(fragNormal, uLightDir), 0.0);
       diffuse = floor(diffuse * 4.0) / 4.0; // 4 discrete lighting levels
       
-      // 3. Avaliação Bioclimática Contínua no Espaço de Mundo para Coloração por Bioma
-      vec2 worldPosXZ = vWorldPosition.xz;
-      float latitudeGrad = sin(worldPosXZ.y * 0.0006) * 0.28;
-      float climateNoise = (fbmClimate(worldPosXZ * 0.0012) - 0.5) * 0.56;
-      float temperature = clamp(0.55 + latitudeGrad + climateNoise, 0.0, 1.0);
-      float moisture = clamp(fbmClimate(worldPosXZ * 0.0015 + vec2(120.0)) * 1.25, 0.0, 1.0);
+      // 3. Tons por bioma lidos do mapa calculado na CPU com o clima REAL do BiomeManager
+      // (R = ártico, G = manguezal, B = tropical). Fora da área coberta, volta ao temperado.
+      vec2 biomeUv = (vWorldPosition.xz - uBiomeMapOrigin) / uBiomeMapSpan;
+      vec2 edgeDist = min(biomeUv, 1.0 - biomeUv);
+      float mapCoverage = uBiomeMapReady * smoothstep(0.0, 0.05, min(edgeDist.x, edgeDist.y));
+      vec3 biomeTints = texture2D(uBiomeMap, clamp(biomeUv, 0.0, 1.0)).rgb * mapCoverage;
 
       // Paletas cromáticas estilizadas por bioma (Raso, Profundo, Abissal):
-      // 1. Tropical / Lagoa Costeira (Ciano turquesa brilhante elétrico caribenho)
-      vec3 tropShallow = vec3(0.00, 0.96, 0.98); // #00f5fa (turquesa elétrico cristalino)
-      vec3 tropDeep    = vec3(0.01, 0.55, 0.86); // #028cdc (azul caribenho profundo)
-      vec3 tropAbyss   = vec3(0.01, 0.20, 0.42); // #03336b (abismo oceânico caribenho)
+      // 1. Tropical / Lagoa Costeira (turquesa caribenho, menos saturado que o ciano elétrico)
+      vec3 tropShallow = vec3(0.10, 0.86, 0.90);
+      vec3 tropDeep    = vec3(0.02, 0.52, 0.80);
+      vec3 tropAbyss   = vec3(0.01, 0.20, 0.42);
 
-      // 2. Manguezal / Pântano Estuarino (Verde-esmeralda/jade vibrante, rico e inconfundível)
-      vec3 swampShallow = vec3(0.12, 0.92, 0.46); // #1feb75 (verde esmeralda vívido translúcido)
-      vec3 swampDeep    = vec3(0.03, 0.60, 0.28); // #089947 (jade vegetal estuarino profundo)
-      vec3 swampAbyss   = vec3(0.01, 0.22, 0.12); // #03381f (abismo pantanoso orgânico escuro)
+      // 2. Manguezal / Pântano Estuarino: verde-água turvo (o esmeralda neon anterior parecia tinta)
+      vec3 swampShallow = vec3(0.32, 0.66, 0.56);
+      vec3 swampDeep    = vec3(0.12, 0.42, 0.36);
+      vec3 swampAbyss   = vec3(0.03, 0.17, 0.15);
 
       // 3. Tundra Polar / Ártico / Lago Glacial (Azul-gelo vítreo cristalino gélido)
       vec3 arcticShallow = vec3(0.62, 0.90, 1.00); // #9ee6ff (azul-gelo luminoso vítreo)
@@ -433,24 +448,9 @@ export const WaterShader = {
       vec3 tempDeep    = vec3(0.02, 0.42, 0.70); // #056bb3 (azul profundo de água doce)
       vec3 tempAbyss   = vec3(0.01, 0.16, 0.35); // #032959 (abismo lacustre escuro)
 
-      // Transições Bioclimáticas Robustas ancoradas no espaço de mundo da ilha:
-      // A. Zona Ártica Glacial: Norte de Z = -260, congelamento total por Z = -460
-      float tArcticNorth = clamp((-worldPosXZ.y - 260.0) / 200.0, 0.0, 1.0);
-      float tArcticClimate = 1.0 - smoothstep(0.20, 0.34, temperature);
-      float tArctic = clamp(max(tArcticNorth, tArcticClimate), 0.0, 1.0);
-
-      // B. Zona de Manguezal / Pântano Estuarino:
-      // Estuário Oeste (X < -500, Z entre 20 e 260), Bacia Sul (Z > 60) ou Clima Quente & Úmido
-      float isWestMangrove = smoothstep(-480.0, -600.0, worldPosXZ.x) * smoothstep(20.0, 60.0, worldPosXZ.y) * smoothstep(260.0, 200.0, worldPosXZ.y);
-      float isSouthMangrove = clamp((worldPosXZ.y - 60.0) / 180.0, 0.0, 1.0) * smoothstep(-400.0, -100.0, worldPosXZ.x) * smoothstep(450.0, 250.0, worldPosXZ.x);
-      float tSwampClimate = smoothstep(0.48, 0.62, temperature) * smoothstep(0.35, 0.60, moisture) * smoothstep(-80.0, 40.0, worldPosXZ.y);
-      float tSwamp = clamp(max(isWestMangrove, max(isSouthMangrove, tSwampClimate)), 0.0, 1.0) * (1.0 - tArctic);
-
-      // C. Zona de Praia Tropical:
-      // Costa Leste ensolarada (X > 140) ou zonas costeiras quentes
-      float isEastTropical = smoothstep(140.0, 220.0, worldPosXZ.x) * smoothstep(-250.0, -120.0, worldPosXZ.y);
-      float tTropicalClimate = smoothstep(0.45, 0.62, temperature);
-      float tTropical = clamp(max(isEastTropical, tTropicalClimate * 0.75), 0.0, 1.0) * (1.0 - tArctic) * (1.0 - tSwamp);
+      float tArctic = biomeTints.r;
+      float tSwamp = biomeTints.g;
+      float tTropical = biomeTints.b;
 
       // Interpolação suave e contínua dos biomas
       vec3 biomeShallow = tempShallow;
@@ -552,14 +552,17 @@ export const WaterShader = {
 
       // Opacidade da espuma suave (translucidez cel-shaded: a água azul transluz por baixo)
       // Na orla é ~0.55, caindo suavemente para 0.0 na água mais profunda
-      float softAlpha = coastalGrad * 0.55;
+      // Alcance próprio (até ~4m): com o gradiente da orla ela sumia já a ~2m de profundidade.
+      float softGrad = 1.0 - smoothstep(0.10, 4.0, verticalDepth);
+      float softAlpha = pow(softGrad, 0.85) * 0.50;
 
       // Opacidade dos realces brancos (a parte mais clara): concentra-se na orla e some primeiro
       float whiteAlpha = pow(coastalGrad, 1.8) * 0.88;
 
       // Cores calibradas com base na paleta exata da referência (media_1789951390077.png):
-      // Corpo suave: pastel ciano-celeste suave (#9fd0f5)
-      vec3 softFoamColor = vec3(0.62, 0.82, 0.96);
+      // Corpo suave: branco-azulado. O pastel anterior (#9fd0f5) tinha quase a mesma cor da água
+      // ciano por baixo e a espuma de dentro praticamente sumia.
+      vec3 softFoamColor = vec3(0.74, 0.89, 0.99);
       // Realce claro: branco puro brilhante (#ffffff)
       vec3 whiteFoamColor = vec3(1.0, 1.0, 1.0);
 

@@ -73,10 +73,29 @@ export class TextureForgeWidget {
 
           <div class="forge-row">
             <div class="forge-label-row">
-              <label for="fg-grass">Quantidade de Grama</label>
+              <label for="fg-grass">Quantidade de Grama (Temperado)</label>
               <b id="fg-grass-v">${(this.state.grass >= 0 ? '+' : '') + this.state.grass.toFixed(2)}</b>
             </div>
             <input id="fg-grass" type="range" min="-0.35" max="0.42" step="0.01" value="${this.state.grass}">
+            <span class="forge-hint">Cada bioma tem seu próprio slider - subir este não afeta a neve</span>
+          </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-grass-mountain">Quantidade de Grama (Montanha)</label>
+              <b id="fg-grass-mountain-v">${(this.state.grassMountain >= 0 ? '+' : '') + this.state.grassMountain.toFixed(2)}</b>
+            </div>
+            <input id="fg-grass-mountain" type="range" min="-0.35" max="0.42" step="0.01" value="${this.state.grassMountain}">
+            <span class="forge-hint">Musgo/liquens no tálus alpino, independente do temperado</span>
+          </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-grass-polar">Quantidade de Grama (Polar)</label>
+              <b id="fg-grass-polar-v">${(this.state.grassPolar >= 0 ? '+' : '') + this.state.grassPolar.toFixed(2)}</b>
+            </div>
+            <input id="fg-grass-polar" type="range" min="-0.35" max="0.42" step="0.01" value="${this.state.grassPolar}">
+            <span class="forge-hint">Tundra/musgo perto da neve - negativo preserva mais neve</span>
           </div>
 
           <div class="forge-row">
@@ -149,29 +168,6 @@ export class TextureForgeWidget {
           </div>
         </div>
 
-        <!-- Grupo 4: Biomas & Relevo -->
-        <div class="forge-group">
-          <div class="forge-group-title">Biomas & Relevo</div>
-          
-          <div class="forge-row">
-            <div class="forge-label-row">
-              <label for="fg-massif">Maciço Montanhoso</label>
-              <b id="fg-massif-v">${this.state.massif.toFixed(2)}</b>
-            </div>
-            <input id="fg-massif" type="range" min="0.0" max="1.0" step="0.01" value="${this.state.massif}">
-            <span class="forge-hint">Extensão da rocha viva e tálus montanhoso</span>
-          </div>
-
-          <div class="forge-row">
-            <div class="forge-label-row">
-              <label for="fg-polar">Frente Polar (Neve)</label>
-              <b id="fg-polar-v">${this.state.polar.toFixed(2)}</b>
-            </div>
-            <input id="fg-polar" type="range" min="0.0" max="1.0" step="0.01" value="${this.state.polar}">
-            <span class="forge-hint">Avanço da neve e pinheiros polares</span>
-          </div>
-        </div>
-
         <!-- Grupo 5: Shader & Escala -->
         <div class="forge-group">
           <div class="forge-group-title">Shader & Escala</div>
@@ -193,6 +189,15 @@ export class TextureForgeWidget {
             <input id="fg-density" type="range" min="1.0" max="24.0" step="0.5" value="${this.state.density}">
             <span class="forge-hint">128px = 24 tx/un (HTML) | 384px = 6.0 tx/m (Padrão) | até 24.0 tx/m (1536² px)</span>
           </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-pixelscale">Escala Visual do Pixel (Shader)</label>
+              <b id="fg-pixelscale-v">${(this.state.pixelScale || 1.0).toFixed(1)}x</b>
+            </div>
+            <input id="fg-pixelscale" type="range" min="0.5" max="4.0" step="0.1" value="${this.state.pixelScale || 1.0}">
+            <span class="forge-hint">Subdivide e diminui o tamanho dos pixels no chão em tempo real (GPU)</span>
+          </div>
         </div>
 
         <!-- Ações & Exportação -->
@@ -209,7 +214,7 @@ export class TextureForgeWidget {
 
           <div class="forge-btn-grid">
             <button id="fg-btn-import" class="forge-btn">📥 Importar JSON</button>
-            <button id="fg-btn-reset" class="forge-btn forge-btn-danger">🔄 Restaurar Padrões</button>
+            <button id="fg-btn-reset" class="forge-btn">🔄 Padrões</button>
           </div>
         </div>
       </div>
@@ -263,12 +268,18 @@ export class TextureForgeWidget {
         (this.state as any)[key] = val;
         label.textContent = format(val);
         this.updateJsonArea();
-        this.scheduleApply();
+        if (key === 'pixelScale') {
+          this.worldEngine.updatePixelScale(val);
+        } else {
+          this.scheduleApply();
+        }
       });
     };
 
     registerSlider('fg-pscale', 'pscale', (v) => v.toFixed(1));
     registerSlider('fg-grass', 'grass', (v) => (v >= 0 ? '+' : '') + v.toFixed(2));
+    registerSlider('fg-grass-mountain', 'grassMountain', (v) => (v >= 0 ? '+' : '') + v.toFixed(2));
+    registerSlider('fg-grass-polar', 'grassPolar', (v) => (v >= 0 ? '+' : '') + v.toFixed(2));
     registerSlider('fg-edge', 'edge', (v) => v.toFixed(2));
     registerSlider('fg-tuft', 'tuft', (v) => v.toFixed(2));
     registerSlider('fg-cluster', 'clusterSize', (v) => Math.round(v).toString());
@@ -276,10 +287,9 @@ export class TextureForgeWidget {
     registerSlider('fg-greens', 'greens', (v) => Math.round(v).toString());
     registerSlider('fg-dirt', 'dirt', (v) => v.toFixed(2));
     registerSlider('fg-rock', 'rock', (v) => v.toFixed(2));
-    registerSlider('fg-massif', 'massif', (v) => v.toFixed(2));
-    registerSlider('fg-polar', 'polar', (v) => v.toFixed(2));
     registerSlider('fg-hang', 'hang', (v) => v.toFixed(2));
     registerSlider('fg-density', 'density', (v) => `${v.toFixed(1)} tx/m (${Math.round(64 * v)}² px)`);
+    registerSlider('fg-pixelscale', 'pixelScale', (v) => `${v.toFixed(1)}x`);
 
     // Botão Copiar JSON
     const copyBtn = this.panel.querySelector('#fg-btn-copy');
@@ -359,6 +369,8 @@ export class TextureForgeWidget {
     const exportable = {
       pscale: Number(this.state.pscale.toFixed(2)),
       grass: Number(this.state.grass.toFixed(2)),
+      grassMountain: Number(this.state.grassMountain.toFixed(2)),
+      grassPolar: Number(this.state.grassPolar.toFixed(2)),
       edge: Number(this.state.edge.toFixed(2)),
       tuft: Number(this.state.tuft.toFixed(2)),
       clusterSize: Math.round(this.state.clusterSize),
@@ -366,10 +378,9 @@ export class TextureForgeWidget {
       greens: Math.round(this.state.greens),
       dirt: Number(this.state.dirt.toFixed(2)),
       rock: Number(this.state.rock.toFixed(2)),
-      massif: Number(this.state.massif.toFixed(2)),
-      polar: Number(this.state.polar.toFixed(2)),
       hang: Number(this.state.hang.toFixed(2)),
       density: Number(this.state.density.toFixed(1)),
+      pixelScale: Number((this.state.pixelScale || 1.0).toFixed(1)),
     };
     return JSON.stringify(exportable, null, 2);
   }
@@ -383,6 +394,8 @@ export class TextureForgeWidget {
   public applyExternalConfig(cfg: Partial<TextureControlsState>): void {
     if (cfg.pscale !== undefined) this.state.pscale = cfg.pscale;
     if (cfg.grass !== undefined) this.state.grass = cfg.grass;
+    if (cfg.grassMountain !== undefined) this.state.grassMountain = cfg.grassMountain;
+    if (cfg.grassPolar !== undefined) this.state.grassPolar = cfg.grassPolar;
     if (cfg.edge !== undefined) this.state.edge = cfg.edge;
     if (cfg.tuft !== undefined) this.state.tuft = cfg.tuft;
     if (cfg.clusterSize !== undefined) this.state.clusterSize = cfg.clusterSize;
@@ -390,10 +403,9 @@ export class TextureForgeWidget {
     if (cfg.greens !== undefined) this.state.greens = cfg.greens;
     if (cfg.dirt !== undefined) this.state.dirt = cfg.dirt;
     if (cfg.rock !== undefined) this.state.rock = cfg.rock;
-    if (cfg.massif !== undefined) this.state.massif = cfg.massif;
-    if (cfg.polar !== undefined) this.state.polar = cfg.polar;
     if (cfg.hang !== undefined) this.state.hang = cfg.hang;
     if (cfg.density !== undefined) this.state.density = cfg.density;
+    if (cfg.pixelScale !== undefined) this.state.pixelScale = cfg.pixelScale;
 
     this.syncInputsFromState();
     this.updateJsonArea();
@@ -410,6 +422,8 @@ export class TextureForgeWidget {
 
     updateInput('fg-pscale', this.state.pscale, (v) => v.toFixed(1));
     updateInput('fg-grass', this.state.grass, (v) => (v >= 0 ? '+' : '') + v.toFixed(2));
+    updateInput('fg-grass-mountain', this.state.grassMountain, (v) => (v >= 0 ? '+' : '') + v.toFixed(2));
+    updateInput('fg-grass-polar', this.state.grassPolar, (v) => (v >= 0 ? '+' : '') + v.toFixed(2));
     updateInput('fg-edge', this.state.edge, (v) => v.toFixed(2));
     updateInput('fg-tuft', this.state.tuft, (v) => v.toFixed(2));
     updateInput('fg-cluster', this.state.clusterSize, (v) => Math.round(v).toString());
@@ -417,10 +431,9 @@ export class TextureForgeWidget {
     updateInput('fg-greens', this.state.greens, (v) => Math.round(v).toString());
     updateInput('fg-dirt', this.state.dirt, (v) => v.toFixed(2));
     updateInput('fg-rock', this.state.rock, (v) => v.toFixed(2));
-    updateInput('fg-massif', this.state.massif, (v) => v.toFixed(2));
-    updateInput('fg-polar', this.state.polar, (v) => v.toFixed(2));
     updateInput('fg-hang', this.state.hang, (v) => v.toFixed(2));
     updateInput('fg-density', this.state.density, (v) => `${v.toFixed(1)} tx/m (${Math.round(64 * v)}² px)`);
+    updateInput('fg-pixelscale', this.state.pixelScale || 1.0, (v) => `${v.toFixed(1)}x`);
   }
 
   public togglePanel(): void {

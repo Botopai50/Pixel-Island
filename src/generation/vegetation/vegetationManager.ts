@@ -367,10 +367,10 @@ function setupCartoonMaterial(mat: THREE.MeshLambertMaterial): THREE.MeshLambert
         #endif
 
         // Sombra cartoon com silhueta analítica nítida de 2 tons (Zelda / Cel-Shading clássico)
-        float hardShadow = clipmapShadow;
+        // Lado de costas pro sol: 30% (volume da copa). Sombra projetada: 0%, igual ao
+        // terreno - senão a planta dentro da sombra de um morro fica mais clara que o chão.
         float NdotL = dot( geometryNormal, directLight.direction );
-        float shadowMask = step( 0.04, NdotL ) * hardShadow;
-        float celIntensity = mix( 0.30, 1.0, shadowMask );
+        float celIntensity = mix( 0.30, 1.0, step( 0.04, NdotL ) ) * clipmapShadow;
 
         directLight.color *= celIntensity;
         RE_Direct( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );
@@ -1062,12 +1062,12 @@ export class VegetationManager {
     this.createInstancedPair(VegetationGeometries.arcticWillowTrunk, VegetationGeometries.arcticWillowLeaves, this.trunkMaterial, this.foliageMaterial, arcticWillowItems, parentGroup);
 
     // Instanciação de Meshes Individuais
-    const createSingle = (geo: THREE.BufferGeometry, mat: THREE.Material, list: { matrix: THREE.Matrix4; tint: THREE.Color }[], receiveShadow: boolean = true, name?: string) => {
+    const createSingle = (geo: THREE.BufferGeometry, mat: THREE.Material, list: { matrix: THREE.Matrix4; tint: THREE.Color }[], name?: string) => {
       if (list.length === 0) return;
       const mesh = new THREE.InstancedMesh(geo, mat, list.length);
       if (name) mesh.name = name;
       mesh.castShadow = true;
-      mesh.receiveShadow = receiveShadow;
+      mesh.receiveShadow = true;
       for (let i = 0; i < list.length; i++) {
         mesh.setMatrixAt(i, list[i].matrix);
         mesh.setColorAt(i, list[i].tint);
@@ -1078,29 +1078,29 @@ export class VegetationManager {
       parentGroup.add(mesh);
     };
 
-    createSingle(VegetationGeometries.deadTrunk, this.deadTreeMaterial, deadTreeTransforms, true, 'deadTrunk');
-    createSingle(VegetationGeometries.cactusBody, this.cactusMaterial, cactusTransforms, true, 'cactusBody');
-    createSingle(VegetationGeometries.cactusSaplingBody, this.cactusMaterial, cactusSaplingTransforms, true, 'cactusSapling');
-    createSingle(VegetationGeometries.shrubLush, this.shrubMaterial, shrubLushTransforms, false, 'shrubLush');
-    createSingle(VegetationGeometries.shrubBerry, this.shrubMaterial, shrubBerryTransforms, false, 'shrubBerry');
+    createSingle(VegetationGeometries.deadTrunk, this.deadTreeMaterial, deadTreeTransforms, 'deadTrunk');
+    createSingle(VegetationGeometries.cactusBody, this.cactusMaterial, cactusTransforms, 'cactusBody');
+    createSingle(VegetationGeometries.cactusSaplingBody, this.cactusMaterial, cactusSaplingTransforms, 'cactusSapling');
+    createSingle(VegetationGeometries.shrubLush, this.shrubMaterial, shrubLushTransforms, 'shrubLush');
+    createSingle(VegetationGeometries.shrubBerry, this.shrubMaterial, shrubBerryTransforms, 'shrubBerry');
 
     // Rochas variadas (5 Formatos)
-    createSingle(VegetationGeometries.rockBoulder, this.rockMaterial, rockBoulderTransforms, true, 'rockBoulder');
-    createSingle(VegetationGeometries.rockSlate, this.rockMaterial, rockSlateTransforms, true, 'rockSlate');
-    createSingle(VegetationGeometries.rockPebbles, this.rockMaterial, rockPebblesTransforms, true, 'rockPebbles');
-    createSingle(VegetationGeometries.rockSpire, this.rockMaterial, rockSpireTransforms, true, 'rockSpire');
-    createSingle(VegetationGeometries.rockMossy, this.rockMaterial, rockMossyTransforms, true, 'rockMossy');
+    createSingle(VegetationGeometries.rockBoulder, this.rockMaterial, rockBoulderTransforms, 'rockBoulder');
+    createSingle(VegetationGeometries.rockSlate, this.rockMaterial, rockSlateTransforms, 'rockSlate');
+    createSingle(VegetationGeometries.rockPebbles, this.rockMaterial, rockPebblesTransforms, 'rockPebbles');
+    createSingle(VegetationGeometries.rockSpire, this.rockMaterial, rockSpireTransforms, 'rockSpire');
+    createSingle(VegetationGeometries.rockMossy, this.rockMaterial, rockMossyTransforms, 'rockMossy');
 
     // Madeira caída variada (4 Formatos)
-    createSingle(VegetationGeometries.logHollow, this.logMaterial, logHollowTransforms, true);
-    createSingle(VegetationGeometries.logRooted, this.logMaterial, logRootedTransforms, true);
-    createSingle(VegetationGeometries.logStump, this.logMaterial, logStumpTransforms, true);
-    createSingle(VegetationGeometries.fallenLog, this.logMaterial, logStraightTransforms, true);
+    createSingle(VegetationGeometries.logHollow, this.logMaterial, logHollowTransforms);
+    createSingle(VegetationGeometries.logRooted, this.logMaterial, logRootedTransforms);
+    createSingle(VegetationGeometries.logStump, this.logMaterial, logStumpTransforms);
+    createSingle(VegetationGeometries.fallenLog, this.logMaterial, logStraightTransforms);
 
     // Sub-bosque e flora rasteira
-    createSingle(VegetationGeometries.groundFern, this.groundFloraMaterial, fernTransforms, false);
-    createSingle(VegetationGeometries.wildflowers, this.groundFloraMaterial, wildflowerTransforms, false);
-    createSingle(VegetationGeometries.reeds, this.groundFloraMaterial, reedTransforms, false);
+    createSingle(VegetationGeometries.groundFern, this.groundFloraMaterial, fernTransforms);
+    createSingle(VegetationGeometries.wildflowers, this.groundFloraMaterial, wildflowerTransforms);
+    createSingle(VegetationGeometries.reeds, this.groundFloraMaterial, reedTransforms);
   }
 
   private createInstancedPair(
@@ -1119,7 +1119,7 @@ export class VegetationManager {
     trunkMesh.castShadow = true;
     trunkMesh.receiveShadow = true;
     leafMesh.castShadow = true;
-    leafMesh.receiveShadow = false;
+    leafMesh.receiveShadow = true;
 
     for (let i = 0; i < count; i++) {
       trunkMesh.setMatrixAt(i, items[i].matrix);
