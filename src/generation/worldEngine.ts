@@ -348,8 +348,8 @@ export class WorldEngine {
     return this.terrainGen;
   }
 
-  public setViewRadius(radius: number): void {
-    this.chunkMgr.setViewRadius(radius);
+  public setViewRadius(radius: number, retainRadius: number = 0): void {
+    this.chunkMgr.setViewRadius(radius, retainRadius);
   }
 
   public getChunkManager(): ChunkManager {

@@ -27,6 +27,7 @@ export class ChunkManager {
   private currentCenterCx: number = 999999;
   private currentCenterCz: number = 999999;
   private viewRadius: number = CONFIG.VIEW_RADIUS_CHUNKS;
+  private retainRadius: number = 0;
   // Incrementa sempre que algo que projeta/recebe sombra entra ou sai da cena (malha de relevo
   // pronta, vegetação populada, chunk descarregado) - sinaliza que o shadow map está velho.
   private sceneVersion: number = 0;
@@ -43,14 +44,21 @@ export class ChunkManager {
     this.scene = scene;
     this.terrainGen = terrainGen;
     this.vegetationMgr = vegetationMgr;
+    // A vegetação de todos os chunks vive em InstancedMeshes compartilhados
+    scene.add(vegetationMgr.instances.root);
     this.terrainMaterial = terrainMaterial;
     this.waterMaterial = waterMaterial;
     this.forge = forge || TerrainTextureForge.getInstance(terrainGen.getSeed());
   }
 
-  public setViewRadius(r: number): void {
-    if (this.viewRadius !== r) {
+  /**
+   * retainRadius: chunks já carregados até esse raio não são descarregados mesmo fora do raio de
+   * visão (ex.: ao aproximar o zoom), para não serem regerados quando o zoom afastar de novo.
+   */
+  public setViewRadius(r: number, retainRadius: number = 0): void {
+    if (this.viewRadius !== r || this.retainRadius !== retainRadius) {
       this.viewRadius = r;
+      this.retainRadius = retainRadius;
       if (this.currentCenterCx !== 999999) {
         this.refreshChunkPlan(this.currentCenterCx, this.currentCenterCz);
       }
@@ -77,12 +85,13 @@ export class ChunkManager {
 
   private refreshChunkPlan(cx: number, cz: number): void {
     const r = this.viewRadius;
-    const unloadDistSq = (r + CONFIG.UNLOAD_MARGIN_CHUNKS) * (r + CONFIG.UNLOAD_MARGIN_CHUNKS);
+    const keep = Math.max(r, this.retainRadius) + CONFIG.UNLOAD_MARGIN_CHUNKS;
+    const unloadDistSq = keep * keep;
 
     // 0. Chunks já carregados que ficaram perto sobem de LOD de textura
     for (const chunk of this.chunks.values()) {
-      const wanted = this.textureDensityFor(chunk.cx - cx, chunk.cz - cz);
-      if (wanted > chunk.getTextureDensity()) chunk.setTextureDensity(wanted);
+      const dx = chunk.cx - cx, dz = chunk.cz - cz;
+      chunk.setLOD(this.textureDensityFor(dx, dz), this.segmentsFor(dx, dz));
     }
 
     // 1. Identifica chunks no raio de visão que precisam ser gerados
@@ -157,14 +166,13 @@ export class ChunkManager {
 
     if (this.buildQueue.length === 0) return;
 
-    // A rasterização pesada de texturas roda em Web Workers (fora da main thread), então o
-    // custo síncrono de construir um Chunk aqui é apenas geometria/heightmap - bem mais barato,
-    // permitindo enfileirar vários chunks por frame sem pacing agressivo entre frames.
+    // Textura e malha de relevo são geradas em Web Workers, então criar um Chunk aqui custa só
+    // o teste de submersão e (perto da câmera) a vegetação: dá para despachar muitos por frame.
     const isInitialBurst = this.chunks.size < 35;
 
     const startTime = performance.now();
-    const MAX_TIME_MS = isInitialBurst ? 32.0 : 6.0;
-    const maxChunksPerFrame = isInitialBurst ? 6 : 2;
+    const MAX_TIME_MS = isInitialBurst ? 24.0 : 5.0;
+    const maxChunksPerFrame = isInitialBurst ? 64 : 24;
     let chunksBuilt = 0;
 
     const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
@@ -190,7 +198,8 @@ export class ChunkManager {
         this.forge,
         enableDetail,
         this.bumpSceneVersion,
-        this.textureDensityFor(item.cx - this.currentCenterCx, item.cz - this.currentCenterCz)
+        this.textureDensityFor(item.cx - this.currentCenterCx, item.cz - this.currentCenterCz),
+        this.segmentsFor(item.cx - this.currentCenterCx, item.cz - this.currentCenterCz)
       );
 
       this.chunks.set(item.key, chunk);
@@ -235,14 +244,23 @@ export class ChunkManager {
 
   /**
    * LOD de textura por anel (distância em chunks): densidade total nos 3x3 chunks em volta da
-   * câmera, metade até o anel 3 e um quarto além, com piso de 3 tx/m. O custo de gerar uma textura cresce com o
-   * quadrado da densidade, e chunks distantes já são vistos em mipmaps pequenos.
+   * câmera, metade até o anel 3, um quarto até o anel 7 (piso 3 tx/m) e um oitavo além (piso
+   * 1.5 tx/m). O custo de gerar uma textura cresce com o quadrado da densidade, e chunks
+   * distantes só aparecem com a câmera bem afastada, quando cada chunk ocupa poucos pixels.
    */
   private textureDensityFor(dx: number, dz: number): number {
     const base = this.forge.density;
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
-    const factor = ring <= 1 ? 1.0 : ring <= 3 ? 0.5 : 0.25;
-    return Math.max(Math.min(base, 3.0), base * factor);
+    const factor = ring <= 1 ? 1.0 : ring <= 3 ? 0.5 : ring <= 7 ? 0.25 : 0.125;
+    const floor = ring <= 7 ? 3.0 : 1.5;
+    return Math.max(Math.min(base, floor), base * factor);
+  }
+
+  /** LOD da malha de relevo por anel: 32 subdivisões (2m) perto, 16 até o anel 7 e 8 além. */
+  private segmentsFor(dx: number, dz: number): number {
+    const full = CONFIG.CHUNK_SEGMENTS;
+    const ring = Math.max(Math.abs(dx), Math.abs(dz));
+    return ring <= 3 ? full : ring <= 7 ? Math.max(8, full / 2) : Math.max(8, full / 4);
   }
 
   public getSceneVersion(): number {

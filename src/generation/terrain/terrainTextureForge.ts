@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { CONFIG } from '../../config.ts';
 import { getTextureWorkerPool } from './textureWorkerPool.ts';
+import type { ChunkGeometryData } from './chunkGeometry.ts';
 import { BiomeType } from '../types.ts';
 
 /* =========================================================================
@@ -1343,17 +1344,18 @@ export class TerrainTextureForge {
   }
 
   /**
-   * Geração assíncrona via Web Worker: move 100% do custo pesado de genChunkTexture
-   * (que escala com o quadrado da densidade de texel) para fora da main thread,
-   * eliminando travamentos ao carregar chunks em densidades altas.
+   * Geração assíncrona via Web Worker: move o custo pesado de genChunkTexture (que escala com o
+   * quadrado da densidade de texel) e da malha de relevo para fora da main thread.
+   * density 0 = sem textura; segments 0 = sem malha.
    */
-  public generateChunkTexturesAsync(
+  public generateChunkAsync(
     minWorldX: number,
     minWorldZ: number,
     chunkSize: number,
-    density: number = this.density,
-    priority: number = 0
-  ): { promise: Promise<{ topTex: THREE.DataTexture; topDarkTex: THREE.DataTexture; bioTex: THREE.DataTexture }>; cancel: () => void } {
+    density: number,
+    priority: number = 0,
+    segments: number = 0
+  ): { promise: Promise<{ textures?: ReturnType<typeof makeChunkTextures>; geometry?: ChunkGeometryData }>; cancel: () => void } {
     const pool = getTextureWorkerPool();
     const { promise, reqId } = pool.request(
       this.params.seed,
@@ -1362,10 +1364,14 @@ export class TerrainTextureForge {
       minWorldZ,
       chunkSize,
       density,
-      priority
+      priority,
+      segments
     );
 
-    const wrapped = promise.then(makeChunkTextures);
+    const wrapped = promise.then((r) => ({
+      textures: r.texture ? makeChunkTextures(r.texture) : undefined,
+      geometry: r.geometry
+    }));
 
     return { promise: wrapped, cancel: () => pool.cancel(reqId) };
   }

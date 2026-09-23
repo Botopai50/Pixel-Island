@@ -4,6 +4,7 @@ import { TerrainPoint, BiomeType } from '../types.ts';
 import { CONFIG } from '../../config.ts';
 import { VegetationTextures } from './vegetationTextures.ts';
 import { BotanicalGeometryFactory } from './botanicalGeometryFactory.ts';
+import { VegetationInstancePool } from './instancePool.ts';
 
 export interface ITerrainQueryable {
   getPoint(x: number, z: number): TerrainPoint;
@@ -407,6 +408,9 @@ export class VegetationManager {
   private deadTreeMaterial: THREE.MeshLambertMaterial;
   private groundFloraMaterial: THREE.MeshLambertMaterial;
 
+  /** Instâncias de todos os chunks, agrupadas por (geometria, material). Adicione `instances.root` à cena. */
+  public readonly instances = new VegetationInstancePool();
+
   constructor() {
     VegetationGeometries.init();
 
@@ -509,7 +513,7 @@ export class VegetationManager {
     chunkZ: number,
     chunkSize: number,
     terrainGen: ITerrainQueryable,
-    parentGroup: THREE.Group,
+    owner: number,
     enableDetailFlora: boolean = true
   ): void {
     const chunkSeed = PRNG.hash2D(chunkX, chunkZ, 0x85ebca6b);
@@ -1036,46 +1040,35 @@ export class VegetationManager {
     }
 
     // Instanciação em Pares de Árvores (Adultas, Mudas e Variantes)
-    this.createInstancedPair(VegetationGeometries.oakTrunk, VegetationGeometries.oakLeaves, this.trunkMaterial, this.foliageMaterial, oakItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.broadOakTrunk, VegetationGeometries.broadOakLeaves, this.trunkMaterial, this.foliageMaterial, broadOakItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.oakSaplingTrunk, VegetationGeometries.oakSaplingLeaves, this.trunkMaterial, this.foliageMaterial, oakSaplingItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.oakTrunk, VegetationGeometries.oakLeaves, this.trunkMaterial, this.foliageMaterial, oakItems, owner);
+    this.createInstancedPair(VegetationGeometries.broadOakTrunk, VegetationGeometries.broadOakLeaves, this.trunkMaterial, this.foliageMaterial, broadOakItems, owner);
+    this.createInstancedPair(VegetationGeometries.oakSaplingTrunk, VegetationGeometries.oakSaplingLeaves, this.trunkMaterial, this.foliageMaterial, oakSaplingItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.pineTrunk, VegetationGeometries.pineLeaves, this.trunkMaterial, this.foliageMaterial, pineItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.pineSaplingTrunk, VegetationGeometries.pineSaplingLeaves, this.trunkMaterial, this.foliageMaterial, pineSaplingItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.pineTrunk, VegetationGeometries.pineLeaves, this.trunkMaterial, this.foliageMaterial, pineItems, owner);
+    this.createInstancedPair(VegetationGeometries.pineSaplingTrunk, VegetationGeometries.pineSaplingLeaves, this.trunkMaterial, this.foliageMaterial, pineSaplingItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.birchTrunk, VegetationGeometries.birchLeaves, this.birchTrunkMaterial, this.foliageMaterial, birchItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.twinBirchTrunk, VegetationGeometries.twinBirchLeaves, this.birchTrunkMaterial, this.foliageMaterial, twinBirchItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.birchSaplingTrunk, VegetationGeometries.birchSaplingLeaves, this.birchTrunkMaterial, this.foliageMaterial, birchSaplingItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.birchTrunk, VegetationGeometries.birchLeaves, this.birchTrunkMaterial, this.foliageMaterial, birchItems, owner);
+    this.createInstancedPair(VegetationGeometries.twinBirchTrunk, VegetationGeometries.twinBirchLeaves, this.birchTrunkMaterial, this.foliageMaterial, twinBirchItems, owner);
+    this.createInstancedPair(VegetationGeometries.birchSaplingTrunk, VegetationGeometries.birchSaplingLeaves, this.birchTrunkMaterial, this.foliageMaterial, birchSaplingItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.palmTrunk, VegetationGeometries.palmLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, palmItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.palmSaplingTrunk, VegetationGeometries.palmSaplingLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, palmSaplingItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.palmTrunk, VegetationGeometries.palmLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, palmItems, owner);
+    this.createInstancedPair(VegetationGeometries.palmSaplingTrunk, VegetationGeometries.palmSaplingLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, palmSaplingItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.acaciaTrunk, VegetationGeometries.acaciaLeaves, this.trunkMaterial, this.foliageMaterial, acaciaItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.acaciaSaplingTrunk, VegetationGeometries.acaciaSaplingLeaves, this.trunkMaterial, this.foliageMaterial, acaciaSaplingItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.acaciaTrunk, VegetationGeometries.acaciaLeaves, this.trunkMaterial, this.foliageMaterial, acaciaItems, owner);
+    this.createInstancedPair(VegetationGeometries.acaciaSaplingTrunk, VegetationGeometries.acaciaSaplingLeaves, this.trunkMaterial, this.foliageMaterial, acaciaSaplingItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.mapleTrunk, VegetationGeometries.mapleLeaves, this.trunkMaterial, this.foliageMaterial, mapleItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.mapleTrunk, VegetationGeometries.mapleLeaves, this.trunkMaterial, this.foliageMaterial, mapleItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.mangroveTrunk, VegetationGeometries.mangroveLeaves, this.trunkMaterial, this.foliageMaterial, mangroveItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.mangroveSaplingTrunk, VegetationGeometries.mangroveSaplingLeaves, this.trunkMaterial, this.foliageMaterial, mangroveSaplingItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.mangroveTrunk, VegetationGeometries.mangroveLeaves, this.trunkMaterial, this.foliageMaterial, mangroveItems, owner);
+    this.createInstancedPair(VegetationGeometries.mangroveSaplingTrunk, VegetationGeometries.mangroveSaplingLeaves, this.trunkMaterial, this.foliageMaterial, mangroveSaplingItems, owner);
 
-    this.createInstancedPair(VegetationGeometries.snowPineTrunk, VegetationGeometries.snowPineLeaves, this.trunkMaterial, this.snowPineFoliageMaterial, snowPineItems, parentGroup);
-    this.createInstancedPair(VegetationGeometries.arcticWillowTrunk, VegetationGeometries.arcticWillowLeaves, this.trunkMaterial, this.foliageMaterial, arcticWillowItems, parentGroup);
+    this.createInstancedPair(VegetationGeometries.snowPineTrunk, VegetationGeometries.snowPineLeaves, this.trunkMaterial, this.snowPineFoliageMaterial, snowPineItems, owner);
+    this.createInstancedPair(VegetationGeometries.arcticWillowTrunk, VegetationGeometries.arcticWillowLeaves, this.trunkMaterial, this.foliageMaterial, arcticWillowItems, owner);
 
     // Instanciação de Meshes Individuais
     const createSingle = (geo: THREE.BufferGeometry, mat: THREE.Material, list: { matrix: THREE.Matrix4; tint: THREE.Color }[], name?: string) => {
       if (list.length === 0) return;
-      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
-      if (name) mesh.name = name;
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      for (let i = 0; i < list.length; i++) {
-        mesh.setMatrixAt(i, list[i].matrix);
-        mesh.setColorAt(i, list[i].tint);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      mesh.computeBoundingSphere(); // Garante bounding sphere precisa para frustum culling
-      parentGroup.add(mesh);
+      this.instances.add(owner, geo, mat, list.map((it) => it.matrix), list.map((it) => it.tint), name);
     };
 
     createSingle(VegetationGeometries.deadTrunk, this.deadTreeMaterial, deadTreeTransforms, 'deadTrunk');
@@ -1109,34 +1102,16 @@ export class VegetationManager {
     trunkMat: THREE.Material,
     leafMat: THREE.Material,
     items: TreeTransformItem[],
-    parent: THREE.Group
+    owner: number
   ): void {
     if (items.length === 0) return;
+    const matrices = items.map((it) => it.matrix);
+    this.instances.add(owner, trunkGeo, trunkMat, matrices, items.map((it) => it.trunkTint));
+    this.instances.add(owner, leafGeo, leafMat, matrices, items.map((it) => it.leafTint));
+  }
 
-    const count = items.length;
-    const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
-    const leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, count);
-    trunkMesh.castShadow = true;
-    trunkMesh.receiveShadow = true;
-    leafMesh.castShadow = true;
-    leafMesh.receiveShadow = true;
-
-    for (let i = 0; i < count; i++) {
-      trunkMesh.setMatrixAt(i, items[i].matrix);
-      trunkMesh.setColorAt(i, items[i].trunkTint);
-
-      leafMesh.setMatrixAt(i, items[i].matrix);
-      leafMesh.setColorAt(i, items[i].leafTint);
-    }
-
-    trunkMesh.instanceMatrix.needsUpdate = true;
-    leafMesh.instanceMatrix.needsUpdate = true;
-    if (trunkMesh.instanceColor) trunkMesh.instanceColor.needsUpdate = true;
-    if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
-    trunkMesh.computeBoundingSphere();
-    leafMesh.computeBoundingSphere();
-
-    parent.add(trunkMesh);
-    parent.add(leafMesh);
+  /** Remove todas as instâncias que um chunk adicionou. */
+  public releaseChunk(owner: number): void {
+    this.instances.remove(owner);
   }
 }

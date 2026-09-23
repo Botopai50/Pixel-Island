@@ -242,6 +242,19 @@ class App {
     this.reflectionCameraPerspective.updateProjectionMatrix();
   }
 
+  /**
+   * Raio de chunks que cobre a tela no modo aéreo: a câmera é ortográfica, então a área visível
+   * no chão depende só do zoom (largura da tela e profundidade projetada pela inclinação).
+   */
+  private observerViewRadius(): number {
+    const frustum = this.playerController.getZoomFrustumSize();
+    const halfWidth = (frustum * (window.innerWidth / window.innerHeight)) / 2;
+    const halfDepth = frustum / 2 / Math.sin(CONFIG.CAMERA.DEFAULT_PITCH);
+    const reach = Math.hypot(halfWidth, halfDepth);
+    const r = Math.ceil(reach / CONFIG.CHUNK_SIZE) + 2;
+    return Math.min(CONFIG.MAX_VIEW_RADIUS_CHUNKS, Math.max(CONFIG.VIEW_RADIUS_CHUNKS, r));
+  }
+
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
@@ -262,6 +275,9 @@ class App {
     }
 
     // 2. Atualização dos Chunks Procedurais do Mundo ao redor do Observador
+    if (this.playerController.getMode() === CameraMode.OBSERVER) {
+      this.worldEngine.setViewRadius(this.observerViewRadius(), CONFIG.MAX_VIEW_RADIUS_CHUNKS);
+    }
     this.worldEngine.updateObserverPosition(playerPos.x, playerPos.z);
     this.worldEngine.updateSimulation(dt);
     this.syncAtmosphereWithWorld();

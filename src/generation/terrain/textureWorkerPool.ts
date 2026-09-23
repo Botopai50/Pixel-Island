@@ -1,4 +1,11 @@
 import { ForgeParams, ChunkTextureResult } from './terrainTextureForge.ts';
+import { ChunkGeometryData } from './chunkGeometry.ts';
+
+/** Resultado de um job: textura (se density > 0) e/ou malha de relevo (se segments > 0). */
+export interface ChunkJobResult {
+  texture?: ChunkTextureResult;
+  geometry?: ChunkGeometryData;
+}
 
 /**
  * Pool de Web Workers dedicado à geração assíncrona de texturas de chunk.
@@ -15,8 +22,9 @@ interface PendingReq {
   minWorldZ: number;
   chunkSize: number;
   density: number;
+  segments: number;
   priority: number;
-  resolve: (r: ChunkTextureResult) => void;
+  resolve: (r: ChunkJobResult) => void;
   reject: (e: unknown) => void;
 }
 
@@ -51,12 +59,13 @@ export class TextureWorkerPool {
     minWorldZ: number,
     chunkSize: number,
     density: number,
-    priority: number = 0
-  ): { promise: Promise<ChunkTextureResult>; reqId: number } {
+    priority: number = 0,
+    segments: number = 0
+  ): { promise: Promise<ChunkJobResult>; reqId: number } {
     const reqId = ++this.reqCounter;
-    const promise = new Promise<ChunkTextureResult>((resolve, reject) => {
+    const promise = new Promise<ChunkJobResult>((resolve, reject) => {
       this.queue.push({
-        reqId, seed, params: { ...params }, minWorldX, minWorldZ, chunkSize, density, priority, resolve, reject
+        reqId, seed, params: { ...params }, minWorldX, minWorldZ, chunkSize, density, segments, priority, resolve, reject
       });
       this.pump();
     });
@@ -99,7 +108,8 @@ export class TextureWorkerPool {
         minWorldX: item.minWorldX,
         minWorldZ: item.minWorldZ,
         chunkSize: item.chunkSize,
-        density: item.density
+        density: item.density,
+        segments: item.segments
       });
     }
   }
@@ -116,13 +126,7 @@ export class TextureWorkerPool {
       } else if (data.error) {
         item.reject(new Error(data.error));
       } else {
-        item.resolve({
-          img: new Uint8ClampedArray(data.img),
-          imgD: new Uint8ClampedArray(data.imgD),
-          bimg: new Uint8ClampedArray(data.bimg),
-          width: data.width,
-          height: data.height
-        });
+        item.resolve({ texture: data.texture, geometry: data.geometry });
       }
     }
     this.pump();

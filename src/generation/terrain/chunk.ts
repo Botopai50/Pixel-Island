@@ -13,6 +13,9 @@ const SEABED_SEGMENTS = 8;
 // Densidade máxima da prévia de textura (tx/m) enquanto a textura final é gerada
 const PREVIEW_DENSITY = 6;
 const seabedMaterial = new THREE.MeshLambertMaterial({ color: 0x3d5c58 });
+// Identifica as instâncias de vegetação de cada chunk no pool compartilhado (único por instância,
+// não por coordenada: um chunk descarregado e recriado ganha um id novo)
+let nextVegetationOwner = 1;
 
 export class Chunk {
   public readonly cx: number;
@@ -21,7 +24,8 @@ export class Chunk {
   public isSubmerged: boolean = false;
   public hasVegetation: boolean = false;
   private terrainMesh?: THREE.Mesh;
-  private vegetationGroup: THREE.Group = new THREE.Group();
+  private readonly vegetationOwner = nextVegetationOwner++;
+  private vegetationMgr?: VegetationManager;
   private isDestroyed: boolean = false;
 
   private forge: TerrainTextureForge;
@@ -29,14 +33,15 @@ export class Chunk {
   private topTex?: THREE.DataTexture;
   private topDarkTex?: THREE.DataTexture;
   private bioTex?: THREE.DataTexture;
-  private cancelTextureRequest?: () => void;
+  private cancelRequest?: () => void;
   private onSceneChanged?: () => void;
   private terrainGeo?: THREE.BufferGeometry;
-  // Densidade de texels (tx/m) pedida por último e a densidade final desejada (LOD por distância).
+  // LOD por distância: densidade de texels (tx/m) e subdivisões da malha aplicadas e desejadas.
   // A primeira textura pode vir numa prévia mais barata e depois subir até targetDensity.
-  private requestedDensity = 0;
+  private appliedDensity = 0;
+  private appliedSegments = 0;
   private targetDensity = 0;
-  private textureRequestId = 0;
+  private targetSegments = 0;
 
   constructor(
     cx: number,
@@ -49,7 +54,8 @@ export class Chunk {
     forge?: TerrainTextureForge,
     enableDetailFlora: boolean = true,
     onSceneChanged?: () => void,
-    textureDensity?: number
+    textureDensity?: number,
+    segments?: number
   ) {
     this.cx = cx;
     this.cz = cz;
@@ -77,15 +83,10 @@ export class Chunk {
       return;
     }
 
-    // Constrói o relevo procedural do chunk com o sistema de texturas procedurais
-    this.buildTerrain(terrainGen);
-    // Prévia barata primeiro (no máx. 6 tx/m) para o mundo aparecer rápido; o upgrade para a
-    // densidade desejada é pedido automaticamente quando a prévia chega.
-    const wanted = textureDensity ?? this.forge.density;
-    this.targetDensity = wanted;
-    this.requestTextures(wanted > PREVIEW_DENSITY ? Math.max(PREVIEW_DENSITY, wanted / 4) : wanted);
-
-    this.group.add(this.vegetationGroup);
+    // Malha e textura são geradas juntas num worker; a malha aparece quando as duas chegam.
+    this.targetDensity = textureDensity ?? this.forge.density;
+    this.targetSegments = segments ?? CONFIG.CHUNK_SEGMENTS;
+    this.refine();
 
     // Popula árvores, arbustos e rochas apenas se permitido pelo LOD de distância
     if (enableVegetation) {
@@ -96,7 +97,8 @@ export class Chunk {
   public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator, enableDetailFlora: boolean = true): void {
     if (this.hasVegetation || this.isSubmerged || this.isDestroyed) return;
     this.hasVegetation = true;
-    vegetationMgr.populateChunk(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationGroup, enableDetailFlora);
+    this.vegetationMgr = vegetationMgr;
+    vegetationMgr.populateChunk(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationOwner, enableDetailFlora);
     this.onSceneChanged?.();
   }
 
@@ -122,158 +124,94 @@ export class Chunk {
     this.onSceneChanged?.();
   }
 
-  private buildTerrain(terrainGen: TerrainGenerator): void {
-    const size = CONFIG.CHUNK_SIZE;
-    const startX = this.cx * size;
-    const startZ = this.cz * size;
-
-    const segments = CONFIG.CHUNK_SEGMENTS;
-
-    const geo = new THREE.PlaneGeometry(size, size, segments, segments);
-    geo.rotateX(-Math.PI / 2);
-
-    const posAttr = geo.attributes.position;
-    const normalAttr = geo.attributes.normal;
-    const count = posAttr.count;
-
-    const gridDim = segments + 1;
-    const heightMap = new Float32Array(count);
-    const deltaX = size / segments;
-    const deltaZ = size / segments;
-
-    // Passo 1: Alturas dos vértices (mesma função em que o jogador anda)
-    for (let i = 0; i < count; i++) {
-      const h = terrainGen.getHeight(startX + posAttr.getX(i), startZ + posAttr.getZ(i));
-      posAttr.setY(i, h);
-      heightMap[i] = h;
-    }
-
-    // Passo 2: Calcula as normais analíticas
-    for (let iy = 0; iy < gridDim; iy++) {
-      for (let ix = 0; ix < gridDim; ix++) {
-        const i = iy * gridDim + ix;
-        const localX = posAttr.getX(i);
-        const localZ = posAttr.getZ(i);
-        const worldX = startX + localX;
-        const worldZ = startZ + localZ;
-
-        // Vizinhança X
-        let hL: number;
-        let hR: number;
-        if (ix > 0 && ix < segments) {
-          hL = heightMap[iy * gridDim + (ix - 1)];
-          hR = heightMap[iy * gridDim + (ix + 1)];
-        } else if (ix === 0) {
-          hL = terrainGen.getHeight(worldX - deltaX, worldZ);
-          hR = heightMap[iy * gridDim + 1];
-        } else {
-          hL = heightMap[iy * gridDim + (segments - 1)];
-          hR = terrainGen.getHeight(worldX + deltaX, worldZ);
-        }
-
-        // Vizinhança Z
-        let hD: number;
-        let hU: number;
-        if (iy > 0 && iy < segments) {
-          hD = heightMap[(iy - 1) * gridDim + ix];
-          hU = heightMap[(iy + 1) * gridDim + ix];
-        } else if (iy === 0) {
-          hD = terrainGen.getHeight(worldX, worldZ - deltaZ);
-          hU = heightMap[1 * gridDim + ix];
-        } else {
-          hD = heightMap[(iy - 1) * gridDim + ix];
-          hU = terrainGen.getHeight(worldX, worldZ + deltaZ);
-        }
-
-        const nx = (hL - hR) / (2 * deltaX);
-        const nz = (hD - hU) / (2 * deltaZ);
-        const len = Math.sqrt(nx * nx + 1.0 + nz * nz);
-        normalAttr.setXYZ(i, nx / len, 1.0 / len, nz / len);
-      }
-    }
-
-    posAttr.needsUpdate = true;
-    normalAttr.needsUpdate = true;
-
-    geo.computeBoundingSphere();
-    geo.computeBoundingBox();
-    this.terrainGeo = geo;
-  }
-
-  /** Sobe a densidade desejada (LOD). Se a primeira textura ainda não chegou, o upgrade espera por ela. */
-  public setTextureDensity(density: number): void {
-    if (this.isSubmerged || this.isDestroyed || !this.terrainGeo) return;
+  /** Sobe o LOD desejado (densidade de texels e subdivisões da malha); nunca desce. */
+  public setLOD(density: number, segments: number): void {
+    if (this.isSubmerged || this.isDestroyed) return;
     this.targetDensity = Math.max(this.targetDensity, density);
-    if (!this.terrainMesh && this.cancelTextureRequest) return;
-    if (this.targetDensity > this.requestedDensity) this.requestTextures(this.targetDensity);
+    this.targetSegments = Math.max(this.targetSegments, segments);
+    this.refine();
   }
 
   /**
-   * Pede as texturas do chunk numa densidade de texels. A rasterização roda num Web Worker; a
-   * malha só aparece quando a primeira textura chega, e trocas de LOD mantêm a textura antiga até
-   * a nova ficar pronta (sem piscar). Uma resposta de pedido antigo é descartada.
+   * Pede ao worker o que falta para chegar no LOD desejado: textura (se a densidade subiu) e/ou
+   * malha (se as subdivisões subiram). Um pedido por vez; quando ele chega, o próximo passo é
+   * pedido. A primeira resposta cria a malha; as seguintes trocam textura/geometria sem piscar.
    */
-  private requestTextures(density: number): void {
-    if (this.isSubmerged || this.isDestroyed || !this.terrainGeo) return;
-    if (density === this.requestedDensity) return;
+  private refine(): void {
+    if (this.isSubmerged || this.isDestroyed || this.cancelRequest) return;
 
-    this.cancelTextureRequest?.();
-    this.requestedDensity = density;
-    const requestId = ++this.textureRequestId;
+    let density = this.targetDensity > this.appliedDensity ? this.targetDensity : 0;
+    // Primeira textura: prévia barata (no máx. 6 tx/m) para o mundo aparecer rápido
+    if (density > 0 && !this.terrainMesh && density > PREVIEW_DENSITY) {
+      density = Math.max(PREVIEW_DENSITY, density / 4);
+    }
+    const segments = this.targetSegments > this.appliedSegments ? this.targetSegments : 0;
+    if (density === 0 && segments === 0) return;
 
     const size = CONFIG.CHUNK_SIZE;
     const originX = this.cx * size - size / 2;
     const originZ = this.cz * size - size / 2;
-    // Primeira textura (chunk ainda invisível) tem prioridade sobre upgrades de LOD
+    // Primeiro pedido (chunk ainda invisível) tem prioridade sobre upgrades de LOD
     const priority = this.terrainMesh ? 1 : 0;
-    const { promise, cancel } = this.forge.generateChunkTexturesAsync(originX, originZ, size, density, priority);
-    this.cancelTextureRequest = cancel;
+    const { promise, cancel } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments);
+    this.cancelRequest = cancel;
 
-    promise.then((textures) => {
-      if (this.isDestroyed || requestId !== this.textureRequestId) {
-        textures.topTex.dispose();
-        textures.topDarkTex.dispose();
-        textures.bioTex.dispose();
+    promise.then(({ textures, geometry }) => {
+      if (this.isDestroyed) {
+        textures?.topTex.dispose();
+        textures?.topDarkTex.dispose();
+        textures?.bioTex.dispose();
         return;
       }
-      this.cancelTextureRequest = undefined;
+      this.cancelRequest = undefined;
 
-      const oldMaterial = this.chunkMaterial;
-      const oldTextures = [this.topTex, this.topDarkTex, this.bioTex];
+      if (geometry) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(geometry.positions, 3));
+        geo.setAttribute('normal', new THREE.BufferAttribute(geometry.normals, 3));
+        geo.setIndex(new THREE.BufferAttribute(geometry.index, 1));
+        geo.computeBoundingSphere();
+        geo.computeBoundingBox();
+        const oldGeo = this.terrainGeo;
+        this.terrainGeo = geo;
+        this.appliedSegments = geometry.segments;
+        if (this.terrainMesh) this.terrainMesh.geometry = geo;
+        oldGeo?.dispose();
+      }
 
-      this.topTex = textures.topTex;
-      this.topDarkTex = textures.topDarkTex;
-      this.bioTex = textures.bioTex;
-      this.chunkMaterial = createChunkTerrainMaterial(
-        this.forge, this.topTex, this.topDarkTex, this.bioTex, originX, originZ, size, density
-      );
+      if (textures) {
+        const oldMaterial = this.chunkMaterial;
+        const oldTextures = [this.topTex, this.topDarkTex, this.bioTex];
+        this.topTex = textures.topTex;
+        this.topDarkTex = textures.topDarkTex;
+        this.bioTex = textures.bioTex;
+        this.chunkMaterial = createChunkTerrainMaterial(
+          this.forge, this.topTex, this.topDarkTex, this.bioTex, originX, originZ, size, density
+        );
+        this.appliedDensity = density;
+        if (this.terrainMesh) this.terrainMesh.material = this.chunkMaterial;
+        oldMaterial?.dispose();
+        for (const t of oldTextures) t?.dispose();
+      }
 
-      if (this.terrainMesh) {
-        this.terrainMesh.material = this.chunkMaterial;
-      } else {
+      if (!this.terrainMesh && this.terrainGeo && this.chunkMaterial) {
         this.terrainMesh = new THREE.Mesh(this.terrainGeo, this.chunkMaterial);
         this.terrainMesh.position.set(this.cx * size, 0, this.cz * size);
         this.terrainMesh.castShadow = true;
         this.terrainMesh.receiveShadow = true;
         this.group.add(this.terrainMesh);
         this.onSceneChanged?.();
+      } else if (geometry) {
+        this.onSceneChanged?.();
       }
 
-      oldMaterial?.dispose();
-      for (const t of oldTextures) t?.dispose();
-
-      if (this.targetDensity > density) this.requestTextures(this.targetDensity);
+      this.refine();
     }).catch((err) => {
-      if (requestId === this.textureRequestId) this.cancelTextureRequest = undefined;
+      this.cancelRequest = undefined;
       if (!this.isDestroyed && err?.message !== 'cancelled') {
-        console.error(`Falha ao gerar texturas do chunk ${this.cx}_${this.cz}:`, err);
+        console.error(`Falha ao gerar o chunk ${this.cx}_${this.cz}:`, err);
       }
     });
-  }
-
-  /** Densidade de texels final desejada para este chunk (aplicada ou a caminho). */
-  public getTextureDensity(): number {
-    return this.targetDensity;
   }
 
   public updatePixelScale(scale: number): void {
@@ -287,9 +225,9 @@ export class Chunk {
     this.isDestroyed = true;
 
     // Cancela a requisição de textura no worker pool se o chunk ainda não estiver pronto
-    if (this.cancelTextureRequest) {
-      this.cancelTextureRequest();
-      this.cancelTextureRequest = undefined;
+    if (this.cancelRequest) {
+      this.cancelRequest();
+      this.cancelRequest = undefined;
     }
 
     // Descarta a geometria do chunk (existe mesmo se a malha ainda esperava a primeira textura)
@@ -312,12 +250,8 @@ export class Chunk {
       this.bioTex.dispose();
     }
 
-    // Para a vegetação, desvincula as instâncias sem descartar as geometrias compartilhadas
-    this.vegetationGroup.traverse((obj) => {
-      if (obj instanceof THREE.InstancedMesh) {
-        if (obj.instanceMatrix) obj.instanceMatrix.needsUpdate = false;
-      }
-    });
+    // Libera as instâncias de vegetação deste chunk no pool compartilhado
+    this.vegetationMgr?.releaseChunk(this.vegetationOwner);
 
     this.group.clear();
   }
