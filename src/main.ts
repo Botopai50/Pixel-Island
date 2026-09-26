@@ -283,6 +283,10 @@ class App {
     this.syncAtmosphereWithWorld();
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
     this.atmosphere.update(dt, this.playerController.getCamera().position);
+    // Neblina a partir do ponto focado (na visão aérea a câmera fica centenas de metros acima)
+    this.atmosphere.setFocusDistance(this.playerController.getCamera().position.distanceTo(playerPos));
+    const [fogNear, fogFar] = this.atmosphere.getFogRange();
+    this.worldEngine.setFogRange(fogNear, fogFar);
     // Pixels do céu acompanham a densidade de texels do chão (1.0 = densidade padrão)
     this.atmosphere.getSkybox().setPixelScale(this.worldEngine.getTexelDensity() / DEFAULT_D);
 

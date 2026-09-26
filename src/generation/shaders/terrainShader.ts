@@ -158,7 +158,10 @@ export function createChunkTerrainMaterial(
 
     vec3 topLight = min(vec3(1.0), topS.rgb * 1.24 + vec3(0.02, 0.03, 0.01));
     vec3 subPixelCol = topBase;
-    if (topS.a > 0.4) {
+    // Grama temperada (bioma 0) vem pronta do gerador de grama pixel-art: sem dithering por cima
+    if (topS.a > 0.4 && bi < 0.5) {
+      subPixelCol = topBase;
+    } else if (topS.a > 0.4) {
       if (shadeShift > 0.10) {
         subPixelCol = mix(topBase, topLight, clamp((shadeShift - 0.10) * 2.5, 0.0, 1.0));
       } else if (shadeShift < -0.10) {

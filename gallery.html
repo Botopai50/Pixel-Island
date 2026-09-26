@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Galeria de elementos - Procedural Island Explorer</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px; background: #1b2230; color: #e8edf3; font: 14px/1.4 system-ui, sans-serif; }
+    h1 { margin: 0 0 4px; font-size: 22px; }
+    .sub { color: #9aa7b8; margin: 0 0 20px; }
+    h2 { font-size: 17px; margin: 28px 0 12px; border-bottom: 1px solid #333d4d; padding-bottom: 6px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+    figure { margin: 0; background: #242d3d; border-radius: 10px; overflow: hidden; }
+    img { display: block; width: 100%; aspect-ratio: 1; background: linear-gradient(#bcd8f0, #e6eef5); }
+    figcaption { padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 2px; }
+    figcaption span { color: #9aa7b8; font-size: 12px; }
+    figcaption code { color: #7f8ea3; font-size: 11px; }
+    figcaption a { color: #8cc4ff; font-size: 12px; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Elementos do mundo</h1>
+  <p class="sub"><span id="count">0</span> elementos renderizados com a mesma geometria, material e cor usados no jogo.</p>
+  <div id="gallery"></div>
+  <script type="module" src="/src/tools/vegetationGallery.ts"></script>
+</body>
+</html>

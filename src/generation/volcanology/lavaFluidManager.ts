@@ -55,6 +55,11 @@ export class LavaFluidManager {
     this.lavaMaterial.uniforms.uFogColor.value.copy(fogColor);
   }
 
+  public setFogRange(near: number, far: number): void {
+    this.lavaMaterial.uniforms.uFogNear.value = near;
+    this.lavaMaterial.uniforms.uFogFar.value = far;
+  }
+
   public getMaterial(): THREE.ShaderMaterial {
     return this.lavaMaterial;
   }

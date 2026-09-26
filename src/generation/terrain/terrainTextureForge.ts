@@ -4,6 +4,10 @@ import { CONFIG } from '../../config.ts';
 import { getTextureWorkerPool } from './textureWorkerPool.ts';
 import type { ChunkGeometryData } from './chunkGeometry.ts';
 import { BiomeType } from '../types.ts';
+import {
+  generateGrassIndices, DEFAULT_PARAMS as GRASS_TOOL_DEFAULTS,
+  GRASS_LIME, GRASS_LIGHT, GRASS_MID, GRASS_DARK, GRASS_PETAL, GRASS_CENTER,
+} from '../../tools/grassTexture.ts';
 
 /* =========================================================================
    PALETAS (indexadas — 6 tons por rampa de material)
@@ -17,8 +21,11 @@ export const RL = 6;
 export const SAND: [number, number, number][]  = [[150,112,64],[176,138,86],[206,172,116],[232,206,152],[244,226,186],[251,241,218]];
 export const DIRT: [number, number, number][]  = [[80,46,18],[116,70,26],[154,100,34],[192,134,46],[222,168,62],[241,202,104]];
 export const ROCK: [number, number, number][]  = [[56,62,56],[84,91,82],[120,128,116],[156,164,150],[194,200,184],[226,230,214]];
-export const GRASS: [number, number, number][] = [[24,56,30],[38,86,40],[60,120,46],[92,158,54],[132,196,68],[178,224,102]];
-export const ACC: [number, number, number][]   = [[214,196,92],[236,214,120],[224,142,86]];
+// Grama no estilo das folhinhas pixel-art: sombra azul-petróleo, verde escuro, verde médio, verde-limão.
+// Os tons escuros são um pouco mais claros que o alvo porque o tone mapping ACES os escurece na tela.
+export const GRASS: [number, number, number][] = [[44,82,86],[59,109,112],[61,160,110],[140,220,91],[205,253,109],[230,255,170]];
+// Flores: miolo amarelo, pétala creme, miolo alaranjado
+export const ACC: [number, number, number][]   = [[250,226,119],[254,252,232],[238,178,92]];
 
 // Montanhoso
 export const TALUS: [number, number, number][]   = [[48,46,44],[74,72,68],[104,102,96],[136,134,126],[168,166,156],[198,196,186]];
@@ -285,6 +292,27 @@ export const TUFTS: Stamp[] = mkStamps([
   { c: 4, r: ["H...H", "hM.Mh", ".MMMs", "..S.."] },
 ]);
 
+// Folhinhas em "V": pares de folhas pontudas com a borda de baixo sombreada (s/S). Carimbadas
+// sobre um tom base: escuras (base 2) formam as manchas densas de folhagem, claras (base 4) são
+// os brotos soltos nas áreas iluminadas.
+export const LEAVES: Stamp[] = mkStamps([
+  { c: 1, r: ["M.M", ".s."] },
+  { c: 1, r: ["M..", ".Ms"] },
+  { c: 1, r: ["..M", "sM."] },
+  { c: 2, r: ["M...M", "hM.Ms", ".sMs."] },
+  { c: 2, r: ["M..M", ".MMs", "..s."] },
+  { c: 2, r: ["M..M", "sMM.", ".s.."] },
+  { c: 3, r: ["M....M", "hM..Ms", ".hMMs.", "..sS.."] },
+  { c: 3, r: ["..M..M", "M.hMMs", "hMMsS.", ".sS..."] },
+  { c: 3, r: ["M..M..", "sMMh.M", ".SsMMs", "...sS."] },
+  { c: 4, r: ["M..M..M", "hM.hM.s", ".sMsMs.", "..sSs.."] },
+  { c: 4, r: [".M...M.", "M.M.M.M", "hMMsMMs", ".sSsSs."] },
+]);
+
+// Flores de 4 pétalas: C = pétala creme, Y = miolo amarelo
+export const FLOWER_SMALL = [".C.", "CYC", ".C."];
+export const FLOWER_BIG = ["CC.CC", "C.Y.C", ".YYY.", "C.Y.C", "CC.CC"];
+
 export const BLADES: Stamp[] = mkStamps([
   { c: 1, r: ["H", "M"] },
   { c: 1, r: ["H", "M", "s"] },
@@ -328,6 +356,8 @@ export interface ForgeParams {
   greens: number;
   hang: number;
   pixelScale: number;
+  /** Pixels de arte por metro da grama temperada (a densidade base do forge, igual em todos os LODs) */
+  grassArtDensity?: number;
 }
 
 export const DEFAULT_FORGE_PARAMS: ForgeParams = {
@@ -571,6 +601,30 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
     sBTy = new Float32Array(scratchWCap);
     sBOty = new Float32Array(scratchWCap);
   }
+}
+
+/* Bloco de grama do gerador pixel-art: o mesmo algoritmo e parâmetros padrão da ferramenta
+   grass.html, em modo contínuo e ampliado para 512 px (~85 m; manchas, leques e flores escalados
+   junto) para a repetição não aparecer. A faixa diagonal fica desligada: no mundo ela virava
+   listras paralelas repetindo a cada bloco. Um por seed, guardado em cache. */
+const GRASS_TILE_SIZE = 512;
+const GRASS_TILE_TO_RAMP: Record<number, number> = { [GRASS_LIME]: 4, [GRASS_LIGHT]: 3, [GRASS_MID]: 2, [GRASS_DARK]: 1 };
+let grassTileCache: { seed: number; width: number; indices: Int8Array } | null = null;
+function getGrassTile(seed: number): { width: number; indices: Int8Array } {
+  if (grassTileCache && grassTileCache.seed === seed) return grassTileCache;
+  const k = GRASS_TILE_SIZE / GRASS_TOOL_DEFAULTS.size;
+  const r = generateGrassIndices({
+    ...GRASS_TOOL_DEFAULTS,
+    seed,
+    size: GRASS_TILE_SIZE,
+    mode: 'seamless',
+    bands: 0,
+    clumpScale: Math.max(1, Math.round(GRASS_TOOL_DEFAULTS.clumpScale * k)),
+    limeTufts: Math.round(GRASS_TOOL_DEFAULTS.limeTufts * k * k),
+    flowerClusters: Math.round(GRASS_TOOL_DEFAULTS.flowerClusters * k * k),
+  });
+  grassTileCache = { seed, width: r.width, indices: r.indices };
+  return grassTileCache;
 }
 
 export function genChunkTexture(
@@ -946,12 +1000,19 @@ export function genChunkTexture(
         if (hole > holeThr) {
           mat[i] = M_GRASS;
           const wide = macroWide[i];
-          const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
-          const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
-          const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
-          let v = 3 + off;
-          if (wide > 0.20) v += 1; else if (wide < -0.22) v -= 1;
-          idx[i] = clamp(v, 0, RL - 1);
+          if (BI.veg === 'tufo') {
+            // Manchas grandes e suaves: clareiras iluminadas, verde médio e os bolsões escuros
+            // onde a folhagem é densa (as folhas carimbadas no passo 4 desenham as bordas)
+            const shade = macroBig[i] * 0.7 + wide * 0.5 + (cluster(tx, ty, sd + 19) - 0.5) * 0.10;
+            idx[i] = shade > 0.26 ? 2 : shade < -0.14 ? 4 : 3;
+          } else {
+            const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
+            const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
+            const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
+            let v = 3 + off;
+            if (wide > 0.20) v += 1; else if (wide < -0.22) v -= 1;
+            idx[i] = clamp(v, 0, RL - 1);
+          }
         }
       }
     }
@@ -1033,7 +1094,7 @@ export function genChunkTexture(
       const c0 = at(x, y);
       if (x - PX < -10 || y - PY < -10 || x - PX >= W + 10 || y - PY >= W + 10) continue;
       if (gl[c0] < 3) continue;
-      if (!BIOMES[bio[c0]].bushes) continue;
+      if (!BIOMES[bio[c0]].bushes || bio[c0] === B_TEMP) continue;
       if (ihash(x, y, sd + 203) > 0.42 * P.tuft) continue;
       const r  = 2.2 + ihash(x, y, sd + 204) * 2.6;
       const ph2 = ihash(x, y, sd + 205) * 6.283;
@@ -1049,10 +1110,19 @@ export function genChunkTexture(
         if (d > rr) continue;
         const edge = rr - d;
         let v = 2;
-        if (edge < 1.15 && oy <= 0) v = 4;
+        if (edge < 1.15 && oy <= 0) v = 3;
         else if (edge < 1.35) v = 1;
-        else if (oy < -r * 0.3) v = 3;
+        else if (oy > r * 0.35) v = 1;
         mat[j] = M_GRASS; idx[j] = clamp(v, 0, RL - 1);
+      }
+      // Contorno recortado em folhinhas escuras (em vez de um círculo liso)
+      const nLeaves = Math.round(r * 2.6);
+      const rimSet = LEAVES.filter(s => s.c === 2 || s.c === 3);
+      for (let k = 0; k < nLeaves; k++) {
+        const a = (k / nLeaves) * 6.283 + ph2 + (ihash(x + k, y, sd + 206) - 0.5) * 0.6;
+        const lx0 = Math.round(x + Math.cos(a) * r * 0.95), ly0 = Math.round(y + Math.sin(a) * r * 0.85);
+        const st = rimSet[(ihash(lx0, ly0, sd + 207) * rimSet.length) | 0];
+        stamp(st, lx0 - (st.w >> 1), ly0 - (st.h >> 1), M_GRASS, Math.sin(a) < -0.3 ? 3 : 2, ihash(lx0, ly0, sd + 208) > 0.5);
       }
     }
   }
@@ -1080,8 +1150,19 @@ export function genChunkTexture(
         oy = Math.round(-gyv / len * reach);
       }
 
+      // Grama temperada vem inteira do gerador de grama (passo 4a); só os tufos que escorrem
+      // sobre a terra são carimbados aqui (e depois recoloridos pelo mesmo gerador)
+      if (bio[i] === B_TEMP && !spill) continue;
       const BI = BIOMES[bio[i]];
+      const leafy = BI.veg === 'tufo' && !spill;
+      // Folhagem: mancha escura (shade alto) = folhas escuras densas; clareira = brotos claros
+      const shade = macroBig[i] * 0.7 + macroWide[i] * 0.5;
+      const darkLeaf = leafy && (shade > 0.10 || (shade > -0.10 && ihash(x, y, sd + 96) < 0.35));
+
       let p = (spill ? 0.46 * P.spill : ptuft[lvl]) * (0.30 + 1.45 * clump) * P.tuft * BI.vegDens;
+      // Folhagem: densa só nos bolsões escuros; no verde médio e nas clareiras, folhas soltas
+      // com bastante chão liso entre elas (é esse respiro que faz cada folha ser legível)
+      if (leafy) p = (ptuft[lvl] / 0.97) * P.tuft * BI.vegDens * (shade > 0.10 ? 0.80 : darkLeaf ? 0.16 : shade < -0.14 ? 0.05 : 0.16);
       if (mat[i] === M_ROCK) p *= 0.45;
       if (mat[i] === M_SAND) p *= 0.30;
       if (ihash(x, y, sd + 85) > p) continue;
@@ -1090,23 +1171,31 @@ export function genChunkTexture(
                        : clamp(Math.round(lvl * 0.9 + (P.clusterSize - 4) * 0.5 + (ihash(x, y, sd + 86) > 0.7 ? 1 : 0)), 1, 4);
       if (BI.veg === 'alpino')   want = Math.min(want, 2);
       if (BI.veg === 'conifera') want = clamp(want + 1, 2, 3);
+      if (leafy && !darkLeaf)    want = Math.min(want, 2); // brotos claros são pequenos
       const pool = BI.veg === 'conifera' ? CONIF
+                 : leafy ? LEAVES
                  : (spill && ihash(x, y, sd + 87) > 0.45 ? BLADES : TUFTS);
       const cands = pool.filter(s => s.c === want);
       const set = cands.length ? cands : pool;
       const st = set[(ihash(x, y, sd + 88) * set.length) | 0];
 
-      const tone = cluster(x * 0.6 + 13, y * 0.6 + 5, sd + 18);
-      const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
-      const spread = P.greens >= 5 ? 3 : 2;
-      const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * spread);
-      let base = 3 + off;
-      if (spill) base = clamp(base, 2, RL - 2);
+      let base: number;
+      if (leafy) {
+        // Broto claro sobre o verde médio; dentro da clareira (já clara) ele vira um "V" médio
+        base = darkLeaf ? 2 : shade < -0.14 ? 3 : 4;
+      } else {
+        const tone = cluster(x * 0.6 + 13, y * 0.6 + 5, sd + 18);
+        const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
+        const spread = P.greens >= 5 ? 3 : 2;
+        const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * spread);
+        base = 3 + off;
+        if (spill) base = clamp(base, 2, RL - 2);
+      }
 
       const sx = x + ox - ((st.w / 2) | 0), sy2 = y + oy - ((st.h / 2) | 0);
       stamp(st, sx, sy2, M_GRASS, clamp(base, 0, RL - 1), ihash(x, y, sd + 89) > 0.5);
 
-      if (want >= 2) {
+      if (want >= 2 && (!leafy || darkLeaf)) {
         for (let c = 0; c < st.w; c++) {
           if (ihash(x + c, y, sd + 90) > 0.55) continue;
           const lxx = sx + c - PX, lyy = sy2 + st.h - PY;
@@ -1115,7 +1204,28 @@ export function genChunkTexture(
           idx[j] = clamp(idx[j] - 1, 0, RL - 1);
         }
       }
-      if (lvl === 4 && ihash(x, y, sd + 91) > 0.975) put(x, y, M_ACC, (ihash(x, y, sd + 92) * 3) | 0);
+      if (!leafy && lvl === 4 && ihash(x, y, sd + 91) > 0.975) put(x, y, M_ACC, (ihash(x, y, sd + 92) * 3) | 0);
+    }
+  }
+
+  /* ---- passo 4a: grama temperada = gerador de grama pixel-art (src/tools/grassTexture.ts) ----
+     Um bloco contínuo gerado uma vez por seed é lido pela posição no mundo, então os chunks
+     emendam sem costura. 1 pixel de arte = 1 texel na densidade base; chunks de LOD com menos
+     texels amostram o mesmo bloco (a grama não muda de tamanho entre LODs). */
+  {
+    const tile = getGrassTile(P.seed);
+    const S = tile.width;
+    const ratio = (P.grassArtDensity || D) / D;
+    for (let ly = 0; ly < W; ly++) {
+      const row = (((Math.floor((PY + ly + 0.5) * ratio)) % S) + S) % S * S;
+      for (let lx = 0; lx < W; lx++) {
+        const i = ly * W + lx;
+        if (mat[i] !== M_GRASS || bio[i] !== B_TEMP) continue;
+        const c = tile.indices[row + ((((Math.floor((PX + lx + 0.5) * ratio)) % S) + S) % S)];
+        if (c === GRASS_PETAL) { mat[i] = M_ACC; idx[i] = 1; }
+        else if (c === GRASS_CENTER) { mat[i] = M_ACC; idx[i] = 0; }
+        else idx[i] = GRASS_TILE_TO_RAMP[c] ?? 3;
+      }
     }
   }
 
@@ -1134,7 +1244,7 @@ export function genChunkTexture(
   /* ---- passo 4b2: a face de grama do mesmo vinco ---- */
   for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
     const i = ly * W + lx;
-    if (mat[i] !== M_GRASS) continue;
+    if (mat[i] !== M_GRASS || bio[i] === B_TEMP) continue; // a grama temperada já vem sombreada do gerador
     const dn = ly < W - 1 && mat[(ly + 1) * W + lx] !== M_GRASS;
     const lf = lx > 0   && mat[ly * W + lx - 1] !== M_GRASS;
     const up = ly > 0   && mat[(ly - 1) * W + lx] !== M_GRASS;
@@ -1196,6 +1306,7 @@ export function genChunkTexture(
       if (cav < -0.055) sh = 1;
       if (cav < -0.180) sh = 2;
       if (slT[i] + (cluster(PX + lx + 3, PY + ly + 91, sd + 34) - 0.5) * 0.55 > 1.45) sh += 1;
+      if (mat[i] === M_GRASS && bio[i] === B_TEMP) sh = 0; // mantém o desenho do gerador de grama intacto
 
       const ramp = RAMPS[bio[i]][mat[i]];
       const v0 = clamp(idx[i] - sh, 0, ramp.length - 1);
@@ -1369,7 +1480,7 @@ export class TerrainTextureForge {
     const pool = getTextureWorkerPool();
     const { promise, reqId } = pool.request(
       this.params.seed,
-      this.params,
+      { ...this.params, grassArtDensity: this.density },
       minWorldX,
       minWorldZ,
       chunkSize,

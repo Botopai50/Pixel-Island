@@ -281,6 +281,10 @@ export class WorldEngine {
     this.inlandWaterMgr.syncLighting(sunDirection, sunColor, fogColor);
   }
 
+  public setFogRange(near: number, far: number): void {
+    this.lavaFluidMgr.setFogRange(near, far);
+  }
+
   public getWaterGroup(): THREE.Group {
     return this.waterGroup;
   }

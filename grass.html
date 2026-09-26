@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gerador de grama - Procedural Island Explorer</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #332948; color: #ece6f7; font: 14px/1.4 system-ui, sans-serif; display: flex; min-height: 100vh; }
+    aside { width: 290px; flex-shrink: 0; background: #241e36; padding: 16px; overflow-y: auto; box-sizing: border-box; }
+    main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; overflow: auto; }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: #a99cc7; margin: 18px 0 8px; }
+    label { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 8px; font-size: 13px; }
+    label input[type=range] { grid-column: 1 / -1; width: 100%; }
+    label output { color: #f6d67c; font-variant-numeric: tabular-nums; }
+    .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+    .row input[type=number] { width: 100%; }
+    input[type=number], select { background: #342c4d; color: inherit; border: 1px solid #4a3f6b; border-radius: 6px; padding: 4px 6px; }
+    button { background: #4a3f6b; color: inherit; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+    button:hover { background: #5c4f84; }
+    .palette { display: flex; gap: 6px; }
+    .palette input { width: 34px; height: 34px; border: 0; padding: 0; border-radius: 50%; background: none; cursor: pointer; }
+    #blade { display: grid; grid-template-columns: repeat(6, 22px); gap: 2px; }
+    #blade div { width: 22px; height: 22px; background: #342c4d; cursor: pointer; }
+    #blade div.on { background: #86d155; }
+    canvas { image-rendering: pixelated; display: block; }
+    .hint { font-size: 12px; color: #a99cc7; }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1>Gerador de grama</h1>
+    <div class="row">
+      <input id="seed" type="number" />
+      <button id="reroll" title="Nova seed">🎲</button>
+    </div>
+    <div class="row">
+      <select id="mode" style="flex:1">
+        <option value="seamless">Contínua (repete sem emenda)</option>
+        <option value="tile">Bloco isolado (borda irregular)</option>
+      </select>
+    </div>
+    <div id="sliders"></div>
+    <h2>Paleta</h2>
+    <div class="palette" id="palette"></div>
+    <h2>Lâmina (clique para editar)</h2>
+    <div id="blade"></div>
+    <p class="hint">A lâmina aponta para baixo-direita; o gerador também usa a versão espelhada.</p>
+    <h2>Exportar</h2>
+    <div class="row">
+      <button id="png1">PNG 1x</button>
+      <button id="png8">PNG 8x</button>
+    </div>
+  </aside>
+  <main><canvas id="view"></canvas></main>
+  <script type="module" src="/src/tools/grassTextureTool.ts"></script>
+</body>
+</html>

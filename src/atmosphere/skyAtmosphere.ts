@@ -119,6 +119,8 @@ export class SkyAtmosphere {
   private shadowClipmap: ShadowClipmap;
   private hemiLight: THREE.HemisphereLight;
   private ambientLight: THREE.AmbientLight;
+  private fogNear = 200;
+  private fogFar = 2400;
   private skybox: CartoonSkybox;
   private currentPreset: TimePreset = TIME_PRESETS.NOON;
   private currentSunDir: THREE.Vector3 = new THREE.Vector3(0.5, 0.8, 0.35).normalize();
@@ -167,10 +169,28 @@ export class SkyAtmosphere {
 
     // O fundo da cena é gerenciado pelo CartoonSkybox mesh
     this.scene.background = null;
-    this.scene.fog = new THREE.Fog(preset.fogColor, 200, 2400);
+    this.scene.fog = new THREE.Fog(preset.fogColor, this.fogNear, this.fogFar);
 
     // Sincroniza parâmetros celestes do Skybox
     this.skybox.syncWithPreset(preset, sunDir);
+  }
+
+  /**
+   * A neblina conta a partir da câmera. Na visão aérea a câmera fica centenas de metros acima do
+   * ponto focado, então com o início fixo em 200m tudo na tela (até o chão logo abaixo) ficava
+   * ~30% lavado de azul-claro. Aqui ela começa um pouco depois do ponto focado.
+   */
+  public setFocusDistance(focusDistance: number): void {
+    this.fogNear = Math.max(200, focusDistance + 150);
+    this.fogFar = Math.max(2400, focusDistance + 2200);
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.near = this.fogNear;
+      this.scene.fog.far = this.fogFar;
+    }
+  }
+
+  public getFogRange(): [number, number] {
+    return [this.fogNear, this.fogFar];
   }
 
   public updateTarget(x: number, y: number, z: number): void {
