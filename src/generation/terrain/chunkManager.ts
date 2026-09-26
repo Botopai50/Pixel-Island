@@ -85,6 +85,7 @@ export class ChunkManager {
 
     // Processa a fila de construção com orçamento de tempo por frame (garante 60 FPS cravados)
     this.processBuildQueue();
+    this.populatePendingVegetation();
 
     // Algo terminou de carregar: troca chunks <-> blocos distantes que já estejam prontos
     if (this.resolvedVersion !== this.sceneVersion) {
@@ -116,6 +117,7 @@ export class ChunkManager {
     for (const chunk of this.chunks.values()) {
       const dx = chunk.cx - cx, dz = chunk.cz - cz;
       chunk.setLOD(this.textureDensityFor(dx, dz), this.segmentsFor(dx, dz));
+      chunk.setGrassEnabled(dx * dx + dz * dz <= CONFIG.GRASS_RADIUS_CHUNKS ** 2 && CONFIG.GRASS_RADIUS_CHUNKS > 0, this.vegetationMgr);
     }
 
     // 1. Percorre os blocos que tocam o raio de visão: os distantes viram um bloco único, os
@@ -234,41 +236,48 @@ export class ChunkManager {
     this.sceneVersion++;
   }
 
-  private processBuildQueue(): void {
-    if (this.buildQueue.length === 0 && this.chunks.size > 0) {
-      // Atualiza LOD de vegetação para chunks que entraram no raio próximo enquanto a fila estiver ociosa
-      const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
-      const startTime = performance.now();
-      let vegPopulated = 0;
-      for (const chunk of this.chunks.values()) {
-        if (!chunk.hasVegetation && !chunk.isSubmerged) {
-          const dx = chunk.cx - this.currentCenterCx;
-          const dz = chunk.cz - this.currentCenterCz;
-          if (dx * dx + dz * dz <= vegRadiusSq) {
-            const enableDetail = (dx * dx + dz * dz) <= 16;
-            chunk.populateVegetation(this.vegetationMgr, this.terrainGen, enableDetail);
-            vegPopulated++;
-            if (vegPopulated >= 2 || (performance.now() - startTime >= 6.0)) {
-              break;
-            }
-          }
-        }
-      }
-      return;
-    }
+  /**
+   * Planta árvores/arbustos/rochas nos chunks do raio de vegetação que ainda não têm, do mais
+   * perto para o mais longe, com orçamento de tempo por quadro. Fica separado do despacho dos
+   * chunks: antes a vegetação era plantada no construtor (~2ms por chunk) e o orçamento de 5ms
+   * por quadro deixava só ~2 chunks por quadro irem para os workers, que ficavam ociosos.
+   */
+  private initialVegetationDone = false;
 
+  private populatePendingVegetation(): void {
+    if (this.chunks.size === 0) return;
+    const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
+    // Carregamento inicial (tela ainda vazia): orçamento maior; depois, 4ms para não engasgar
+    const budget = this.initialVegetationDone ? 4.0 : 16.0;
+    const startTime = performance.now();
+    let best: Chunk | undefined, bestD = Infinity;
+    // Procura sempre o mais perto que falta (poucas centenas de chunks: custo desprezível)
+    for (;;) {
+      best = undefined; bestD = Infinity;
+      for (const chunk of this.chunks.values()) {
+        if (chunk.hasVegetation || chunk.isSubmerged) continue;
+        const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
+        const d = dx * dx + dz * dz;
+        if (d <= vegRadiusSq && d < bestD) { bestD = d; best = chunk; }
+      }
+      if (!best) { if (this.buildQueue.length === 0) this.initialVegetationDone = true; return; }
+      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16);
+      if (performance.now() - startTime >= budget) return;
+    }
+  }
+
+  private processBuildQueue(): void {
     if (this.buildQueue.length === 0) return;
 
-    // Textura e malha de relevo são geradas em Web Workers, então criar um Chunk aqui custa só
-    // o teste de submersão e (perto da câmera) a vegetação: dá para despachar muitos por frame.
+    // Textura e malha de relevo são geradas em Web Workers e a vegetação é plantada à parte
+    // (populatePendingVegetation), então criar um Chunk aqui custa só o teste de submersão:
+    // dá para despachar muitos por frame e manter todos os workers ocupados.
     const isInitialBurst = this.chunks.size < 35;
 
     const startTime = performance.now();
     const MAX_TIME_MS = isInitialBurst ? 24.0 : 5.0;
-    const maxChunksPerFrame = isInitialBurst ? 64 : 24;
+    const maxChunksPerFrame = isInitialBurst ? 96 : 48;
     let chunksBuilt = 0;
-
-    const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
 
     while (this.buildQueue.length > 0) {
       const item = this.buildQueue.shift()!;
@@ -281,13 +290,13 @@ export class ChunkManager {
       const distSq = dx * dx + dz * dz;
 
       const chunk = new Chunk(item.cx, item.cz, this.terrainGen, this.vegetationMgr, this.forge, {
-        enableVegetation: distSq <= vegRadiusSq,
-        enableDetailFlora: distSq <= 16,
+        enableVegetation: false,
         onSceneChanged: this.bumpSceneVersion,
         textureDensity: this.textureDensityFor(dx, dz),
         segments: this.segmentsFor(dx, dz)
       });
 
+      chunk.setGrassEnabled(distSq <= CONFIG.GRASS_RADIUS_CHUNKS ** 2 && CONFIG.GRASS_RADIUS_CHUNKS > 0, this.vegetationMgr);
       this.chunks.set(item.key, chunk);
       this.scene.add(chunk.group);
       chunksBuilt++;
@@ -312,6 +321,7 @@ export class ChunkManager {
     this.buildQueue = [];
     this.queuedKeys.clear();
     this.currentCenterCx = 999999;
+    this.initialVegetationDone = false;
     this.currentCenterCz = 999999;
   }
 
@@ -334,15 +344,16 @@ export class ChunkManager {
 
   /**
    * LOD de textura por anel (distância em chunks): densidade total nos 3x3 chunks em volta da
-   * câmera, metade até o anel 3, um quarto até o anel 7 (piso 3 tx/m) e um oitavo além (piso
-   * 1.5 tx/m). O custo de gerar uma textura cresce com o quadrado da densidade, e chunks
-   * distantes só aparecem com a câmera bem afastada, quando cada chunk ocupa poucos pixels.
+   * câmera, metade até o anel 3 (piso 3 tx/m), um quarto até o anel 7 (piso 2 tx/m) e um oitavo
+   * além (piso 1 tx/m). O custo de gerar uma textura cresce com o quadrado da densidade, e
+   * chunks distantes só aparecem com a câmera bem afastada, quando cada chunk ocupa poucos
+   * pixels (lá 1 texel já dá ~1 pixel de tela).
    */
   private textureDensityFor(dx: number, dz: number): number {
-    const base = this.forge.density;
+    const base = Math.min(this.forge.density, CONFIG.TEXTURE_DENSITY_CAP);
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
     const factor = ring <= 1 ? 1.0 : ring <= 3 ? 0.5 : ring <= NEAR_RING ? 0.25 : 0.125;
-    const floor = ring <= NEAR_RING ? 3.0 : 1.5;
+    const floor = ring <= 3 ? 3.0 : ring <= NEAR_RING ? 2.0 : 1.0;
     return Math.max(Math.min(base, floor), base * factor);
   }
 

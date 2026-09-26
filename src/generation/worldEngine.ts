@@ -230,6 +230,7 @@ export class WorldEngine {
   }
 
   public updateSimulation(dt: number): void {
+    this.vegetationMgr.update(dt);
     this.waterMaterial.uniforms.uTime.value += dt;
     this.waterMaterial.uniforms.uTexelDensity.value = this.getTexelDensity();
     this.waterBiomeMap.update(this.lastObserverX, this.lastObserverZ);
@@ -279,6 +280,16 @@ export class WorldEngine {
 
     this.lavaFluidMgr.syncLighting(sunDirection, sunColor, fogColor);
     this.inlandWaterMgr.syncLighting(sunDirection, sunColor, fogColor);
+  }
+
+  /** Personagem que afasta a grama 3D ao passar (radius = 0 desliga). */
+  /** Envia à GPU só a vegetação dentro (ou perto) do campo de visão da câmera. */
+  public cullVegetation(camera: THREE.Camera): boolean {
+    return this.vegetationMgr.instances.cull(camera);
+  }
+
+  public setGrassPusher(x: number, y: number, z: number, radius: number): void {
+    this.vegetationMgr.setGrassPusher(x, y, z, radius);
   }
 
   public setFogRange(near: number, far: number): void {

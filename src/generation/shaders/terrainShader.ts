@@ -4,6 +4,11 @@ import { CONFIG } from '../../config.ts';
 
 const GLSL_NOISE = `
   float h21(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+  // Ruído de valor suave (para variar a linha rocha/terra das falésias)
+  float vn2(vec2 p){
+    vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(h21(i), h21(i + vec2(1.0, 0.0)), f.x), mix(h21(i + vec2(0.0, 1.0)), h21(i + vec2(1.0, 1.0)), f.x), f.y);
+  }
   // Ruído em bloco para dither cel-shaded: clusters, não chiado de pixels soltos
   float clg(vec2 t){
     return h21(floor(t * 0.5)) * 0.30
@@ -105,27 +110,42 @@ export function createChunkTerrainMaterial(
     vec2 uvTopSmooth = (vWPos.xz - uOrig) / uSize;
     vec2 dTopX = dFdx(uvTopSmooth), dTopY = dFdy(uvTopSmooth);
 
-    // Mapeamento biplanar nas falésias e paredes verticais
-    bool wallOnX = abs(wn.x) > abs(wn.z);
-    vec2 uvW = (wallOnX ? vec2(vWPos.z, vWPos.y) : vec2(vWPos.x, vWPos.y));
+    // Projeção das falésias em 8 direções (a cada 45°): o eixo horizontal da textura segue a
+    // direção da parede arredondada para o octante mais próximo. Com só 2 planos (X/Z) as
+    // paredes na diagonal esticavam a textura até ~1.4x; com 8 o máximo é ~1.08x.
+    float wAng = atan(wn.z, wn.x);
+    // troca de octante com dither: a costura vira um recorte pixelado em vez de linha reta
+    float wOct = floor(wAng / 0.78539816 + 0.5 + dth * 0.7) * 0.78539816;
+    vec2 wTan = vec2(-sin(wOct), cos(wOct));
+    vec2 uvW = vec2(dot(vWPos.xz, wTan), vWPos.y);
     uvW *= totalD / ${WALL.toFixed(1)};
 
     // Mesma ideia para o atlas das paredes: derivadas antes do fract() (que dá um salto a cada
     // repetição) e dos dois eixos biplanares, escolhendo o eixo sem depender dos vizinhos.
     float wallScale = totalD / ${WALL.toFixed(1)};
     vec2 wallRowScale = vec2(1.0, 1.0 / ${NB.toFixed(1)});
-    vec2 dWallX = (wallOnX ? dFdx(vWPos.zy) : dFdx(vWPos.xy)) * wallScale * wallRowScale;
-    vec2 dWallY = (wallOnX ? dFdy(vWPos.zy) : dFdy(vWPos.xy)) * wallScale * wallRowScale;
+    vec3 dPX = dFdx(vWPos), dPY = dFdy(vWPos);
+    vec2 dWallX = vec2(dot(dPX.xz, wTan), dPX.y) * wallScale * wallRowScale;
+    vec2 dWallY = vec2(dot(dPY.xz, wTan), dPY.y) * wallScale * wallRowScale;
 
     // Faixa vertical do atlas correspondente ao bioma, guardado no alfa da textura escura.
     // texelFetch lê o valor exato do texel (sem filtro nem mipmap misturando índices).
     ivec2 topSize = textureSize(uTopD, 0);
     ivec2 bioTexel = clamp(ivec2(uvTop * vec2(topSize)), ivec2(0), topSize - 1);
     float bi = floor(texelFetch(uTopD, bioTexel, 0).a * 255.0 + 0.5);
+    // Terra da encosta com as saliências esticadas na vertical: vista de cima a parede aparece
+    // encurtada, e sem isso as saliências viravam listras finas ("veio de madeira").
+    const float DIRT_V = 0.7;
+    vec2 uvD = vec2(uvW.x, (fract(uvW.y * DIRT_V) + bi) / ${NB.toFixed(1)});
+    vec2 dDirtX = dWallX * vec2(1.0, DIRT_V), dDirtY = dWallY * vec2(1.0, DIRT_V);
     uvW = vec2(uvW.x, (fract(uvW.y) + bi) / ${NB.toFixed(1)});
 
     // Rocha na base, solo/estratos acima — limite com dither
-    float yl = uRockY + dth * 1.6;
+    // A rocha não termina numa linha reta: sobe em afloramentos largos e entra na terra em
+    // "dentes" menores, como os blocos que brotam do barranco na referência.
+    float rockVar = (vn2(vWPos.xz * 0.045) - 0.5) * 9.0 + (vn2(vWPos.xz * 0.21 + 7.3) - 0.5) * 3.0
+                  + (vn2(vWPos.xz * 0.8 + 3.1) - 0.5) * 0.9;
+    float yl = uRockY + rockVar + dth * 1.6;
     float bel = yl - vWPos.y;
     float rk = step(0.0, bel);
 
@@ -133,7 +153,7 @@ export function createChunkTerrainMaterial(
     float ct  = rk * (1.0 - step(uCt * (1.0 + dth * 1.2), bel));
     float ctD = (1.0 - rk) * (1.0 - step(uCt * 0.85 * (1.0 + dth * 1.2), -bel));
     vec3 rockCol = mix(textureGrad(uWallB, uvW, dWallX, dWallY).rgb, textureGrad(uWallC, uvW, dWallX, dWallY).rgb, ct);
-    vec3 dirtCol = mix(textureGrad(uWallA, uvW, dWallX, dWallY).rgb, textureGrad(uWallD, uvW, dWallX, dWallY).rgb, ctD);
+    vec3 dirtCol = mix(textureGrad(uWallA, uvD, dDirtX, dDirtY).rgb, textureGrad(uWallD, uvD, dDirtX, dDirtY).rgb, ctD);
     vec3 wall = mix(dirtCol, rockCol, rk);
 
     // Amostragem das texturas de topo
@@ -158,10 +178,7 @@ export function createChunkTerrainMaterial(
 
     vec3 topLight = min(vec3(1.0), topS.rgb * 1.24 + vec3(0.02, 0.03, 0.01));
     vec3 subPixelCol = topBase;
-    // Grama temperada (bioma 0) vem pronta do gerador de grama pixel-art: sem dithering por cima
-    if (topS.a > 0.4 && bi < 0.5) {
-      subPixelCol = topBase;
-    } else if (topS.a > 0.4) {
+    if (topS.a > 0.4) {
       if (shadeShift > 0.10) {
         subPixelCol = mix(topBase, topLight, clamp((shadeShift - 0.10) * 2.5, 0.0, 1.0));
       } else if (shadeShift < -0.10) {
@@ -176,10 +193,16 @@ export function createChunkTerrainMaterial(
     }
 
     // Intensidade do detalhamento proporcional ao pixelScale
-    float detailStrength = clamp((uPixelScale - 0.6) * 1.1, 0.0, 1.0);
+    // Pontilhado leve: no estilo diorama as áreas lisas são limpas (o detalhe vem das formas)
+    float detailStrength = clamp((uPixelScale - 0.6) * 1.1, 0.0, 1.0) * 0.35;
     vec3 topC = mix(topBase, subPixelCol, detailStrength);
 
     diffuseColor.rgb = mix(topC, wall, m);
+
+    // Neve: o tonemapping deixava o branco puro acinzentado. Só os pixels quase brancos (neve e
+    // gelo) ganham um leve brilho próprio, para ficarem brancos como na referência de inverno.
+    float snowish = smoothstep(0.84, 0.95, min(min(diffuseColor.r, diffuseColor.g), diffuseColor.b));
+    totalEmissiveRadiance += diffuseColor.rgb * 0.30 * snowish;
   `;
 
   // Sombra do sol em cascata: as 3 faixas do ShadowClipmap entram no MESMO cálculo de luz

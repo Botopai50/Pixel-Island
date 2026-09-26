@@ -160,6 +160,21 @@ export class ShadowClipmap {
     }
   }
 
+  /**
+   * Muda a resolução dos mapas de sombra (qualidade adaptativa). O raio de cada faixa não muda,
+   * só o tamanho do texel; o Three recria o mapa no próximo render de sombra.
+   */
+  public setMapSize(size: number): void {
+    this.configs = this.configs.map((cfg) => ({ ...cfg, mapSize: size }));
+    for (const light of this.lights) {
+      if (light.shadow.mapSize.x === size) continue;
+      light.shadow.mapSize.set(size, size);
+      light.shadow.map?.dispose();
+      (light.shadow as any).map = null;
+    }
+    this.updatePositions(this.lastTargetPos.x, this.lastTargetPos.y, this.lastTargetPos.z);
+  }
+
   public getPrimaryLight(): THREE.DirectionalLight {
     return this.lights[0];
   }

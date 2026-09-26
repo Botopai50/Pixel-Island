@@ -3,10 +3,15 @@ import * as THREE from 'three';
 /**
  * Um InstancedMesh compartilhado por todos os chunks para um par (geometria, material).
  * Cada chunk ocupa algumas posições; ao descarregar, as posições são liberadas trazendo as
- * últimas instâncias para os buracos (o buffer fica sempre contíguo e mesh.count = em uso).
+ * últimas instâncias para os buracos (a lista mestre fica sempre contígua).
  *
  * Antes cada chunk criava um InstancedMesh por espécie com poucas instâncias cada, o que dava
  * ~1000 draw calls (x3 com as cascatas de sombra) só de vegetação.
+ *
+ * Recorte pela câmera: a lista MESTRE guarda todas as instâncias carregadas, mas o buffer
+ * enviado à GPU recebe só as que estão dentro do frustum da câmera (com uma margem para as
+ * sombras de quem está logo fora da tela). Sem isso o raio de vegetação inteiro (centenas de
+ * metros em volta) era desenhado a cada quadro, milhões de triângulos fora da tela.
  */
 class SharedInstances {
   public mesh: THREE.InstancedMesh;
@@ -14,14 +19,27 @@ class SharedInstances {
   private used = 0;
   private slotOwner: number[] = [];
   private ownerSlots = new Map<number, Set<number>>();
+  /** Lista mestre (todas as instâncias carregadas): matrizes 4x4 e cores RGB */
+  private allM: Float32Array;
+  private allC: Float32Array;
+  /** Raio da esfera envolvente da geometria (escala 1) e centro local */
+  private readonly geoRadius: number;
+  private readonly geoCenter: THREE.Vector3;
+  public dirty = true;
 
   constructor(
     private readonly root: THREE.Group,
     private readonly geometry: THREE.BufferGeometry,
     private readonly material: THREE.Material,
-    initialCapacity: number
+    initialCapacity: number,
+    private readonly castShadow: boolean = true
   ) {
     this.capacity = initialCapacity;
+    this.allM = new Float32Array(initialCapacity * 16);
+    this.allC = new Float32Array(initialCapacity * 3);
+    if (!geometry.boundingSphere) geometry.computeBoundingSphere();
+    this.geoRadius = geometry.boundingSphere?.radius ?? 1;
+    this.geoCenter = geometry.boundingSphere?.center.clone() ?? new THREE.Vector3();
     this.mesh = this.createMesh(initialCapacity);
     root.add(this.mesh);
   }
@@ -32,9 +50,10 @@ class SharedInstances {
     mesh.setColorAt(0, new THREE.Color(1, 1, 1));
     mesh.instanceColor!.setUsage(THREE.DynamicDrawUsage);
     mesh.count = 0;
-    mesh.castShadow = true;
+    mesh.castShadow = this.castShadow;
     mesh.receiveShadow = true;
-    // As instâncias se espalham pelo mundo inteiro; o culling por objeto não ajudaria
+    // O recorte é feito aqui mesmo (cull), instância por instância; o culling por objeto do
+    // three.js usaria a esfera da geometria-base e esconderia o grupo inteiro por engano.
     mesh.frustumCulled = false;
     return mesh;
   }
@@ -42,10 +61,9 @@ class SharedInstances {
   private grow(minCapacity: number): void {
     let capacity = this.capacity;
     while (capacity < minCapacity) capacity *= 2;
+    const nm = new Float32Array(capacity * 16); nm.set(this.allM); this.allM = nm;
+    const nc = new Float32Array(capacity * 3); nc.set(this.allC); this.allC = nc;
     const next = this.createMesh(capacity);
-    (next.instanceMatrix.array as Float32Array).set(this.mesh.instanceMatrix.array as Float32Array);
-    (next.instanceColor!.array as Float32Array).set(this.mesh.instanceColor!.array as Float32Array);
-    next.count = this.used;
     next.name = this.mesh.name;
     this.root.remove(this.mesh);
     this.mesh.dispose();
@@ -65,14 +83,13 @@ class SharedInstances {
     }
     for (let i = 0; i < matrices.length; i++) {
       const slot = this.used++;
-      this.mesh.setMatrixAt(slot, matrices[i]);
-      this.mesh.setColorAt(slot, colors[i]);
+      matrices[i].toArray(this.allM, slot * 16);
+      const c = colors[i];
+      this.allC[slot * 3] = c.r; this.allC[slot * 3 + 1] = c.g; this.allC[slot * 3 + 2] = c.b;
       this.slotOwner[slot] = owner;
       slots.add(slot);
     }
-    this.mesh.count = this.used;
-    this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.instanceColor!.needsUpdate = true;
+    this.dirty = true;
   }
 
   public remove(owner: number): void {
@@ -80,8 +97,7 @@ class SharedInstances {
     if (!slots) return;
     this.ownerSlots.delete(owner);
 
-    const matrixArr = this.mesh.instanceMatrix.array as Float32Array;
-    const colorArr = this.mesh.instanceColor!.array as Float32Array;
+    const matrixArr = this.allM, colorArr = this.allC;
     // Libera do maior para o menor: a última instância em uso nunca é uma das que estão saindo
     const sorted = Array.from(slots).sort((a, b) => b - a);
     for (const slot of sorted) {
@@ -97,9 +113,44 @@ class SharedInstances {
       }
     }
     this.slotOwner.length = this.used;
-    this.mesh.count = this.used;
+    this.dirty = true;
+  }
+
+  /**
+   * Copia para o buffer da GPU só as instâncias cuja esfera envolvente (aumentada pela margem)
+   * toca o frustum. `planes` = [nx, ny, nz, d] x 6 no espaço do mundo.
+   */
+  public cull(planes: Float32Array, margin: number): void {
+    const M = this.allM, C = this.allC;
+    const out = this.mesh.instanceMatrix.array as Float32Array;
+    const outC = this.mesh.instanceColor!.array as Float32Array;
+    const gcx = this.geoCenter.x, gcy = this.geoCenter.y, gcz = this.geoCenter.z, gr = this.geoRadius;
+    let k = 0;
+    for (let s = 0; s < this.used; s++) {
+      const o = s * 16;
+      // escala = maior comprimento de coluna da matriz
+      const sx = M[o] * M[o] + M[o + 1] * M[o + 1] + M[o + 2] * M[o + 2];
+      const sy = M[o + 4] * M[o + 4] + M[o + 5] * M[o + 5] + M[o + 6] * M[o + 6];
+      const sz = M[o + 8] * M[o + 8] + M[o + 9] * M[o + 9] + M[o + 10] * M[o + 10];
+      const sc = Math.sqrt(Math.max(sx, sy, sz));
+      // centro da esfera no mundo
+      const cx = M[o] * gcx + M[o + 4] * gcy + M[o + 8] * gcz + M[o + 12];
+      const cy = M[o + 1] * gcx + M[o + 5] * gcy + M[o + 9] * gcz + M[o + 13];
+      const cz = M[o + 2] * gcx + M[o + 6] * gcy + M[o + 10] * gcz + M[o + 14];
+      const r = gr * sc + margin;
+      let inside = true;
+      for (let p = 0; p < 24; p += 4) {
+        if (planes[p] * cx + planes[p + 1] * cy + planes[p + 2] * cz + planes[p + 3] < -r) { inside = false; break; }
+      }
+      if (!inside) continue;
+      out.set(M.subarray(o, o + 16), k * 16);
+      outC[k * 3] = C[s * 3]; outC[k * 3 + 1] = C[s * 3 + 1]; outC[k * 3 + 2] = C[s * 3 + 2];
+      k++;
+    }
+    this.mesh.count = k;
     this.mesh.instanceMatrix.needsUpdate = true;
     this.mesh.instanceColor!.needsUpdate = true;
+    this.dirty = false;
   }
 
   public dispose(): void {
@@ -112,12 +163,16 @@ class SharedInstances {
 export class VegetationInstancePool {
   public readonly root = new THREE.Group();
   private pools = new Map<THREE.BufferGeometry, Map<THREE.Material, SharedInstances>>();
+  private readonly frustum = new THREE.Frustum();
+  private readonly projView = new THREE.Matrix4();
+  private readonly lastProjView = new Float32Array(16);
+  private readonly planes = new Float32Array(24);
 
   constructor() {
     this.root.name = 'vegetation_instances';
   }
 
-  public add(owner: number, geometry: THREE.BufferGeometry, material: THREE.Material, matrices: THREE.Matrix4[], colors: THREE.Color[], name?: string): void {
+  public add(owner: number, geometry: THREE.BufferGeometry, material: THREE.Material, matrices: THREE.Matrix4[], colors: THREE.Color[], name?: string, castShadow: boolean = true): void {
     if (matrices.length === 0) return;
     let byMat = this.pools.get(geometry);
     if (!byMat) {
@@ -126,7 +181,7 @@ export class VegetationInstancePool {
     }
     let pool = byMat.get(material);
     if (!pool) {
-      pool = new SharedInstances(this.root, geometry, material, 256);
+      pool = new SharedInstances(this.root, geometry, material, 256, castShadow);
       if (name) pool.mesh.name = name;
       byMat.set(material, pool);
     }
@@ -137,6 +192,38 @@ export class VegetationInstancePool {
     for (const byMat of this.pools.values()) {
       for (const pool of byMat.values()) pool.remove(owner);
     }
+  }
+
+  /**
+   * Recorta as instâncias pelo frustum da câmera. Só refaz um grupo quando a câmera mudou ou
+   * quando chunks entraram/saíram dele. `margin` (m) mantém quem está logo fora da tela, para
+   * as sombras que ele projeta para dentro da vista continuarem aparecendo. Devolve true se
+   * o conjunto enviado à GPU foi refeito (as sombras precisam ser redesenhadas).
+   */
+  public cull(camera: THREE.Camera, margin: number = 40): boolean {
+    camera.updateMatrixWorld();
+    this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    const e = this.projView.elements;
+    let camChanged = false;
+    for (let i = 0; i < 16; i++) {
+      if (Math.abs(e[i] - this.lastProjView[i]) > 1e-5) { camChanged = true; break; }
+    }
+    if (camChanged) {
+      this.lastProjView.set(e);
+      this.frustum.setFromProjectionMatrix(this.projView);
+      for (let p = 0; p < 6; p++) {
+        const pl = this.frustum.planes[p];
+        this.planes[p * 4] = pl.normal.x; this.planes[p * 4 + 1] = pl.normal.y;
+        this.planes[p * 4 + 2] = pl.normal.z; this.planes[p * 4 + 3] = pl.constant;
+      }
+    }
+    let changed = false;
+    for (const byMat of this.pools.values()) {
+      for (const pool of byMat.values()) {
+        if (camChanged || pool.dirty) { pool.cull(this.planes, margin); changed = true; }
+      }
+    }
+    return changed;
   }
 
   public clear(): void {

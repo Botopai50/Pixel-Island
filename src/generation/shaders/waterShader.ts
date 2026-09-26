@@ -205,14 +205,6 @@ export const WaterShader = {
       // Deslocamento físico vertical controlado: atenua suavemente para 0 antes da transição aos anéis externos
       float distFromCenter = length(pos.xy);
       float waveDispFade = 1.0 - smoothstep(400.0, 500.0, distFromCenter);
-
-      // Água rasa quase não sobe e desce: a onda cresce de 0 na linha da costa até o tamanho cheio
-      // por volta de 3.5m de profundidade (canal A do mapa = profundidade / 6m). Sem isso, numa praia
-      // suave a linha d'água andava 1-2m para frente e para trás.
-      vec2 depthUv = (worldCoord - uBiomeMapOrigin) / uBiomeMapSpan;
-      float seabedDepth = texture2D(uBiomeMap, clamp(depthUv, 0.0, 1.0)).a;
-      float insideMap = step(0.0, depthUv.x) * step(depthUv.x, 1.0) * step(0.0, depthUv.y) * step(depthUv.y, 1.0);
-      waveDispFade *= mix(1.0, smoothstep(0.03, 0.58, seabedDepth), insideMap * uBiomeMapReady);
       pos.z += (totalWave * min(uWaveHeight, 0.065) + rippleDisp) * waveDispFade;
       
       // Passa a altura de onda real para cálculo dos contrastes cel-shaded e agrupamento de espuma nas cristas
@@ -429,9 +421,10 @@ export const WaterShader = {
 
       // Paletas cromáticas estilizadas por bioma (Raso, Profundo, Abissal):
       // 1. Tropical / Lagoa Costeira (turquesa caribenho, menos saturado que o ciano elétrico)
-      vec3 tropShallow = vec3(0.10, 0.86, 0.90);
-      vec3 tropDeep    = vec3(0.02, 0.52, 0.80);
-      vec3 tropAbyss   = vec3(0.01, 0.20, 0.42);
+      // Paleta de diorama pixel-art: tons apagados de ardósia (água da referência: #586888 / #384868)
+      vec3 tropShallow = vec3(0.36, 0.70, 0.72);
+      vec3 tropDeep    = vec3(0.28, 0.52, 0.62);
+      vec3 tropAbyss   = vec3(0.24, 0.40, 0.54);
 
       // 2. Manguezal / Pântano Estuarino: verde-água turvo (o esmeralda neon anterior parecia tinta)
       vec3 swampShallow = vec3(0.32, 0.66, 0.56);
@@ -439,14 +432,15 @@ export const WaterShader = {
       vec3 swampAbyss   = vec3(0.03, 0.17, 0.15);
 
       // 3. Tundra Polar / Ártico / Lago Glacial (Azul-gelo vítreo cristalino gélido)
-      vec3 arcticShallow = vec3(0.62, 0.90, 1.00); // #9ee6ff (azul-gelo luminoso vítreo)
-      vec3 arcticDeep    = vec3(0.12, 0.50, 0.80); // #1f80cc (azul glacial polar profundo)
-      vec3 arcticAbyss   = vec3(0.03, 0.18, 0.34); // #082e57 (abismo glacial polar frio)
+      vec3 arcticShallow = vec3(0.62, 0.78, 0.86); // gelo acinzentado
+      vec3 arcticDeep    = vec3(0.42, 0.54, 0.66);
+      vec3 arcticAbyss   = vec3(0.32, 0.42, 0.56);
 
       // 4. Floresta Temperada & Lagos Interiores (Azul límpido de montanha / água doce fresca)
-      vec3 tempShallow = vec3(0.18, 0.78, 0.98); // #2ec7fa (azul céu fresco de lago de montanha)
-      vec3 tempDeep    = vec3(0.02, 0.42, 0.70); // #056bb3 (azul profundo de água doce)
-      vec3 tempAbyss   = vec3(0.01, 0.16, 0.35); // #032959 (abismo lacustre escuro)
+      vec3 tempShallow = vec3(0.46, 0.60, 0.68); // ardósia clara na beira
+      // Um pouco acima do alvo #586888: iluminação e tone mapping escurecem a água na tela
+      vec3 tempDeep    = vec3(0.42, 0.50, 0.64);
+      vec3 tempAbyss   = vec3(0.34, 0.41, 0.55);
 
       float tArctic = biomeTints.r;
       float tSwamp = biomeTints.g;

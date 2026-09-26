@@ -4,10 +4,6 @@ import { CONFIG } from '../../config.ts';
 import { getTextureWorkerPool } from './textureWorkerPool.ts';
 import type { ChunkGeometryData } from './chunkGeometry.ts';
 import { BiomeType } from '../types.ts';
-import {
-  generateGrassIndices, DEFAULT_PARAMS as GRASS_TOOL_DEFAULTS,
-  GRASS_LIME, GRASS_LIGHT, GRASS_MID, GRASS_DARK, GRASS_PETAL, GRASS_CENTER,
-} from '../../tools/grassTexture.ts';
 
 /* =========================================================================
    PALETAS (indexadas — 6 tons por rampa de material)
@@ -17,32 +13,30 @@ export const M_SHORE = 0, M_GROUND = 1, M_ROCK = 2, M_VEG = 3, M_ACC = 4;
 export const M_SAND = M_SHORE, M_DIRT = M_GROUND, M_GRASS = M_VEG;
 export const RL = 6;
 
-// Temperado
-export const SAND: [number, number, number][]  = [[150,112,64],[176,138,86],[206,172,116],[232,206,152],[244,226,186],[251,241,218]];
-export const DIRT: [number, number, number][]  = [[80,46,18],[116,70,26],[154,100,34],[192,134,46],[222,168,62],[241,202,104]];
-export const ROCK: [number, number, number][]  = [[56,62,56],[84,91,82],[120,128,116],[156,164,150],[194,200,184],[226,230,214]];
-// Grama no estilo das folhinhas pixel-art: sombra azul-petróleo, verde escuro, verde médio, verde-limão.
-// Os tons escuros são um pouco mais claros que o alvo porque o tone mapping ACES os escurece na tela.
-export const GRASS: [number, number, number][] = [[44,82,86],[59,109,112],[61,160,110],[140,220,91],[205,253,109],[230,255,170]];
-// Flores: miolo amarelo, pétala creme, miolo alaranjado
-export const ACC: [number, number, number][]   = [[250,226,119],[254,252,232],[238,178,92]];
+// Temperado - paleta de diorama pixel-art: terra ocre com sombras marrom-avermelhadas e roxas,
+// grama verde viva com realce amarelado e sombra azul-petróleo, rocha cinza-esverdeada, areia creme.
+export const SAND: [number, number, number][]  = [[160,92,64],[204,140,84],[226,180,124],[240,210,148],[246,224,162],[252,238,192]];
+export const DIRT: [number, number, number][]  = [[64,46,56],[112,50,50],[160,90,58],[202,138,82],[210,184,74],[230,206,112]];
+export const ROCK: [number, number, number][]  = [[30,24,34],[74,50,60],[98,110,98],[134,148,130],[182,188,162],[216,216,192]];
+export const GRASS: [number, number, number][] = [[32,56,64],[48,112,64],[72,140,90],[90,186,50],[160,194,72],[198,222,112]];
+export const ACC: [number, number, number][]   = [[214,196,92],[236,214,120],[224,142,86]];
 
 // Montanhoso
 export const TALUS: [number, number, number][]   = [[48,46,44],[74,72,68],[104,102,96],[136,134,126],[168,166,156],[198,196,186]];
-export const SCREE: [number, number, number][]   = [[66,58,48],[98,88,72],[132,120,100],[164,152,128],[194,182,158],[220,210,188]];
+export const SCREE: [number, number, number][]   = [[32,28,38],[56,50,60],[86,80,88],[118,112,114],[152,146,140],[188,182,170]];
 export const GRANITE: [number, number, number][] = [[44,46,56],[70,74,88],[102,108,124],[138,144,160],[174,180,194],[210,214,226]];
 export const ALPINE: [number, number, number][]  = [[16,36,24],[26,58,32],[40,84,40],[58,110,50],[88,144,64],[126,180,90]];
 export const ACC_M: [number, number, number][]   = [[198,186,150],[220,210,180],[176,150,110]];
 
 // Polar
-export const ICE: [number, number, number][]     = [[96,124,156],[128,156,182],[166,190,208],[198,220,234],[224,240,248],[244,250,254]];
-export const SNOW: [number, number, number][]    = [[120,138,168],[152,170,196],[186,202,222],[214,226,240],[236,244,252],[250,252,255]];
-export const FROZEN: [number, number, number][]  = [[40,50,64],[64,78,96],[94,110,130],[128,144,164],[164,180,200],[202,216,230]];
+export const ICE: [number, number, number][]     = [[92,128,170],[128,166,204],[168,202,230],[204,228,246],[228,242,252],[248,252,255]];
+export const SNOW: [number, number, number][]    = [[60,68,108],[104,120,166],[160,180,218],[206,220,240],[236,243,251],[255,255,255]];
+export const FROZEN: [number, number, number][]  = [[34,30,36],[64,58,58],[96,90,88],[132,128,124],[170,168,164],[208,208,206]];
 export const CONIFER: [number, number, number][] = [[10,28,26],[18,46,38],[26,68,52],[38,92,66],[58,120,84],[92,152,110]];
 export const ACC_P: [number, number, number][]   = [[196,222,240],[224,240,250],[150,190,220]];
 
 // Deserto
-export const DUNE: [number, number, number][]      = [[172,104,52],[200,130,66],[220,154,82],[234,176,102],[243,196,128],[249,216,158]];
+export const DUNE: [number, number, number][]      = [[150,84,70],[196,120,92],[224,156,112],[240,186,138],[248,210,164],[252,230,196]];
 export const SANDSTONE: [number, number, number][] = [[112,52,28],[146,72,36],[180,98,50],[208,128,68],[228,158,92],[242,190,128]];
 export const REDROCK: [number, number, number][]   = [[70,36,28],[104,54,38],[138,76,50],[170,102,66],[198,132,90],[222,166,122]];
 export const SCRUB: [number, number, number][]     = [[58,58,28],[82,82,36],[110,106,46],[140,132,58],[170,160,78],[200,190,110]];
@@ -68,7 +62,7 @@ export interface BiomeForgeDef {
 export const BIOMES: BiomeForgeDef[] = [
   { key:'temperado', label:'Temperado', swatch:'#dea83e',
     ramps:[SAND,  DIRT,  ROCK,    GRASS,   ACC  ],
-    ground:'canais', wallHi:'canal',   wallLo:'seixo',
+    ground:'canais', wallHi:'terra',   wallLo:'bloco',
     veg:'tufo',     vegBias: 0.00, rockBias: 0.00, vegDens:1.00, bushes:true },
   { key:'montanha',  label:'Montanhoso', swatch:'#a49880',
     ramps:[TALUS, SCREE, GRANITE, ALPINE,  ACC_M],
@@ -125,7 +119,7 @@ export function mulberry32(a: number) {
 export function ihash(x: number, y: number, s: number): number {
   let h = (x * 374761393 + y * 668265263 + s * 951214051) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  return ((h ^ (h >>> 16)) >>> 0) * 2.3283064365386963e-10; // = / 2^32, exato e mais barato
 }
 
 export const clamp = (v: number, a: number, b: number) => v < a ? a : (v > b ? b : v);
@@ -245,6 +239,141 @@ export function cobble(x: number, y: number, cell: number, seed: number, wrap: n
   return { d: minD, edge: sD - minD, px, py };
 }
 
+/** Célula de Voronoi tileável com id da célula (para pintar cada bloco com sua própria faceta). */
+export function facetCell(x: number, y: number, cell: number, seed: number, wrap: number) {
+  const fx = x / cell, fy = y / cell;
+  const ix = Math.floor(fx), iy = Math.floor(fy);
+  const cw = Math.floor(wrap / cell);
+  let minD = 999, sD = 999, px = 0, py = 0, id = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const cx = ix + dx, cy = iy + dy;
+    const rx = ((cx % cw) + cw) % cw, ry = ((cy % cw) + cw) % cw;
+    // células mais largas que altas (blocos de rocha deitados)
+    const ddx = cx + 0.15 + 0.70 * ihash(rx, ry, seed) - fx;
+    const ddy = (cy + 0.15 + 0.70 * ihash(rx, ry, seed + 97) - fy) * 1.25;
+    const d = Math.sqrt(ddx * ddx + ddy * ddy);
+    if (d < minD) { sD = minD; minD = d; px = ddx; py = ddy; id = ihash(rx, ry, seed + 211); }
+    else if (d < sD) sD = d;
+  }
+  return { edge: sD - minD, px, py, id };
+}
+
+/**
+ * Estilhaços triangulares tileáveis: grade com pontos deslocados, cada célula cortada numa
+ * diagonal sorteada. Devolve o id do triângulo e a distância (em px) até a aresta mais próxima,
+ * com o id dessa aresta (para marcar só algumas como fenda).
+ */
+/**
+ * Grade tileável de "saliências" (linhas de alturas variadas, cada linha cortada em segmentos
+ * desencontrados, como tijolos). Devolve a posição normalizada dentro do segmento:
+ * u = 0 no topo e 1 na base, s = 0..1 da esquerda para a direita, e ids da linha/segmento.
+ */
+export function ledgeCell(x: number, y: number, rows: number[], segs: number[], seed: number, wrap: number) {
+  const yy = ((y % wrap) + wrap) % wrap;
+  let r = 0, y0 = 0;
+  while (r < rows.length - 1 && yy >= y0 + rows[r]) { y0 += rows[r]; r++; }
+  const h = rows[r], n = segs[r % segs.length];
+  const off = ihash(r, 0, seed) * wrap;
+  const xx = ((((x - off) % wrap) + wrap) % wrap);
+  const sw = wrap / n;
+  let k = Math.floor(xx / sw);
+  // limites dos segmentos com jitter (o jitter do último limite coincide com o do primeiro)
+  const edge = (i: number) => i * sw + (ihash(r, ((i % n) + n) % n + 1, seed + 5) - 0.5) * sw * 0.5;
+  if (xx < edge(k)) k--; else if (xx >= edge(k + 1)) k++;
+  const a = edge(k), b = edge(k + 1);
+  return { u: (yy - y0) / h, s: (xx - a) / (b - a), row: r, id: ihash(r, ((k % n) + n) % n, seed + 9), h, w: b - a };
+}
+
+/** Voronoi tileável em células cw x ch: F1, F2 (em unidades de célula) e id da célula mais próxima. */
+export function worleyT(x: number, y: number, cw: number, ch: number, W: number, H: number, seed: number) {
+  const nx = Math.max(1, Math.round(W / cw)), ny = Math.max(1, Math.round(H / ch));
+  const fx = x * nx / W, fy = y * ny / H, ix = Math.floor(fx), iy = Math.floor(fy);
+  let f1 = 9, f2 = 9, id = 0, vx = 0, vy = 0;
+  for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+    const cx = ix + dx, cy = iy + dy;
+    const rx = ((cx % nx) + nx) % nx, ry = ((cy % ny) + ny) % ny;
+    const px = cx + 0.1 + 0.8 * ihash(rx, ry, seed), py = cy + 0.1 + 0.8 * ihash(rx, ry, seed + 1);
+    const d = Math.hypot(px - fx, py - fy);
+    if (d < f1) { f2 = f1; f1 = d; id = ihash(rx, ry, seed + 2); vx = fx - px; vy = fy - py; } else if (d < f2) f2 = d;
+  }
+  return { f1, f2, id, vx, vy };
+}
+
+/**
+ * Relevo facetado de pedra lascada: cada célula de Voronoi vira uma pirâmide baixa de 3 faces
+ * planas (girada ao acaso), com a face iluminada pela direção da luz. Arestas vivas e tons
+ * chapados por face - o oposto das cúpulas lisas, que liam como lama.
+ */
+type FacetOpts = { cw: number; ch: number; tilt: number; lx: number; ly: number; lz: number; warp: number; sub: number; up: number };
+const reliefCache = new Map<string, ReturnType<typeof facetReliefRaw>>();
+export function facetRelief(W: number, H: number, seed: number, o: FacetOpts) {
+  // o mesmo relevo serve às variações de sombra do atlas (shade 0/1/2): calcula uma vez só
+  const key = W + ':' + H + ':' + seed + ':' + JSON.stringify(o);
+  let r = reliefCache.get(key);
+  if (!r) { r = facetReliefRaw(W, H, seed, o); if (reliefCache.size > 32) reliefCache.clear(); reliefCache.set(key, r); }
+  return r;
+}
+function facetReliefRaw(W: number, H: number, seed: number, o: FacetOpts) {
+  const n = W * H, lum = new Float32Array(n), gap = new Float32Array(n), cid = new Float32Array(n);
+  const ll = Math.hypot(o.lx, o.ly, o.lz), lx = o.lx / ll, ly = o.ly / ll, lz = o.lz / ll;
+  const TAU = Math.PI * 2;
+  // normal (x, y) da face da "pirâmide" de 3 faces em que o ponto cai
+  const face = (px: number, py: number, rot: number, tilt: number): [number, number] => {
+    const a = Math.atan2(py, px) - rot;
+    const k = Math.floor((((a % TAU) + TAU) % TAU) / (TAU / 3));
+    const ang = rot + (k + 0.5) * (TAU / 3);
+    return [Math.cos(ang) * tilt, Math.sin(ang) * tilt];
+  };
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    // deformação em degraus (quantizada): arestas retas em trechos, não onduladas
+    const wx = Math.round((tfbm2(x, y, 16, 16, W, H, seed + 11) - 0.5) * o.warp / 2) * 2;
+    const wy = Math.round((tfbm2(x, y, 16, 16, W, H, seed + 12) - 0.5) * o.warp / 2) * 2;
+    // massas grandes (volume do bloco) + lascas menores (planos da pedra)
+    const A = worleyT(x + wx, y + wy, o.cw * 2.4, o.ch * 2.4, W, H, seed + 20);
+    const B = worleyT(x + wx, y + wy, o.cw, o.ch, W, H, seed + 30);
+    const ta = o.tilt * (0.7 + 0.6 * ihash((A.id * 1e6) | 0, 3, seed + 21));
+    const [ax, ay] = face(A.vx, A.vy, A.id * TAU, ta);
+    const [bx, by] = face(B.vx, B.vy, B.id * TAU, o.tilt * 0.55);
+    const nx = ax + bx, ny = ay + by - o.up, nz = 1;
+    const i = y * W + x;
+    lum[i] = clamp((nx * lx + ny * ly + nz * lz) / Math.hypot(nx, ny, nz), 0, 1);
+    gap[i] = Math.min(A.f2 - A.f1, (B.f2 - B.f1) * 1.8);
+    cid[i] = B.id;
+  }
+  return { lum, gap, cid };
+}
+
+export function shardAt(x: number, y: number, cell: number, seed: number, wrap: number) {
+  const n = Math.floor(wrap / cell);
+  const P = (i: number, j: number): [number, number] => {
+    const ri = ((i % n) + n) % n, rj = ((j % n) + n) % n;
+    return [i * cell + (ihash(ri, rj, seed) - 0.5) * cell * 0.7, j * cell + (ihash(ri, rj, seed + 7) - 0.5) * cell * 0.7];
+  };
+  const ci = Math.floor(x / cell), cj = Math.floor(y / cell);
+  const side = (ax: number, ay: number, bx: number, by: number) => (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+  const segDist = (ax: number, ay: number, bx: number, by: number) => {
+    const vx = bx - ax, vy = by - ay, t = clamp(((x - ax) * vx + (y - ay) * vy) / (vx * vx + vy * vy), 0, 1);
+    return Math.hypot(x - (ax + vx * t), y - (ay + vy * t));
+  };
+  for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+    const i = ci + di, j = cj + dj;
+    const a = P(i, j), b = P(i + 1, j), cc = P(i, j + 1), d = P(i + 1, j + 1);
+    const ri = ((i % n) + n) % n, rj = ((j % n) + n) % n;
+    const flip = ihash(ri, rj, seed + 13) > 0.5;
+    const tris: [number, number][][] = flip ? [[a, b, d], [a, d, cc]] : [[a, b, cc], [b, d, cc]];
+    for (let t = 0; t < 2; t++) {
+      const [p, q, r] = tris[t];
+      const s1 = side(p[0], p[1], q[0], q[1]), s2 = side(q[0], q[1], r[0], r[1]), s3 = side(r[0], r[1], p[0], p[1]);
+      if ((s1 >= 0 && s2 >= 0 && s3 >= 0) || (s1 <= 0 && s2 <= 0 && s3 <= 0)) {
+        const e = [segDist(p[0], p[1], q[0], q[1]), segDist(q[0], q[1], r[0], r[1]), segDist(r[0], r[1], p[0], p[1])];
+        let k = 0; if (e[1] < e[k]) k = 1; if (e[2] < e[k]) k = 2;
+        return { id: ihash(ri * 2 + t, rj, seed + 29), edge: e[k], edgeId: ihash(ri * 6 + t * 3 + k, rj, seed + 31) };
+      }
+    }
+  }
+  return { id: ihash(ci, cj, seed + 29), edge: 99, edgeId: 1 };
+}
+
 export function cobbleTone(c: { d: number; edge: number; px: number; py: number }, base: number, lx: number, ly: number): number {
   if (c.edge < 0.16) return clamp(base - 2, 0, RL - 1);
   if (c.edge < 0.32) return clamp(base - 1, 0, RL - 1);
@@ -292,27 +421,6 @@ export const TUFTS: Stamp[] = mkStamps([
   { c: 4, r: ["H...H", "hM.Mh", ".MMMs", "..S.."] },
 ]);
 
-// Folhinhas em "V": pares de folhas pontudas com a borda de baixo sombreada (s/S). Carimbadas
-// sobre um tom base: escuras (base 2) formam as manchas densas de folhagem, claras (base 4) são
-// os brotos soltos nas áreas iluminadas.
-export const LEAVES: Stamp[] = mkStamps([
-  { c: 1, r: ["M.M", ".s."] },
-  { c: 1, r: ["M..", ".Ms"] },
-  { c: 1, r: ["..M", "sM."] },
-  { c: 2, r: ["M...M", "hM.Ms", ".sMs."] },
-  { c: 2, r: ["M..M", ".MMs", "..s."] },
-  { c: 2, r: ["M..M", "sMM.", ".s.."] },
-  { c: 3, r: ["M....M", "hM..Ms", ".hMMs.", "..sS.."] },
-  { c: 3, r: ["..M..M", "M.hMMs", "hMMsS.", ".sS..."] },
-  { c: 3, r: ["M..M..", "sMMh.M", ".SsMMs", "...sS."] },
-  { c: 4, r: ["M..M..M", "hM.hM.s", ".sMsMs.", "..sSs.."] },
-  { c: 4, r: [".M...M.", "M.M.M.M", "hMMsMMs", ".sSsSs."] },
-]);
-
-// Flores de 4 pétalas: C = pétala creme, Y = miolo amarelo
-export const FLOWER_SMALL = [".C.", "CYC", ".C."];
-export const FLOWER_BIG = ["CC.CC", "C.Y.C", ".YYY.", "C.Y.C", "CC.CC"];
-
 export const BLADES: Stamp[] = mkStamps([
   { c: 1, r: ["H", "M"] },
   { c: 1, r: ["H", "M", "s"] },
@@ -356,15 +464,21 @@ export interface ForgeParams {
   greens: number;
   hang: number;
   pixelScale: number;
-  /** Pixels de arte por metro da grama temperada (a densidade base do forge, igual em todos os LODs) */
-  grassArtDensity?: number;
+  /** Grama 3D: multiplicador da quantidade de tufos (0 = nenhum) */
+  tuftAmount: number;
+  /** Grama 3D: 0 = tufos espalhados por igual, 1 = agrupados em moitas cheias com vazios entre elas */
+  tuftClump: number;
+  /** Grama 3D: candidatos a tufo por metro quadrado (touceiras mais densas) */
+  tuftPerM2: number;
+  /** Grama 3D: multiplicador do tamanho dos tufos */
+  tuftSize: number;
 }
 
 export const DEFAULT_FORGE_PARAMS: ForgeParams = {
   seed: 42,
   edge: 0.50,
   pscale: 2.2,
-  grass: 0.33,
+  grass: 0.15,
   grassMountain: 0.00,
   grassPolar: -0.10,
   rock: 0.00,
@@ -375,11 +489,15 @@ export const DEFAULT_FORGE_PARAMS: ForgeParams = {
   greens: 4,
   hang: 0.20,
   pixelScale: 1.0,
+  tuftAmount: 1.0,
+  tuftClump: 0.6,
+  tuftPerM2: 3,
+  tuftSize: 1.0,
 };
 
 export const MARGIN = 12;
-export const WALL = 128;
-export const DEFAULT_D = 6.0; // 6 texels por metro (chunk de 64m = 384x384 texels de alta densidade)
+export const WALL = 256;
+export const DEFAULT_D = 8.0; // 8 texels por metro (chunk de 64m = 512x512 texels)
 
 /* =========================================================================
    TEXTURAS DE ENCOSTA (PAREDES VERTICAIS)
@@ -392,14 +510,56 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
     const ix = ((x % W) + W) % W, iy = ((y % H) + H) % H, i = iy * W + ix;
     mat[i] = m; idx[i] = clamp(v, 0, (m === M_ACC ? 2 : RL - 1));
   };
+  // luz vindo de cima (o "topo" da textura, y negativo) e um pouco da esquerda
+  const relief = kind === 'terra'
+    ? facetRelief(W, H, sd + 500, { cw: 18, ch: 14, tilt: 0.85, lx: -0.40, ly: -0.80, lz: 0.55, warp: 3, sub: 0.0, up: 0.30 })
+    : kind === 'bloco'
+    ? facetRelief(W, H, sd + 500, { cw: 14, ch: 12, tilt: 0.75, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.15 })
+    : kind === 'seixo'
+    ? facetRelief(W, H, sd + 500, { cw: 11, ch: 10, tilt: 0.80, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.10 })
+    : kind === 'gelo'
+    ? facetRelief(W, H, sd + 500, { cw: 16, ch: 13, tilt: 0.85, lx: -0.45, ly: -0.70, lz: 0.60, warp: 3, sub: 0.0, up: 0.10 })
+    : null;
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
-      if (kind === 'seixo' || kind === 'bloco') {
-        const c = cobble(x, y, kind === 'bloco' ? 16 : 8, sd + 301, W);
-        let v = cobbleTone(c, 2, 0.35, -0.94);
-        const cl = clusterT(x, y, W, H, sd + 4);
-        if (cl > 0.82) v += 1; else if (cl < 0.16) v -= 1;
+      if (kind === 'terra') {
+        // Barranco do diorama: saliências de terra arredondadas e largas. A face que olha para
+        // cima é o mesmo ocre do chão; ao virar para baixo passa por laranja e marrom, e o vinco
+        // entre saliências é vermelho-escuro / roxo quase preto.
+        const i = y * W + x, L = relief!.lum[i], g = relief!.gap[i];
+        let v = L > 0.86 ? 5 : L > 0.56 ? 4 : L > 0.40 ? 3 : L > 0.24 ? 2 : L > 0.06 ? 1 : 0;
+        if (g < 0.04 && L < 0.20) v = 0;                                     // vinco quase preto só dentro da sombra
+        if (v === 4 && tfbm2(x, y, 8, 4, W, H, sd + 84) < 0.24) v = 3;       // manchas laranja
+        put(x, y, M_DIRT, v);
+
+      } else if (kind === 'gelo' || (kind === 'seixo' && (bioIdx | 0) === B_POLAR)) {
+        // Encosta de inverno: rocha cinza-amarronzada facetada; as faces que olham para cima
+        // seguram uma camada de neve (branca, com a beirada de baixo azulada). Os pingentes de
+        // gelo são pendurados depois, sob a neve.
+        const i = y * W + x, L = relief!.lum[i], g = relief!.gap[i];
+        const snowT = kind === 'gelo' ? 0.70 : 0.76;
+        if (L > snowT + (clusterT(x, y, W, H, sd + 71) - 0.5) * 0.08) {
+          put(x, y, M_GROUND, L > snowT + 0.10 ? 5 : 4);
+        } else {
+          const l = L + (tfbm2(x, y, 2, 16, W, H, sd + 313) - 0.5) * 0.14 + (relief!.cid[i] - 0.5) * 0.14;
+          let v = l > 0.58 ? 4 : l > 0.42 ? 3 : l > 0.26 ? 2 : 1;
+          if (g < 0.04 && L < 0.5) v = 0;
+          put(x, y, M_ROCK, v);
+        }
+
+      } else if (kind === 'seixo' || kind === 'bloco') {
+        // Rocha do diorama: blocos robustos em facetas chapadas. O topo iluminado é creme, as
+        // faces de frente cinza-sálvia, as de baixo caem para o cinza escuro e os vãos entre
+        // blocos são roxo-amarronzados / quase pretos. Riscos verticais quebram as facetas.
+        const i = y * W + x, L = relief!.lum[i], g = relief!.gap[i];
+        const base = (bioIdx | 0) === B_TEMP ? 3 : 2;
+        const st = tfbm2(x, y, 2, 16, W, H, sd + 313);
+        const l = L + (st - 0.5) * 0.14 + (relief!.cid[i] - 0.5) * 0.16;
+        let v = l > 0.84 ? base + 2 : l > 0.64 ? base + 1 : l > 0.42 ? base : l > 0.12 ? base - 1 : Math.max(1, base - 2);
+        if (g < 0.03 && L < 0.55) v = 0;                                     // vão entre blocos, só no lado em sombra
+        else if (g < 0.05 && L < 0.55) v = Math.min(v, 1);
+        v = clamp(v, 0, base + 2);
         put(x, y, M_ROCK, v);
 
       } else if (kind === 'fratura') {
@@ -445,9 +605,40 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
     }
   }
 
+  if (kind === 'gelo' || (kind === 'seixo' && (bioIdx | 0) === B_POLAR)) {
+    // Beirada da neve: os 2 pixels de baixo de cada camada de neve ficam azulados
+    for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) {
+      const i = y * W + x, below = ((y + 1) % H) * W + x, below2 = ((y + 2) % H) * W + x;
+      if (mat[i] !== M_GROUND) continue;
+      if (mat[below] === M_ROCK) idx[i] = 3;
+      else if (mat[below2] === M_ROCK) idx[i] = Math.min(idx[i], 4);
+    }
+    // Pingentes de gelo: nascem na beirada de baixo da neve, 1-2px de largura, afinando
+    for (let x = 0; x < W; x++) for (let y = 0; y < H; y++) {
+      const i = y * W + x, below = ((y + 1) % H) * W + x;
+      if (mat[i] !== M_GROUND || mat[below] !== M_ROCK) continue;
+      // em grupos: alguns trechos de beirada têm vários, outros nenhum
+      if (tfbm2(x, y, 16, 16, W, H, sd + 880) < 0.52) continue;
+      if (ihash(x, y, sd + 881) > (kind === 'gelo' ? 0.45 : 0.30)) continue;
+      const len = 3 + ((ihash(x, y, sd + 882) * (kind === 'gelo' ? 12 : 7)) | 0);
+      const wide = ihash(x, y, sd + 883) > 0.55;
+      for (let k = 1; k <= len; k++) {
+        const yy = (y + k) % H;
+        const tone = k > len - 2 ? 2 : k === 1 ? 5 : ((x + k) & 1) ? 4 : 3;
+        const j = yy * W + x;
+        if (mat[j] === M_GROUND) break;
+        mat[j] = M_SHORE; idx[j] = tone; 
+        if (wide && k < len * 0.6) {
+          const j2 = yy * W + ((x + 1) % W);
+          if (mat[j2] === M_ROCK) { mat[j2] = M_SHORE; idx[j2] = Math.max(2, tone - 1); }
+        }
+      }
+    }
+  }
+
   const isRockWall = (kind === 'seixo' || kind === 'bloco');
   // rachaduras horizontais / fendas verticais
-  for (let k = 0; k < (isRockWall ? 26 : 52); k++) {
+  for (let k = 0; k < (isRockWall ? 0 : kind === 'terra' ? 0 : 52); k++) {
     const y0 = (ihash(k, 0, sd + 31) * H) | 0, x0 = (ihash(k, 1, sd + 32) * W) | 0;
     const len = 3 + ((ihash(k, 2, sd + 33) * 8) | 0);
     let cy = y0;
@@ -457,7 +648,7 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
     }
   }
   // pedras embutidas na terra
-  if (!isRockWall && kind !== 'gelo') {
+  if (!isRockWall && kind !== 'gelo' && kind !== 'terra') {
     for (let k = 0; k < 22; k++) {
       const x0 = (ihash(k, 7, sd + 41) * W) | 0, y0 = (ihash(k, 8, sd + 42) * H) | 0;
       const st = PEBBLES[(ihash(k, 9, sd + 43) * PEBBLES.length) | 0];
@@ -484,7 +675,10 @@ export function buildWallAtlas(P: ForgeParams, slot: 'wallHi' | 'wallLo', shade:
   const out = new Uint8ClampedArray(WALL * WALL * NB * 4);
   for (let b = 0; b < NB; b++) {
     const kind = BIOMES[b][slot];
-    out.set(genWallTexture(P, kind, shade, b), b * WALL * WALL * 4);
+    // As texturas de parede são desenhadas com a linha 0 no ALTO (luz de cima, pingentes que
+    // descem), mas no shader a coordenada v cresce para cima (linha 0 = pé da parede): inverte.
+    const img = genWallTexture(P, kind, shade, b), rowB = WALL * 4, base = b * WALL * WALL * 4;
+    for (let y = 0; y < WALL; y++) out.set(img.subarray(y * rowB, (y + 1) * rowB), base + (WALL - 1 - y) * rowB);
   }
   return out;
 }
@@ -497,6 +691,12 @@ export interface ChunkTextureResult {
   img: Uint8ClampedArray;
   /** RGB = um degrau mais escuro da paleta, A = índice do bioma (lido com texelFetch, sem filtro) */
   imgD: Uint8ClampedArray;
+  /**
+   * Tufos de grama 3D (só chunks comuns): 7 floats por tufo - x, y, z do mundo, escala, índice
+   * do bioma e a inclinação do chão (dh/dx, dh/dz). y e a inclinação são os do triângulo da malha
+   * de relevo (grade de 2m), então o tufo assenta exatamente na superfície desenhada.
+   */
+  grass?: Float32Array;
   width: number;
   height: number;
 }
@@ -517,6 +717,7 @@ let sMacroBig: Float32Array;
 let sMacroCh1: Float32Array;
 let sMacroChL: Float32Array;
 let sMacroWide: Float32Array;
+let sMacroPatch: Float32Array;
 let sSpecialRock: Float32Array;
 let sCanyon: Float32Array;
 
@@ -531,6 +732,7 @@ let sGridBig: Float32Array;
 let sGridCh1: Float32Array;
 let sGridChL: Float32Array;
 let sGridWide: Float32Array;
+let sGridPatch: Float32Array;
 
 let scratchBioGridCap = 0;
 let sBioGridCat: Uint8Array;
@@ -566,6 +768,7 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
     sMacroCh1 = new Float32Array(scratchCapacity);
     sMacroChL = new Float32Array(scratchCapacity);
     sMacroWide = new Float32Array(scratchCapacity);
+    sMacroPatch = new Float32Array(scratchCapacity);
     sSpecialRock = new Float32Array(scratchCapacity);
     sCanyon = new Float32Array(scratchCapacity);
   }
@@ -581,6 +784,7 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
     sGridCh1 = new Float32Array(scratchGridCap);
     sGridChL = new Float32Array(scratchGridCap);
     sGridWide = new Float32Array(scratchGridCap);
+    sGridPatch = new Float32Array(scratchGridCap);
   }
   if (scratchBioGridCap < nBG) {
     scratchBioGridCap = Math.max(nBG, 256);
@@ -603,30 +807,6 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
   }
 }
 
-/* Bloco de grama do gerador pixel-art: o mesmo algoritmo e parâmetros padrão da ferramenta
-   grass.html, em modo contínuo e ampliado para 512 px (~85 m; manchas, leques e flores escalados
-   junto) para a repetição não aparecer. A faixa diagonal fica desligada: no mundo ela virava
-   listras paralelas repetindo a cada bloco. Um por seed, guardado em cache. */
-const GRASS_TILE_SIZE = 512;
-const GRASS_TILE_TO_RAMP: Record<number, number> = { [GRASS_LIME]: 4, [GRASS_LIGHT]: 3, [GRASS_MID]: 2, [GRASS_DARK]: 1 };
-let grassTileCache: { seed: number; width: number; indices: Int8Array } | null = null;
-function getGrassTile(seed: number): { width: number; indices: Int8Array } {
-  if (grassTileCache && grassTileCache.seed === seed) return grassTileCache;
-  const k = GRASS_TILE_SIZE / GRASS_TOOL_DEFAULTS.size;
-  const r = generateGrassIndices({
-    ...GRASS_TOOL_DEFAULTS,
-    seed,
-    size: GRASS_TILE_SIZE,
-    mode: 'seamless',
-    bands: 0,
-    clumpScale: Math.max(1, Math.round(GRASS_TOOL_DEFAULTS.clumpScale * k)),
-    limeTufts: Math.round(GRASS_TOOL_DEFAULTS.limeTufts * k * k),
-    flowerClusters: Math.round(GRASS_TOOL_DEFAULTS.flowerClusters * k * k),
-  });
-  grassTileCache = { seed, width: r.width, indices: r.indices };
-  return grassTileCache;
-}
-
 export function genChunkTexture(
   P: ForgeParams,
   per: { fbm: (x: number, y: number, oct?: number) => number },
@@ -645,7 +825,9 @@ export function genChunkTexture(
   const PX = GX0 - M, PY = GY0 - M;
   const nT = W * W;
 
-  const step = Math.max(2, Math.round(D * 1.5));
+  // Grade dos campos a cada 1.5m; nas texturas de baixa densidade (chunks distantes) a cada
+  // 2.5m - ela custa o mesmo por chunk em qualquer densidade e lá dominava o tempo de geração
+  const step = Math.max(2, Math.round(D * (D >= 4 ? 1.5 : 2.5)));
   const GW = Math.ceil(W / step) + 1;
   const nG = GW * GW;
 
@@ -658,10 +840,10 @@ export function genChunkTexture(
   // discreta de bioma "vencedor" podia divergir bem perto da borda, criando costuras visíveis
   // (faixas diagonais) exatamente na fronteira entre chunks.
   const bioStep = Math.max(4, Math.round(D * 24));
-  const bioOriginX = Math.floor(PX / bioStep) * bioStep;
-  const bioOriginY = Math.floor(PY / bioStep) * bioStep;
+  const bioOriginX = (Math.floor(PX / bioStep) - 1) * bioStep;
+  const bioOriginY = (Math.floor(PY / bioStep) - 1) * bioStep;
   const bioOffX = PX - bioOriginX, bioOffY = PY - bioOriginY;
-  const bioGW = Math.ceil((W + Math.max(bioOffX, bioOffY)) / bioStep) + 1;
+  const bioGW = Math.ceil((W + Math.max(bioOffX, bioOffY)) / bioStep) + 2;
   const nBG = bioGW * bioGW;
 
   ensureScratch(nT, nG, nBG, W);
@@ -669,10 +851,10 @@ export function genChunkTexture(
   const mat = sMat, idx = sIdx, gl = sGl, bio = sBio, gv = sGv;
   const hT = sHt, slT = sSlT;
   const macroM = sMacroM, macroRk = sMacroRk, macroSn = sMacroSn, macroBig = sMacroBig;
-  const macroCh1 = sMacroCh1, macroChL = sMacroChL, macroWide = sMacroWide;
+  const macroCh1 = sMacroCh1, macroChL = sMacroChL, macroWide = sMacroWide, macroPatch = sMacroPatch;
 
   const gridH = sGridH, gridSpecialRock = sGridSpecialRock, gridM = sGridM, gridRk = sGridRk;
-  const gridSn = sGridSn, gridBig = sGridBig, gridCh1 = sGridCh1, gridChL = sGridChL, gridWide = sGridWide;
+  const gridSn = sGridSn, gridBig = sGridBig, gridCh1 = sGridCh1, gridChL = sGridChL, gridWide = sGridWide, gridPatch = sGridPatch;
   const specialRock = sSpecialRock, canyonT = sCanyon, gridCanyon = sGridCanyon;
   const bioGridCat = sBioGridCat;
 
@@ -740,6 +922,8 @@ export function genChunkTexture(
       gridCh1[gIdx] = 1 - Math.abs(per.fbm(wu * 0.80 + 5.0,  wv * 0.80 + 11.0, 3));
       gridChL[gIdx] = 1 - Math.abs(per.fbm((wu + 0.20) * 0.80 + 5.0, (wv - 0.20) * 0.80 + 11.0, 3));
       gridWide[gIdx] = per.fbm(wx * 0.72 + 41.3, wy * 0.72 + 7.9, 2);
+      // Manchas grandes de grama x terra do temperado (~15m, com recorte médio de ~4m)
+      gridPatch[gIdx] = per.fbm(wx * 0.065 + 13.7, wy * 0.065 + 71.1, 3) + per.fbm(wx * 0.24 + 3.3, wy * 0.24 + 29.4, 2) * 0.30;
     }
   }
 
@@ -791,36 +975,37 @@ export function genChunkTexture(
       // área - perto da fronteira (~50/50) sai um tufo bem denso e pontilhado, longe dela a
       // probabilidade do bioma vizinho cai a zero suavemente. Mesmo estilo de dither em cluster()
       // (blobs arredondados, não ruído fino) já usado no preenchimento de grama/terra abaixo.
-      const bgx = sBGx[lx], btx = sBTx[lx], botx = sBOtx[lx];
-      const bgy = sBGy[ly], bty = sBTy[ly], boty = sBOty[ly];
+      // Consulta deformada: o pixel "pergunta" o bioma num ponto deslocado por ruído de grande
+      // escala (até ~0.7 célula). Sem isso a fronteira seguia as linhas retas/diagonais da
+      // interpolação dentro de cada célula de 24m e aparecia como cortes retos e triângulos.
+      const wpX = gridPatch[i00]*w00 + gridPatch[i00+1]*w10 + gridPatch[i01]*w01 + gridPatch[i01+1]*w11;
+      const wpY = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11 - 0.5;
+      const wsX = gridBig[i00]*w00 + gridBig[i00+1]*w10 + gridBig[i01]*w01 + gridBig[i01+1]*w11;
+      const wsY = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
+      const qx = (lx + bioOffX + (wpX * 0.9 + wsX * 0.25) * bioStep * 0.75) / bioStep;
+      const qy = (ly + bioOffY + (wpY * 1.8 + wsY * 0.25) * bioStep * 0.75) / bioStep;
+      const bgx = clamp(Math.floor(qx), 0, bioGW - 2), bgy = clamp(Math.floor(qy), 0, bioGW - 2);
+      const btx = clamp(qx - bgx, 0, 1), bty = clamp(qy - bgy, 0, 1);
+      const botx = 1 - btx, boty = 1 - bty;
       const bRow0 = bgy * bioGW, bRow1 = (bgy + 1) * bioGW;
       const j00 = bRow0 + bgx, j01 = bRow1 + bgx;
-      const bw00 = botx * boty, bw10 = btx * boty, bw01 = botx * bty, bw11 = btx * bty;
+      const bw00 = botx * boty, bw10 = btx * boty, bw01 = botx * bty; // o 4º canto é o resto
       const c00 = bioGridCat[j00], c10 = bioGridCat[j00 + 1], c01 = bioGridCat[j01], c11 = bioGridCat[j01 + 1];
 
       let b: number;
       if (c00 === c10 && c00 === c01 && c00 === c11) {
         b = c00; // os 4 cantos concordam: interior estável, sem nenhum sorteio necessário
       } else {
-        // Agrupa o peso dos 4 cantos por categoria (no máximo 4 categorias distintas, geralmente 2)
-        let catA = c00, wA = 0, catB = -1, wB = 0;
-        const add = (c: number, w: number) => {
-          if (c === catA) { wA += w; }
-          else if (c === catB) { wB += w; }
-          else if (catB === -1) { catB = c; wB += w; }
-          else if (w > 0) { // 3ª categoria rara: funde na mais próxima já registrada
-            if (wA <= wB) wA += w; else wB += w;
-          }
-        };
-        add(c00, bw00); add(c10, bw10); add(c01, bw01); add(c11, bw11);
-
-        const total = wA + wB;
-        const pB = total > 0 ? wB / total : 0;
-        const worldTx = PX + lx, worldTy = PY + ly;
-        // Mesma escala de tufo (sem multiplicar a frequência) usada no preenchimento de
-        // grama/terra deste arquivo - blobs arredondados de bom tamanho, não pontinhos finos.
-        const tuft = cluster(worldTx + 91.0, worldTy + 47.0, sd + 84);
-        b = tuft < pB ? catB : catA;
+        // Sorteio proporcional ao peso de cada canto (vale para 2, 3 ou 4 biomas diferentes),
+        // em MANCHAS de alguns metros (ruído suave já interpolado da grade) com a borda só
+        // levemente recortada - no estilo das manchas de grama, não um chuvisco de pixels
+        const tuft = clamp(0.5 + (wsX * 0.9 + wsY * 0.35) * 1.15
+                         + (cluster(PX + lx + 91.0, PY + ly + 47.0, sd + 84) - 0.5) * 0.18, 0, 0.999);
+        b = c11;
+        let acc = bw00;
+        if (tuft < acc) b = c00;
+        else if (tuft < (acc += bw10)) b = c10;
+        else if (tuft < (acc += bw01)) b = c01;
       }
 
       // Vulcão/cânion sempre vencem, mesmo se a grade grossa achava que aqui era outra coisa
@@ -841,6 +1026,7 @@ export function genChunkTexture(
       macroCh1[idx] = gridCh1[i00]*w00 + gridCh1[i00+1]*w10 + gridCh1[i01]*w01 + gridCh1[i01+1]*w11;
       macroChL[idx] = gridChL[i00]*w00 + gridChL[i00+1]*w10 + gridChL[i01]*w01 + gridChL[i01+1]*w11;
       macroWide[idx] = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
+      macroPatch[idx] = gridPatch[i00]*w00 + gridPatch[i00+1]*w10 + gridPatch[i01]*w01 + gridPatch[i01+1]*w11;
     }
   }
 
@@ -882,11 +1068,13 @@ export function genChunkTexture(
         : b === B_POLAR ? P.grassPolar
         : b === B_DESERT ? 0
         : P.grass;
-      let m = macroM[i] + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + biomeGrassAmt + BI.vegBias;
+      const mBase = b === B_TEMP ? macroPatch[i] * 0.55 + 0.5 : macroM[i];
+      let m = mBase + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + biomeGrassAmt + BI.vegBias;
       gv[i] = m;
 
       // Quantização com dither em cluster
-      const d = m + (cluster(tx, ty, sd) - 0.5) * ditA;
+      // Temperado: manchas de grama com contorno limpo (bolhas), sem a borda salpicada
+      const d = m + (cluster(tx, ty, sd) - 0.5) * (b === B_TEMP ? ditA * 0.3 : ditA);
       gl[i] = d > 0.70 ? 4 : d > 0.61 ? 3 : d > 0.535 ? 2 : d > 0.475 ? 1 : 0;
 
       // Rocha: encosta + ruído
@@ -908,6 +1096,26 @@ export function genChunkTexture(
     for (let lx = 0; lx < W; lx++) {
       const i = ly * W + lx;
       const tx = PX + lx, ty = PY + ly;
+
+      // Preenchimento base de grama. Vem primeiro: o pixel que vira grama não precisa do padrão
+      // de terra/rocha/areia (antes ele era calculado e depois sobrescrito).
+      const g = gl[i];
+      if (g >= 2) {
+        const hole = cluster(tx + 23, ty + 37, sd + 13);
+        const holeThr = bio[i] === B_TEMP ? -1 : g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
+        if (hole > holeThr) {
+          mat[i] = M_GRASS;
+          const wide = macroWide[i];
+          const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
+          const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
+          const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
+          let v = 3 + off;
+          if (wide > 0.20) v += 1; else if (wide < -0.22) v -= 1;
+          idx[i] = clamp(v, 0, RL - 1);
+          continue;
+        }
+      }
+
       const wx = tx / D, wy = ty / D;
       const big = macroBig[i];
       const bay = bayer(tx, ty);
@@ -917,26 +1125,32 @@ export function genChunkTexture(
       if (mat[i] === M_ROCK) {
         const cell = bio[i] === B_MOUNT ? Math.round(ROCK_CELL * 1.5) : ROCK_CELL;
         const c = cobble(tx, ty, cell, sd + 301);
-        let v = cobbleTone(c, 2, 0.71, -0.71);
+        let v = cobbleTone(c, bio[i] === B_TEMP ? 3 : 2, 0.71, -0.71);
         if (big > 0.22) v += 1; else if (big < -0.22) v -= 1;
-        if (bio[i] === B_POLAR && cluster(tx * 1.3, ty * 1.3, sd + 72) > 0.72) v += 1;
         idx[i] = clamp(v, 0, RL - 1);
+        // Rocha polar polvilhada: montinhos de neve assentados por cima da pedra
+        if (bio[i] === B_POLAR && cluster(tx * 0.5 + 3, ty * 0.5 + 7, sd + 72) * 0.8 + cl * 0.2 > 0.60) {
+          mat[i] = M_DIRT; idx[i] = cl > 0.5 ? 5 : 4;
+        }
 
       } else if (mat[i] === M_SAND) {
+        // Praia do diorama: o alto da praia é creme claro e chapado; descendo para a água a areia
+        // escurece em degraus (bege, caramelo, laranja-queimado) numa faixa larga. As trocas de
+        // tom são pontilhadas (pixels soltos do tom vizinho), não linhas limpas.
         const s1 = macroSn[i];
-        let v = 3;
-        if (s1 + bay * 0.30 > 0.58) v = 4;
-        else if (s1 + bay * 0.30 < 0.34) v = 2;
-        const wet = (CONFIG.SEA_LEVEL + 0.75 - hT[i]) / 0.85;
-        if (wet + bay * 0.55 > 0.42) v -= 1;
-        if (wet + bay * 0.55 > 0.95) v -= 1;
-        if (cl > 0.93) v -= 1;
+        const dep = (CONFIG.SEA_LEVEL + 1.5 - hT[i]) / 1.9;               // 0 = alto da praia, 1 = linha d'água
+        const stip = (ihash(tx, ty, sd + 901) - 0.5) * 0.09;                  // pontilhado pixel a pixel
+        const e = dep + stip + (cl - 0.5) * 0.06 + (s1 - 0.5) * 0.18;
+        let v = e < 0.50 ? 3 : e < 0.70 ? 2 : e < 0.97 ? 1 : 0;
+        if (v === 3 && e < 0.12 && s1 > 0.62) v = 4;                           // manchas mais claras no alto
+        if (v >= 3 && ihash(tx, ty, sd + 902) > 0.992) v = 2;                // grãos soltos no creme
         idx[i] = clamp(v, 0, RL - 1);
 
       } else if (BI.ground === 'talus') {
-        const c = cobble(tx, ty, Math.max(3, Math.round(D * 0.30)), sd + 311);
+        // Cascalho de montanha em pedras graúdas (~1.3m) com contorno, sem chuvisco
+        const c = cobble(tx, ty, Math.max(4, Math.round(D * 1.3)), sd + 311);
         let v = cobbleTone(c, 3, 0.71, -0.71);
-        if (big + bay * 0.18 >  0.20) v += 1;
+        if (big > 0.24) v += 1;
         else if (big + bay * 0.18 < -0.20) v -= 1;
         if (cluster(tx * 0.5 + 9, ty * 0.5 + 2, sd + 312) > 0.82) v += 1;
         idx[i] = clamp(v, 0, RL - 1);
@@ -945,14 +1159,13 @@ export function genChunkTexture(
         const wa = (P.seed % 628) / 100;
         const rx =  wx * Math.cos(wa) + wy * Math.sin(wa);
         const ry = -wx * Math.sin(wa) + wy * Math.cos(wa);
-        const drift = 1 - Math.abs(per.fbm(rx * 0.50 + 3.7, ry * 2.70 + 9.1, 3));
-        const dth = (cluster(tx, ty, sd + 73) - 0.5) * 0.10;
-        let v = 4;
-        if (drift + dth > 0.88) v = 5;
-        else if (drift + dth < 0.44) v = 3;
-        if (per.fbm(wx * 0.30 + 51, wy * 0.30 + 22, 2) > 0.30) v = Math.min(5, v + 1);
-        if (cluster(tx * 0.6 + 13, ty * 0.6 + 31, sd + 74) < 0.12) v -= 2;
-        if (ihash(tx, ty, sd + 75) > 0.9955) v = 5;
+        // Neve do diorama de inverno: quase toda branco puro; as depressões e o pé dos montes
+        // de vento ganham sombra azul-clara com a borda pontilhada (pixels soltos), e só o fundo
+        // das sombras chega no azul médio.
+        const drift = per.fbm(rx * 0.12 + 3.7, ry * 0.45 + 9.1, 2);          // montes de vento largos
+        const e = big * 0.60 + drift * 0.32
+                + (ihash(tx, ty, sd + 911) - 0.5) * 0.16 + (cl - 0.5) * 0.06;
+        let v = e > -0.10 ? 5 : e > -0.30 ? 4 : e > -0.42 ? 3 : 2;
         idx[i] = clamp(v, 0, RL - 1);
 
       } else if (BI.ground === 'dunas') {
@@ -965,14 +1178,23 @@ export function genChunkTexture(
         const dune = per.fbm(rx * 0.06 + 17.3, ry * 0.06 + 3.9, 2);
         const ripple = Math.sin(rx * 2.4 + per.fbm(rx * 0.30 + 5.1, ry * 0.30 + 9.7, 2) * 3.0);
         let v = 3;
-        if (dune + bay * 0.12 > 0.16) v += 1;
-        else if (dune + bay * 0.12 < -0.16) v -= 1;
-        if (ripple + bay * 0.5 > 0.78) v += 1;
-        else if (ripple + bay * 0.5 < -0.82) v -= 1;
-        if (ihash(tx, ty, sd + 77) > 0.996) v -= 2;
+        // Dunas chapadas: manchas grandes e faixas de ondulação limpas (sem pontilhado)
+        if (dune > 0.16) v += 1;
+        else if (dune < -0.16) v -= 1;
+        if (ripple > 0.82) v += 1;
+        else if (ripple < -0.86) v -= 1;
         idx[i] = clamp(v, 0, RL - 1);
 
       } else {
+        if (bio[i] === B_TEMP) {
+          // Terra do diorama: ocre liso, variação só em manchas grandes e poucos sulcos marcados
+          let v = 4;
+          if (big + bay * 0.10 > 0.30) v = 5;
+          else if (big + bay * 0.10 < -0.28) v = 3;
+          if (macroCh1[i] + (cluster(tx, ty, sd + 27) - 0.5) * 0.05 > 0.93) v -= 1;
+          idx[i] = v;
+          continue;
+        }
         // canais de erosão na terra (alimentados por interpolação bilinear ultra-rápida)
         const ch1 = macroCh1[i];
         const chL = macroChL[i];
@@ -992,29 +1214,6 @@ export function genChunkTexture(
         idx[i] = clamp(v, 0, RL - 1);
       }
 
-      // Preenchimento base de grama
-      const g = gl[i];
-      if (g >= 2) {
-        const hole = cluster(tx + 23, ty + 37, sd + 13);
-        const holeThr = g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
-        if (hole > holeThr) {
-          mat[i] = M_GRASS;
-          const wide = macroWide[i];
-          if (BI.veg === 'tufo') {
-            // Manchas grandes e suaves: clareiras iluminadas, verde médio e os bolsões escuros
-            // onde a folhagem é densa (as folhas carimbadas no passo 4 desenham as bordas)
-            const shade = macroBig[i] * 0.7 + wide * 0.5 + (cluster(tx, ty, sd + 19) - 0.5) * 0.10;
-            idx[i] = shade > 0.26 ? 2 : shade < -0.14 ? 4 : 3;
-          } else {
-            const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
-            const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
-            const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
-            let v = 3 + off;
-            if (wide > 0.20) v += 1; else if (wide < -0.22) v -= 1;
-            idx[i] = clamp(v, 0, RL - 1);
-          }
-        }
-      }
     }
   }
 
@@ -1054,6 +1253,8 @@ export function genChunkTexture(
       const wx = x / D, wy = y / D;
       const clump = per.fbm(wx * 0.5 + 31, wy * 0.5 + 17, 2) * 0.5 + 0.5;
       if (ihash(x, y, sd + 63) > P.dirt * (0.25 + 1.5 * clump) * 0.58) continue;
+      // Chão do diorama limpo: poucos detalhes escuros em qualquer bioma (temperado ainda menos)
+      if (ihash(x, y, sd + 60) > (bio[i] === B_TEMP ? 0.10 : 0.18)) continue;
 
       const kind = ihash(x, y, sd + 64);
       if (kind < 0.40) {
@@ -1094,7 +1295,7 @@ export function genChunkTexture(
       const c0 = at(x, y);
       if (x - PX < -10 || y - PY < -10 || x - PX >= W + 10 || y - PY >= W + 10) continue;
       if (gl[c0] < 3) continue;
-      if (!BIOMES[bio[c0]].bushes || bio[c0] === B_TEMP) continue;
+      if (!BIOMES[bio[c0]].bushes) continue;
       if (ihash(x, y, sd + 203) > 0.42 * P.tuft) continue;
       const r  = 2.2 + ihash(x, y, sd + 204) * 2.6;
       const ph2 = ihash(x, y, sd + 205) * 6.283;
@@ -1110,19 +1311,10 @@ export function genChunkTexture(
         if (d > rr) continue;
         const edge = rr - d;
         let v = 2;
-        if (edge < 1.15 && oy <= 0) v = 3;
+        if (edge < 1.15 && oy <= 0) v = 4;
         else if (edge < 1.35) v = 1;
-        else if (oy > r * 0.35) v = 1;
+        else if (oy < -r * 0.3) v = 3;
         mat[j] = M_GRASS; idx[j] = clamp(v, 0, RL - 1);
-      }
-      // Contorno recortado em folhinhas escuras (em vez de um círculo liso)
-      const nLeaves = Math.round(r * 2.6);
-      const rimSet = LEAVES.filter(s => s.c === 2 || s.c === 3);
-      for (let k = 0; k < nLeaves; k++) {
-        const a = (k / nLeaves) * 6.283 + ph2 + (ihash(x + k, y, sd + 206) - 0.5) * 0.6;
-        const lx0 = Math.round(x + Math.cos(a) * r * 0.95), ly0 = Math.round(y + Math.sin(a) * r * 0.85);
-        const st = rimSet[(ihash(lx0, ly0, sd + 207) * rimSet.length) | 0];
-        stamp(st, lx0 - (st.w >> 1), ly0 - (st.h >> 1), M_GRASS, Math.sin(a) < -0.3 ? 3 : 2, ihash(lx0, ly0, sd + 208) > 0.5);
       }
     }
   }
@@ -1150,19 +1342,10 @@ export function genChunkTexture(
         oy = Math.round(-gyv / len * reach);
       }
 
-      // Grama temperada vem inteira do gerador de grama (passo 4a); só os tufos que escorrem
-      // sobre a terra são carimbados aqui (e depois recoloridos pelo mesmo gerador)
+      // Temperado: miolo da grama liso - só os tufos que escorrem pela borda (dão o recorte irregular)
       if (bio[i] === B_TEMP && !spill) continue;
       const BI = BIOMES[bio[i]];
-      const leafy = BI.veg === 'tufo' && !spill;
-      // Folhagem: mancha escura (shade alto) = folhas escuras densas; clareira = brotos claros
-      const shade = macroBig[i] * 0.7 + macroWide[i] * 0.5;
-      const darkLeaf = leafy && (shade > 0.10 || (shade > -0.10 && ihash(x, y, sd + 96) < 0.35));
-
       let p = (spill ? 0.46 * P.spill : ptuft[lvl]) * (0.30 + 1.45 * clump) * P.tuft * BI.vegDens;
-      // Folhagem: densa só nos bolsões escuros; no verde médio e nas clareiras, folhas soltas
-      // com bastante chão liso entre elas (é esse respiro que faz cada folha ser legível)
-      if (leafy) p = (ptuft[lvl] / 0.97) * P.tuft * BI.vegDens * (shade > 0.10 ? 0.80 : darkLeaf ? 0.16 : shade < -0.14 ? 0.05 : 0.16);
       if (mat[i] === M_ROCK) p *= 0.45;
       if (mat[i] === M_SAND) p *= 0.30;
       if (ihash(x, y, sd + 85) > p) continue;
@@ -1171,31 +1354,23 @@ export function genChunkTexture(
                        : clamp(Math.round(lvl * 0.9 + (P.clusterSize - 4) * 0.5 + (ihash(x, y, sd + 86) > 0.7 ? 1 : 0)), 1, 4);
       if (BI.veg === 'alpino')   want = Math.min(want, 2);
       if (BI.veg === 'conifera') want = clamp(want + 1, 2, 3);
-      if (leafy && !darkLeaf)    want = Math.min(want, 2); // brotos claros são pequenos
       const pool = BI.veg === 'conifera' ? CONIF
-                 : leafy ? LEAVES
                  : (spill && ihash(x, y, sd + 87) > 0.45 ? BLADES : TUFTS);
       const cands = pool.filter(s => s.c === want);
       const set = cands.length ? cands : pool;
       const st = set[(ihash(x, y, sd + 88) * set.length) | 0];
 
-      let base: number;
-      if (leafy) {
-        // Broto claro sobre o verde médio; dentro da clareira (já clara) ele vira um "V" médio
-        base = darkLeaf ? 2 : shade < -0.14 ? 3 : 4;
-      } else {
-        const tone = cluster(x * 0.6 + 13, y * 0.6 + 5, sd + 18);
-        const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
-        const spread = P.greens >= 5 ? 3 : 2;
-        const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * spread);
-        base = 3 + off;
-        if (spill) base = clamp(base, 2, RL - 2);
-      }
+      const tone = cluster(x * 0.6 + 13, y * 0.6 + 5, sd + 18);
+      const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
+      const spread = P.greens >= 5 ? 3 : 2;
+      const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * spread);
+      let base = 3 + off;
+      if (spill) base = clamp(base, 2, RL - 2);
 
       const sx = x + ox - ((st.w / 2) | 0), sy2 = y + oy - ((st.h / 2) | 0);
       stamp(st, sx, sy2, M_GRASS, clamp(base, 0, RL - 1), ihash(x, y, sd + 89) > 0.5);
 
-      if (want >= 2 && (!leafy || darkLeaf)) {
+      if (want >= 2) {
         for (let c = 0; c < st.w; c++) {
           if (ihash(x + c, y, sd + 90) > 0.55) continue;
           const lxx = sx + c - PX, lyy = sy2 + st.h - PY;
@@ -1204,27 +1379,73 @@ export function genChunkTexture(
           idx[j] = clamp(idx[j] - 1, 0, RL - 1);
         }
       }
-      if (!leafy && lvl === 4 && ihash(x, y, sd + 91) > 0.975) put(x, y, M_ACC, (ihash(x, y, sd + 92) * 3) | 0);
+      if (lvl === 4 && ihash(x, y, sd + 91) > 0.975) put(x, y, M_ACC, (ihash(x, y, sd + 92) * 3) | 0);
     }
   }
 
-  /* ---- passo 4a: grama temperada = gerador de grama pixel-art (src/tools/grassTexture.ts) ----
-     Um bloco contínuo gerado uma vez por seed é lido pela posição no mundo, então os chunks
-     emendam sem costura. 1 pixel de arte = 1 texel na densidade base; chunks de LOD com menos
-     texels amostram o mesmo bloco (a grama não muda de tamanho entre LODs). */
+  let grassDistMap: Uint8Array | null = null; // distância até a borda da grama (passo 4a), usada nos tufos 3D
+  /* ---- passo 4a: grama temperada - miolo liso e faixa escura na borda ----
+     Distância (Chebyshev, até 4px) de cada pixel de grama até o que não é grama; perto da borda
+     a grama escurece em degraus, no miolo fica o verde médio quase sem textura. */
   {
-    const tile = getGrassTile(P.seed);
-    const S = tile.width;
-    const ratio = (P.grassArtDensity || D) / D;
-    for (let ly = 0; ly < W; ly++) {
-      const row = (((Math.floor((PY + ly + 0.5) * ratio)) % S) + S) % S * S;
-      for (let lx = 0; lx < W; lx++) {
-        const i = ly * W + lx;
-        if (mat[i] !== M_GRASS || bio[i] !== B_TEMP) continue;
-        const c = tile.indices[row + ((((Math.floor((PX + lx + 0.5) * ratio)) % S) + S) % S)];
-        if (c === GRASS_PETAL) { mat[i] = M_ACC; idx[i] = 1; }
-        else if (c === GRASS_CENTER) { mat[i] = M_ACC; idx[i] = 0; }
-        else idx[i] = GRASS_TILE_TO_RAMP[c] ?? 3;
+    // Mesmo acabamento para a vegetação rasteira de todos os biomas (cada um com sua paleta)
+    const isTempGrass = (j: number) => mat[j] === M_GRASS;
+    const dist = new Uint8Array(W * W);
+    for (let i = 0; i < W * W; i++) dist[i] = isTempGrass(i) ? 6 : 0;
+    // chamfer em dois sentidos (8 vizinhos)
+    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+      const i = ly * W + lx; if (!dist[i]) continue;
+      let d = dist[i];
+      if (lx > 0) d = Math.min(d, dist[i - 1] + 1);
+      if (ly > 0) { d = Math.min(d, dist[i - W] + 1); if (lx > 0) d = Math.min(d, dist[i - W - 1] + 1); if (lx < W - 1) d = Math.min(d, dist[i - W + 1] + 1); }
+      dist[i] = d;
+    }
+    for (let ly = W - 1; ly >= 0; ly--) for (let lx = W - 1; lx >= 0; lx--) {
+      const i = ly * W + lx; if (!dist[i]) continue;
+      let d = dist[i];
+      if (lx < W - 1) d = Math.min(d, dist[i + 1] + 1);
+      if (ly < W - 1) { d = Math.min(d, dist[i + W] + 1); if (lx < W - 1) d = Math.min(d, dist[i + W + 1] + 1); if (lx > 0) d = Math.min(d, dist[i + W - 1] + 1); }
+      dist[i] = d;
+    }
+    grassDistMap = dist;
+    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+      const i = ly * W + lx;
+      if (!isTempGrass(i)) continue;
+      const tx = PX + lx, ty = PY + ly;
+      const d = dist[i];
+      // Largura da faixa escura varia ao longo da borda (1 a 4px), em blocos de ~2px
+      // Largura da faixa escura: quase sempre 1-2px, às vezes 3 (como na referência)
+      const bw = cluster(tx * 0.45 + 7, ty * 0.45 + 3, sd + 530);
+      // 0 em alguns trechos: ali o verde de dentro chega até a beirada
+      const band = bw < 0.22 ? 0 : 1 + (bw > 0.55 ? 1 : 0) + (bw > 0.88 ? 1 : 0);
+      const r = cluster(tx + 13, ty + 57, sd + 520);
+      if (gl[i] < 2) {
+        // Tufinho solto sobre a terra: verde (o contorno escuro fica na terra em volta, passo 4b)
+        idx[i] = ihash(tx, ty, sd + 535) > 0.6 ? 4 : r > 0.4 ? 3 : 2;
+        continue;
+      }
+      // O verde claro de dentro invade a faixa escura em línguas de 2-3px que chegam até a beirada
+      const inv = cluster(tx * 0.5 + 91, ty * 0.5 + 33, sd + 541) * 0.8 + r * 0.2;
+      const invade = inv > (d === 1 ? 0.54 : 0.44);
+      if (d <= band && invade) {
+        idx[i] = cluster(tx + 5, ty + 71, sd + 542) > 0.62 ? 4 : 3;
+        continue;
+      }
+      if (d <= band) {
+        // Faixa irregular: azul-petróleo escuro, verde escuro e verde-azulado (quase preto só às vezes)
+        if (d === 1) idx[i] = r < 0.28 ? 0 : r < 0.66 ? 1 : 2;
+        else idx[i] = r < 0.14 ? 0 : r < 0.55 ? 1 : 2;
+      } else {
+        // Miolo: verde vivo com manchinhas verde-azuladas, realces amarelados e pontos escuros
+        // Ruído em bloco + um pouco por pixel: grupinhos orgânicos, sem quadrados alinhados
+        const a = cluster(tx + 31, ty + 17, sd + 531) * 0.75 + ihash(tx, ty, sd + 533) * 0.25;
+        const h = cluster(tx + 71, ty + 23, sd + 532) * 0.70 + ihash(tx, ty, sd + 534) * 0.30;
+        let v = 3;
+        if (a < 0.30) v = 2;
+        if (h > 0.76) v = 4;
+        else if (h < 0.10) v = 1;
+        else if (d === band + 1 && h < 0.20) v = 2; // a faixa escura se desfaz para dentro
+        idx[i] = v;
       }
     }
   }
@@ -1236,25 +1457,33 @@ export function genChunkTexture(
     const up = ly > 0   && mat[(ly - 1) * W + lx] === M_GRASS;
     const rt = lx < W - 1 && mat[ly * W + lx + 1] === M_GRASS;
     const ramp = RAMPS[bio[i]][mat[i]];
+    {
+      // Contorno do diorama: a mancha de grama "senta" sobre a terra com uma borda escura -
+      // quase preta logo abaixo dela e marrom-avermelhada nas laterais. Só em volta das manchas
+      // (gl >= 2); tufinhos soltos não ganham anel (viravam losangos escuros espalhados).
+      const patch = (j: number) => mat[j] === M_GRASS && gl[j] >= 2;
+      const pUp = ly > 0 && patch((ly - 1) * W + lx);
+      const pRt = lx < W - 1 && patch(ly * W + lx + 1);
+      const pLf = lx > 0 && patch(ly * W + lx - 1);
+      const pDn = ly < W - 1 && patch((ly + 1) * W + lx);
+      const oc = cluster(PX + lx + 41, PY + ly + 19, sd + 540);
+      // Onde a grama da beirada é verde claro (invasão), o contorno do lado da terra some
+      const bright = (j: number) => mat[j] === M_GRASS && idx[j] >= 3;
+      const upJ = (ly - 1) * W + lx;
+      if (pUp) { if (!bright(upJ) && oc > 0.18) idx[i] = oc < 0.62 ? 0 : 1; continue; }
+      if (pRt || pLf || pDn) {
+        const litSide = (pRt && bright(i + 1)) || (pLf && bright(i - 1)) || (pDn && bright(i + W));
+        if (!litSide && oc > 0.35) idx[i] = Math.min(idx[i], oc < 0.7 ? 1 : 2);
+        continue;
+      }
+      if (up || rt) continue; // encostado num tufinho solto: sem sombra extra
+    }
     if (up || rt) idx[i] = clamp(idx[i] - 2, 0, ramp.length - 1);
     else if (ly > 1 && mat[(ly - 2) * W + lx] === M_GRASS && cluster(PX + lx, PY + ly, sd + 56) > 0.42)
       idx[i] = clamp(idx[i] - 1, 0, ramp.length - 1);
   }
 
-  /* ---- passo 4b2: a face de grama do mesmo vinco ---- */
-  for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-    const i = ly * W + lx;
-    if (mat[i] !== M_GRASS || bio[i] === B_TEMP) continue; // a grama temperada já vem sombreada do gerador
-    const dn = ly < W - 1 && mat[(ly + 1) * W + lx] !== M_GRASS;
-    const lf = lx > 0   && mat[ly * W + lx - 1] !== M_GRASS;
-    const up = ly > 0   && mat[(ly - 1) * W + lx] !== M_GRASS;
-    const rt = lx < W - 1 && mat[ly * W + lx + 1] !== M_GRASS;
-    if (dn || lf) {
-      if (cluster(PX + lx + 61, PY + ly + 7, sd + 60) > 0.24) idx[i] = clamp(idx[i] - 2, 0, RL - 1);
-    } else if ((up || rt) && cluster(PX + lx + 5, PY + ly + 29, sd + 61) > 0.48) {
-      idx[i] = clamp(idx[i] + 1, 0, RL - 1);
-    }
-  }
+  // (passo 4b2 antigo - borda da grama clareada/escurecida - substituído pelo acabamento do passo 4a)
 
   /* ---- passo 4c: sombra de contato terra -> rocha ---- */
   for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
@@ -1278,6 +1507,21 @@ export function genChunkTexture(
     if (a !== M_ROCK && b !== M_ROCK) continue;
     if (cluster(PX + lx + 17, PY + ly + 43, sd + 59) < 0.28) continue;
     idx[i] = clamp(idx[i] - 1, 0, RL - 1);
+  }
+
+  /* ---- passo 4d: neve encostada na rocha - beirada azul em 2 degraus (a camada de neve
+     tem espessura: a borda que desce para a pedra fica na sombra) ---- */
+  for (let ly = 1; ly < W - 1; ly++) for (let lx = 1; lx < W - 1; lx++) {
+    const i = ly * W + lx;
+    if (bio[i] !== B_POLAR || mat[i] !== M_DIRT) continue;
+    let d = 0;
+    for (let k = 1; k <= 2 && !d; k++) {
+      if (mat[i + k * W < W * W ? i + k * W : i] === M_ROCK || mat[i + (lx + k < W ? k : 0)] === M_ROCK ||
+          mat[i - (lx - k >= 0 ? k : 0)] === M_ROCK) d = k;
+    }
+    if (!d) continue;
+    const r2 = cluster(PX + lx + 61, PY + ly + 19, sd + 861);
+    idx[i] = d === 1 ? (r2 < 0.35 ? 2 : 3) : (r2 < 0.5 ? 3 : 4);
   }
 
   /* ---- passo 5 & 6: cavidade + encosta escurecem & índices -> RGB, recortando a margem ---- */
@@ -1306,7 +1550,6 @@ export function genChunkTexture(
       if (cav < -0.055) sh = 1;
       if (cav < -0.180) sh = 2;
       if (slT[i] + (cluster(PX + lx + 3, PY + ly + 91, sd + 34) - 0.5) * 0.55 > 1.45) sh += 1;
-      if (mat[i] === M_GRASS && bio[i] === B_TEMP) sh = 0; // mantém o desenho do gerador de grama intacto
 
       const ramp = RAMPS[bio[i]][mat[i]];
       const v0 = clamp(idx[i] - sh, 0, ramp.length - 1);
@@ -1317,7 +1560,67 @@ export function genChunkTexture(
       imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = bio[i];
     }
   }
-  return { img, imgD, width: CW, height: CW };
+  // Tufos de grama 3D, como na referência: concentrados na beirada das manchas (logo depois da
+  // faixa escura) e bem espaçados no miolo. A altura vem do relevo interpolado da textura (hT).
+  let grass: Float32Array | undefined;
+  if (chunkSize <= 64) {
+    const list: number[] = [];
+    const S = Math.round(chunkSize);
+    const perCell = clamp(Math.round(P.tuftPerM2 ?? 3), 1, 6);
+    const tuftAmount = P.tuftAmount ?? 1, tuftClump = P.tuftClump ?? 0.6, tuftSize = P.tuftSize ?? 1;
+    // Altura e inclinação no triângulo da malha do chunk (PlaneGeometry de 32 subdivisões: vértices
+    // a cada 2m em coordenadas pares do mundo; faces (a,b,d) e (b,c,d) como em chunkGeometry)
+    const MESH = 2;
+    const cornerCache = new Map<number, number>();
+    const hAt = (vx: number, vz: number) => {
+      const key = vx * 100003 + vz;
+      let h = cornerCache.get(key);
+      if (h === undefined) { h = terrainGen.getHeight(vx, vz); cornerCache.set(key, h); }
+      return h;
+    };
+    const meshSurface = (x: number, z: number) => {
+      const x0 = Math.floor(x / MESH) * MESH, z0 = Math.floor(z / MESH) * MESH;
+      const fx = (x - x0) / MESH, fz = (z - z0) / MESH;
+      const ha = hAt(x0, z0), hb = hAt(x0, z0 + MESH), hc = hAt(x0 + MESH, z0 + MESH), hd = hAt(x0 + MESH, z0);
+      if (fx + fz <= 1) {
+        return { h: ha + (hd - ha) * fx + (hb - ha) * fz, gx: (hd - ha) / MESH, gz: (hb - ha) / MESH };
+      }
+      return { h: hc + (hb - hc) * (1 - fx) + (hd - hc) * (1 - fz), gx: (hc - hb) / MESH, gz: (hc - hd) / MESH };
+    };
+    for (let cz = 0; cz < S; cz++) {
+      for (let cx = 0; cx < S; cx++) {
+        const gx = Math.floor(minWorldX) + cx, gz = Math.floor(minWorldZ) + cz;
+        for (let k = 0; k < perCell; k++) {
+        const kx = gx * 5 + k, kz = gz * 5 + k * 3;
+        const jx = ihash(kx, kz, sd + 602), jz = ihash(kx, kz, sd + 603);
+        const lx = M + Math.min(CW - 1, Math.floor((cx + jx) * D));
+        const ly = M + Math.min(CW - 1, Math.floor((cz + jz) * D));
+        const j = ly * W + lx;
+        // Bioma de gelo: tufos nevados espalhados sobre a neve, com as mesmas configurações da grama
+        const onSnow = bio[j] === B_POLAR && mat[j] === M_DIRT;
+        if (!onSnow && (mat[j] !== M_GRASS || gl[j] < 2)) continue;
+        // Distância até a borda em metros: beirada = mais tufos, miolo = menos
+        const dm = (grassDistMap ? grassDistMap[j] : 6) / D;
+        let p = (onSnow ? 0.32 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
+        // Concentração: moitas cheias onde o ruído é alto, vazios onde é baixo
+        if (tuftClump > 0) {
+          const wxc = minWorldX + cx + jx, wzc = minWorldZ + cz + jz;
+          const cn = per.fbm(wxc * 0.32 + 11.7, wzc * 0.32 + 5.3, 2) * 0.5 + 0.5;
+          const f = clamp((cn - 0.42) * 4.0, 0, 2.4);
+          p *= 1 - tuftClump + tuftClump * f;
+        }
+        if (ihash(kx, kz, sd + 601) > p) continue;
+        const wx = minWorldX + cx + jx, wz = minWorldZ + cz + jz;
+        const surf = meshSurface(wx, wz);
+        if (surf.gx * surf.gx + surf.gz * surf.gz > 1.0) continue; // encosta íngreme demais (> 45°)
+        list.push(wx, surf.h, wz, (0.8 + ihash(kx, kz, sd + 604) * 0.6) * tuftSize, bio[j], surf.gx, surf.gz);
+        }
+      }
+    }
+    grass = new Float32Array(list);
+  }
+
+  return { img, imgD, width: CW, height: CW, grass };
 }
 
 /* =========================================================================
@@ -1476,11 +1779,11 @@ export class TerrainTextureForge {
     density: number,
     priority: number = 0,
     segments: number = 0
-  ): { promise: Promise<{ textures?: ReturnType<typeof makeChunkTextures>; geometry?: ChunkGeometryData }>; cancel: () => void } {
+  ): { promise: Promise<{ textures?: ReturnType<typeof makeChunkTextures>; geometry?: ChunkGeometryData; grass?: Float32Array }>; cancel: () => void } {
     const pool = getTextureWorkerPool();
     const { promise, reqId } = pool.request(
       this.params.seed,
-      { ...this.params, grassArtDensity: this.density },
+      this.params,
       minWorldX,
       minWorldZ,
       chunkSize,
@@ -1491,7 +1794,8 @@ export class TerrainTextureForge {
 
     const wrapped = promise.then((r) => ({
       textures: r.texture ? makeChunkTextures(r.texture) : undefined,
-      geometry: r.geometry
+      geometry: r.geometry,
+      grass: r.texture?.grass
     }));
 
     return { promise: wrapped, cancel: () => pool.cancel(reqId) };
