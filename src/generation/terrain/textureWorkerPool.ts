@@ -29,10 +29,11 @@ interface PendingReq {
 }
 
 function defaultPoolSize(): number {
-  // Deixa 2 núcleos livres (thread principal + GPU/driver). Teto de 8: cada worker guarda buffers
-  // de rascunho que crescem com o quadrado da densidade de texels.
+  // Deixa 1 núcleo livre para a thread principal (que agora só despacha chunks e desenha). Em
+  // CPUs de 4 núcleos isso dá 3 workers em vez de 2. Teto de 8: cada worker guarda buffers de
+  // rascunho que crescem com o quadrado da densidade de texels.
   const cores = (navigator as any).hardwareConcurrency || 4;
-  return Math.max(2, Math.min(8, cores - 2));
+  return Math.max(2, Math.min(8, cores - 1));
 }
 
 export class TextureWorkerPool {

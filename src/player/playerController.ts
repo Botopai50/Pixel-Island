@@ -87,7 +87,7 @@ export class PlayerController {
 
     // Ponto final: altura dos olhos do jogador sobre o relevo da ilha
     const groundH = Math.max(terrain.getHeight(targetX, targetZ), CONFIG.SEA_LEVEL);
-    const eyeY = groundH + 1.75;
+    const eyeY = groundH + 1.75 * CONFIG.PLAYER_SCALE;
     this.targetPos.set(targetX, eyeY, targetZ);
 
     // Direção inicial do olhar em 1ª pessoa: olha suavemente para a frente / interior da ilha
@@ -202,7 +202,7 @@ export class PlayerController {
       // Garantia anti-clipping: a câmera de transição NUNCA pode cortar montanhas ou afundar sob o relevo
       if (terrain) {
         const groundH = terrain.getHeight(this.transitionCamera.position.x, this.transitionCamera.position.z);
-        const minSafeY = Math.max(groundH, CONFIG.SEA_LEVEL) + 2.2;
+        const minSafeY = Math.max(groundH, CONFIG.SEA_LEVEL) + 2.2 * CONFIG.PLAYER_SCALE;
         if (this.transitionCamera.position.y < minSafeY) {
           this.transitionCamera.position.y = minSafeY;
         }
@@ -234,7 +234,7 @@ export class PlayerController {
 
       if (terrain) {
         const groundH = terrain.getHeight(this.transitionCamera.position.x, this.transitionCamera.position.z);
-        const minSafeY = Math.max(groundH, CONFIG.SEA_LEVEL) + 2.2;
+        const minSafeY = Math.max(groundH, CONFIG.SEA_LEVEL) + 2.2 * CONFIG.PLAYER_SCALE;
         if (this.transitionCamera.position.y < minSafeY) {
           this.transitionCamera.position.y = minSafeY;
         }
@@ -265,6 +265,12 @@ export class PlayerController {
   public setPosition(x: number, z: number): void {
     this.movement.setPosition(x, z);
     this.observerCamera.update(1.0, this.movement.position);
+  }
+
+  /** Altura do personagem em 1ª pessoa (escala; 1 = humano de 1.75m). */
+  public setPlayerScale(scale: number): void {
+    CONFIG.PLAYER_SCALE = scale;
+    this.firstPersonController.setScale(scale);
   }
 
   public setFrustumSize(size: number): void {

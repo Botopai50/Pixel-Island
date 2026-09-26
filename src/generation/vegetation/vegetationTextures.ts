@@ -16,6 +16,7 @@ export class VegetationTextures {
   private static burntWoodTex: THREE.CanvasTexture | null = null;
   private static rockTex: THREE.CanvasTexture | null = null;
   private static weatheredWoodTex: THREE.CanvasTexture | null = null;
+  private static grassBladeTex: THREE.CanvasTexture | null = null;
 
   /**
    * Pixel nítido de perto (magFilter Nearest) e mipmap de longe, para a textura não cintilar
@@ -172,111 +173,153 @@ export class VegetationTextures {
   // =========================================================================
   public static getFoliageTexture(): THREE.CanvasTexture {
     if (this.foliageTex) return this.foliageTex;
-    const W = 512, H = 512;
+    // Copa em pixel art de diorama: grupinhos de folhas com lado de cima iluminado, lado de baixo
+    // em sombra e contorno quase preto nos vãos. Tons claros e neutros: a cor de cada espécie vem
+    // do tint da instância (multiplicado), então aqui só vai a luz e a forma.
+    const W = 64, H = 64;
     const canvas = document.createElement('canvas');
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(W, H);
 
-    // 1. Fundo base: Verde esmeralda viçoso de alta luminosidade (estilo Studio Ghibli)
-    ctx.fillStyle = '#4ea628';
-    ctx.fillRect(0, 0, W, H);
-
-    // Gerador determinístico baseado em sementes para reprodutibilidade
+    const TONES: [number, number, number][] = [
+      [22, 30, 28],    // 0 contorno / vão
+      [78, 104, 86],   // 1 sombra
+      [140, 168, 136], // 2 médio
+      [196, 222, 170], // 3 claro
+      [244, 255, 196], // 4 brilho
+    ];
+    const buf = new Uint8Array(W * H); // começa tudo como vão (0)
     let s = 58219;
-    function rnd() {
-      s = (s * 9301 + 49297) % 233280;
-      return s / 233280;
-    }
+    const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+    const setPx = (x: number, y: number, v: number) => { buf[((y % H) + H) % H * W + (((x % W) + W) % W)] = v; };
 
-    // Função de desenho de tufos e pétalas com wrapping toroidal 100% sem emendas (seamless)
-    function drawTiledBlob(cx: number, cy: number, rx: number, ry: number, angle: number, color: string) {
-      ctx.save();
-      ctx.fillStyle = color;
-
-      for (const ox of [-W, 0, W]) {
-        for (const oy of [-H, 0, H]) {
-          const x = cx + ox;
-          const y = cy + oy;
-          if (x + rx * 2 < 0 || x - rx * 2 > W || y + ry * 2 < 0 || y - ry * 2 > H) continue;
-
-          ctx.save();
-          ctx.translate(x, y);
-          ctx.rotate(angle);
-          ctx.beginPath();
-
-          // Contorno de massa foliar lobada orgânica estilo anime
-          const steps = 14;
-          for (let i = 0; i <= steps; i++) {
-            const th = (i / steps) * Math.PI * 2;
-            const rOffset = 1.0 + Math.sin(th * 3.0) * 0.16 + Math.cos(th * 2.0) * 0.10;
-            const px = Math.cos(th) * rx * rOffset;
-            const py = Math.sin(th) * ry * rOffset;
-            if (i === 0) ctx.moveTo(px, py);
-            else ctx.lineTo(px, py);
-          }
-          ctx.closePath();
-          ctx.fill();
-          ctx.restore();
+    // Grupinhos de folhas (elipses pequenas), desenhados de cima para baixo: os de baixo cobrem a
+    // base dos de cima, então cada grupinho mostra o topo claro e a borda de baixo em sombra.
+    const clumps: { x: number; y: number; r: number }[] = [];
+    for (let k = 0; k < 150; k++) clumps.push({ x: rnd() * W, y: rnd() * H, r: 2.2 + rnd() * 2.6 });
+    clumps.sort((p, q) => p.y - q.y);
+    for (const cl of clumps) {
+      const R = Math.ceil(cl.r) + 1;
+      for (let oy = -R; oy <= R; oy++) {
+        for (let ox = -R; ox <= R; ox++) {
+          const d = Math.hypot(ox, oy * 1.15);
+          if (d > cl.r) continue;
+          const x = Math.round(cl.x + ox), y = Math.round(cl.y + oy);
+          let v = 2;
+          const edge = cl.r - d;
+          if (edge < 1.0 && oy >= 0) v = 1;                 // borda de baixo: sombra
+          else if (oy < -cl.r * 0.35 && ox < cl.r * 0.4) v = 3; // topo à esquerda: luz
+          if (v === 3 && ox < 0 && oy < -cl.r * 0.55 && rnd() > 0.55) v = 4;
+          setPx(x, y, v);
         }
       }
-      ctx.restore();
     }
-
-    // Camada 1: Sombras de profundidade do dossel arbóreo (verde quente profundo - #2a6616)
-    for (let i = 0; i < 90; i++) {
-      const cx = rnd() * W;
-      const cy = rnd() * H;
-      const rx = 24 + rnd() * 26;
-      const ry = 18 + rnd() * 20;
-      const ang = rnd() * Math.PI;
-      drawTiledBlob(cx, cy, rx, ry, ang, '#2a6616');
+    // Contorno: vão (0) só onde encosta em folha - o resto dos vãos vira sombra funda
+    const out = new Uint8Array(buf);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (buf[i] !== 0) continue;
+      let near = false;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) if (buf[((y + dy + H) % H) * W + ((x + dx + W) % W)] > 0) near = true;
+      out[i] = near ? 0 : 1;
     }
-
-    // Camada 2: Verde médio de floresta temperada viçosa (#449b22)
-    for (let i = 0; i < 180; i++) {
-      const cx = rnd() * W;
-      const cy = rnd() * H;
-      const rx = 18 + rnd() * 22;
-      const ry = 14 + rnd() * 18;
-      const ang = rnd() * Math.PI;
-      drawTiledBlob(cx, cy, rx, ry, ang, '#449b22');
+    for (let i = 0; i < W * H; i++) {
+      const t = TONES[out[i]];
+      img.data[i * 4] = t[0]; img.data[i * 4 + 1] = t[1]; img.data[i * 4 + 2] = t[2]; img.data[i * 4 + 3] = 255;
     }
+    ctx.putImageData(img, 0, 0);
+    return (this.foliageTex = this.createPixelTexture(canvas));
+  }
 
-    // Camada 3: Tufos ensolarados vibrantes (#66c62c)
-    for (let i = 0; i < 160; i++) {
-      const cx = rnd() * W;
-      const cy = rnd() * H;
-      const rx = 14 + rnd() * 18;
-      const ry = 10 + rnd() * 15;
-      const ang = rnd() * Math.PI;
-      drawTiledBlob(cx, cy, rx, ry, ang, '#66c62c');
+  /**
+   * Tufo de grama 3D em pixel art (fundo transparente, recortado por alphaTest): lâminas
+   * verticais e inclinadas com base escura (verde/azul-petróleo), corpo verde vivo e pontas
+   * verde-amareladas - mesma paleta da grama pintada no chão.
+   */
+  /**
+   * Tufo em leque (como os da referência): 7 lâminas saem juntas da base e se abrem para os lados,
+   * curvando. Sem contorno: cada lâmina tem 2px, o lado da luz mais claro e o outro lado mais
+   * escuro, como sombra. TONES: [sombra funda, sombra, sombra perto da ponta, luz, luz perto da
+   * ponta, ponta]. Com snow, as pontas ganham uma capa de neve e alguns flocos presos nas lâminas.
+   */
+  private static buildGrassFan(TONES: number[][], snow: boolean, seed: number): HTMLCanvasElement {
+    const W = 32, H = 24;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d')!;
+    const img = ctx.createImageData(W, H);
+    const SNOW = [236, 244, 252], SNOW_SHADE = [176, 196, 222];
+    const buf: (number[] | null)[] = new Array(W * H).fill(null);
+    const put = (x: number, y: number, col: number[]) => {
+      if (x < 0 || x >= W || y < 0 || y >= H) return;
+      buf[y * W + x] = col;
+    };
+    let s = seed;
+    const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+    const blades = 7;
+    // Desenha das lâminas de fora para as do meio (as do meio ficam na frente)
+    for (const k of [0, 6, 1, 5, 2, 4, 3]) {
+      const t = k / (blades - 1);
+      const ang = (t - 0.5) * 2.3 + (rnd() - 0.5) * 0.25;
+      const len = (1 - Math.abs(t - 0.5) * 0.9) * (H - 2) * (0.8 + rnd() * 0.2);
+      const bend = (rnd() - 0.5) * 0.6 + (t - 0.5) * 0.9;
+      let x = W / 2 + (t - 0.5) * 4, y = H - 1;
+      const steps = Math.ceil(len);
+      for (let i = 0; i < steps; i++) {
+        const u = i / steps;
+        const a2 = ang + bend * u * u;
+        const px = Math.round(x), py = Math.round(y);
+        let lit = TONES[u < 0.12 ? 1 : u < 0.75 ? 3 : u < 0.92 ? 4 : 5];
+        let shade = TONES[u < 0.25 ? 0 : u < 0.7 ? 1 : 2];
+        if (snow) {
+          // capa de neve no último quarto da lâmina e flocos presos pelo meio
+          if (u > 0.74) { lit = SNOW; shade = SNOW_SHADE; }
+          else if (u > 0.35 && rnd() < 0.10) lit = SNOW;
+        }
+        if (u < 0.85) { put(px, py, lit); put(px + 1, py, shade); }
+        else put(px, py, lit);
+        x += Math.sin(a2);
+        y -= Math.cos(a2);
+      }
     }
-
-    // Camada 4: Cristas solares douradas / folhas iluminadas pelo sol (#9de83a)
-    for (let i = 0; i < 120; i++) {
-      const cx = rnd() * W;
-      const cy = rnd() * H;
-      const rx = 10 + rnd() * 14;
-      const ry = 7 + rnd() * 10;
-      const ang = rnd() * Math.PI;
-      drawTiledBlob(cx, cy, rx, ry, ang, '#9de83a');
+    for (let i = 0; i < W * H; i++) {
+      const col = buf[i];
+      if (!col) continue;
+      img.data[i * 4] = col[0]; img.data[i * 4 + 1] = col[1]; img.data[i * 4 + 2] = col[2]; img.data[i * 4 + 3] = 255;
     }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
 
-    // Camada 5: Pontos de brilho solar máximo estilo Ghibli / Wind Waker (#c8f856)
-    for (let i = 0; i < 60; i++) {
-      const cx = rnd() * W;
-      const cy = rnd() * H;
-      const rx = 6 + rnd() * 8;
-      const ry = 4 + rnd() * 6;
-      const ang = rnd() * Math.PI;
-      drawTiledBlob(cx, cy, rx, ry, ang, '#c8f856');
-    }
+  private static finishGrassTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
+    const tex = this.createPixelTexture(canvas);
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.minFilter = THREE.NearestFilter; // mipmap misturaria o recorte transparente
+    tex.generateMipmaps = false;
+    tex.colorSpace = THREE.SRGBColorSpace; // cores exatas da paleta do chão
+    return tex;
+  }
 
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    return (this.foliageTex = tex);
+  public static getGrassBladeTexture(): THREE.CanvasTexture {
+    if (this.grassBladeTex) return this.grassBladeTex;
+    const canvas = this.buildGrassFan([
+      [32, 56, 64], [48, 112, 64], [72, 140, 90], [90, 186, 50], [160, 194, 72], [206, 222, 110],
+    ], false, 7919);
+    return (this.grassBladeTex = this.finishGrassTexture(canvas));
+  }
+
+  private static snowGrassBladeTex: THREE.CanvasTexture | null = null;
+  /** Tufo nevado do bioma de gelo: capim congelado (branco-azulado, sombra cinza-azulada), pontas com neve. */
+  public static getSnowGrassBladeTexture(): THREE.CanvasTexture {
+    if (this.snowGrassBladeTex) return this.snowGrassBladeTex;
+    const canvas = this.buildGrassFan([
+      [104, 116, 146], [140, 156, 184], [172, 188, 212], [206, 218, 236], [230, 238, 248], [255, 255, 255],
+    ], true, 4217);
+    return (this.snowGrassBladeTex = this.finishGrassTexture(canvas));
   }
 
   // =========================================================================
@@ -290,7 +333,8 @@ export class VegetationTextures {
     canvas.width = 512;
     canvas.height = 512;
     const ctx = canvas.getContext('2d')!;
-    ctx.drawImage(foliage.image, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(foliage.image as CanvasImageSource, 0, 0, 512, 512);
 
     // Quadrante reservado para bagas carmesim (X >= 416, Y >= 416)
     ctx.fillStyle = '#1c4a11';

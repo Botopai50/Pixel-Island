@@ -11,12 +11,13 @@ export class FirstPersonController {
   public yaw: number = 0;
   public pitch: number = 0;
 
-  // Parâmetros de caminhada e corrida
-  private walkSpeed: number = 6.5;
-  private sprintSpeed: number = 13.0;
+  // Parâmetros de caminhada e corrida (valores de um humano de 1.75m, escalados por PLAYER_SCALE)
+  private scale: number = CONFIG.PLAYER_SCALE;
+  private walkSpeed: number = 6.5 * CONFIG.PLAYER_SCALE;
+  private sprintSpeed: number = 13.0 * CONFIG.PLAYER_SCALE;
   private acceleration: number = 18.0;
   private damping: number = 9.0;
-  private eyeHeight: number = 1.75;
+  public eyeHeight: number = 1.75 * CONFIG.PLAYER_SCALE;
 
   // Head bobbing sutil para imersão
   private bobTimer: number = 0;
@@ -30,7 +31,7 @@ export class FirstPersonController {
 
   constructor() {
     const aspect = window.innerWidth / window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(75, aspect, 0.1, 2500);
+    this.camera = new THREE.PerspectiveCamera(75, aspect, 0.1 * CONFIG.PLAYER_SCALE, 2500);
     this.camera.rotation.order = 'YXZ';
 
     this.setupMouseListeners();
@@ -81,6 +82,21 @@ export class FirstPersonController {
     // Limita o pitch vertical para não virar a cabeça do avesso (~ -84° a +84°)
     const maxPitch = 1.46;
     this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
+  }
+
+  /**
+   * Muda o tamanho do personagem em tempo real (1 = humano de 1.75m): altura dos olhos,
+   * velocidades, balanço e sondagens escalam juntos. Mantém os pés no mesmo lugar.
+   */
+  public setScale(scale: number): void {
+    const feetY = this.position.y - this.eyeHeight;
+    this.scale = scale;
+    this.walkSpeed = 6.5 * scale;
+    this.sprintSpeed = 13.0 * scale;
+    this.eyeHeight = 1.75 * scale;
+    this.position.y = feetY + this.eyeHeight;
+    this.camera.near = 0.1 * scale;
+    this.camera.updateProjectionMatrix();
   }
 
   public setPosition(x: number, z: number, terrain?: ITerrainHeightQueryable): void {
@@ -136,7 +152,7 @@ export class FirstPersonController {
 
     if (stepDist > 0.0001) {
       const currentH = terrain.getHeight(this.position.x, this.position.z);
-      const probeDist = Math.max(stepDist, 0.45); // Sondagem antecipada à frente dos passos
+      const probeDist = Math.max(stepDist, 0.45 * this.scale); // Sondagem antecipada à frente dos passos
       const dirX = stepDx / stepDist;
       const dirZ = stepDz / stepDist;
       const probeX = this.position.x + dirX * probeDist;
@@ -150,7 +166,7 @@ export class FirstPersonController {
       if (slope > MAX_WALKABLE_SLOPE) {
         // Encosta muito íngreme ou despenhadeiro/paredão de montanha: impede atravessar a rocha
         // Calcula a normal horizontal do terreno (gradiente ascendente/descendente)
-        const eps = 0.4;
+        const eps = 0.4 * this.scale;
         const hL = terrain.getHeight(this.position.x - eps, this.position.z);
         const hR = terrain.getHeight(this.position.x + eps, this.position.z);
         const hD = terrain.getHeight(this.position.x, this.position.z - eps);
@@ -193,9 +209,9 @@ export class FirstPersonController {
 
     // 5. Head Bobbing cinemático
     const currentSpeed = Math.hypot(this.velocity.x, this.velocity.z);
-    if (currentSpeed > 0.5) {
+    if (currentSpeed > 0.5 * this.scale) {
       this.bobTimer += dt * (isSprinting ? 12.5 : 8.5);
-      const bobTarget = Math.sin(this.bobTimer) * 0.045 * (currentSpeed / this.walkSpeed);
+      const bobTarget = Math.sin(this.bobTimer) * 0.045 * this.scale * (currentSpeed / this.walkSpeed);
       this.currentBob += (bobTarget - this.currentBob) * Math.min(dt * 15.0, 1.0);
     } else {
       this.currentBob += (0 - this.currentBob) * Math.min(dt * 8.0, 1.0);

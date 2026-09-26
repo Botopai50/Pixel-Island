@@ -10,8 +10,10 @@ export type ChunkLOD = 'HIGH' | 'MED' | 'LOW';
 // Fundo do mar das áreas totalmente submersas: só precisa existir no depth buffer para a água
 // calcular a profundidade (e escurecer gradualmente). Material único e barato, compartilhado.
 const SEABED_SPACING = 8; // metros entre vértices
-// Densidade máxima da prévia de textura (tx/m) enquanto a textura final é gerada
-const PREVIEW_DENSITY = 6;
+// Chunks com textura final acima de PREVIEW_ABOVE (tx/m) aparecem primeiro numa prévia barata de
+// PREVIEW_DENSITY enquanto a final é gerada (a prévia em 6 tx/m custava quase tanto quanto a final)
+const PREVIEW_ABOVE = 6;
+const PREVIEW_DENSITY = 3;
 const seabedMaterial = new THREE.MeshLambertMaterial({ color: 0x3d5c58 });
 // Identifica as instâncias de vegetação de cada chunk no pool compartilhado (único por instância,
 // não por coordenada: um chunk descarregado e recriado ganha um id novo)
@@ -43,6 +45,10 @@ export class Chunk {
   public hasVegetation: boolean = false;
   private terrainMesh?: THREE.Mesh;
   private readonly vegetationOwner = nextVegetationOwner++;
+  private readonly grassOwner = nextVegetationOwner++;
+  private grassData?: Float32Array;
+  private grassWanted = false;
+  private grassPlanted = false;
   private vegetationMgr?: VegetationManager;
   private isDestroyed: boolean = false;
 
@@ -147,8 +153,8 @@ export class Chunk {
 
     let density = this.targetDensity > this.appliedDensity ? this.targetDensity : 0;
     // Primeira textura: prévia barata (no máx. 6 tx/m) para o mundo aparecer rápido
-    if (density > 0 && !this.terrainMesh && density > PREVIEW_DENSITY) {
-      density = Math.max(PREVIEW_DENSITY, density / 4);
+    if (density > 0 && !this.terrainMesh && density > PREVIEW_ABOVE) {
+      density = PREVIEW_DENSITY;
     }
     const segments = this.targetSegments > this.appliedSegments ? this.targetSegments : 0;
     if (density === 0 && segments === 0) return;
@@ -161,13 +167,17 @@ export class Chunk {
     const { promise, cancel } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments);
     this.cancelRequest = cancel;
 
-    promise.then(({ textures, geometry }) => {
+    promise.then(({ textures, geometry, grass }) => {
       if (this.isDestroyed) {
         textures?.topTex.dispose();
         textures?.topDarkTex.dispose();
         return;
       }
       this.cancelRequest = undefined;
+      if (grass && !this.grassData) {
+        this.grassData = grass;
+        this.syncGrass();
+      }
 
       if (geometry) {
         const geo = new THREE.BufferGeometry();
@@ -218,6 +228,24 @@ export class Chunk {
     });
   }
 
+  /** Liga/desliga a grama 3D deste chunk (só perto da câmera). */
+  public setGrassEnabled(on: boolean, vegetationMgr: VegetationManager): void {
+    this.grassWanted = on;
+    this.vegetationMgr = this.vegetationMgr ?? vegetationMgr;
+    this.syncGrass();
+  }
+
+  private syncGrass(): void {
+    if (this.isDestroyed || !this.vegetationMgr) return;
+    if (this.grassWanted && !this.grassPlanted && this.grassData) {
+      this.vegetationMgr.populateGrass(this.grassOwner, this.grassData);
+      this.grassPlanted = true;
+    } else if (!this.grassWanted && this.grassPlanted) {
+      this.vegetationMgr.releaseChunk(this.grassOwner);
+      this.grassPlanted = false;
+    }
+  }
+
   public updatePixelScale(scale: number): void {
     if (this.chunkMaterial?.userData?.uniforms?.uPixelScale) {
       this.chunkMaterial.userData.uniforms.uPixelScale.value = scale;
@@ -242,6 +270,7 @@ export class Chunk {
 
     // Libera as instâncias de vegetação deste chunk no pool compartilhado
     this.vegetationMgr?.releaseChunk(this.vegetationOwner);
+    this.vegetationMgr?.releaseChunk(this.grassOwner);
 
     this.group.clear();
   }
