@@ -293,12 +293,16 @@ class App {
    * Raio de chunks que cobre a tela no modo aéreo: a câmera é ortográfica, então a área visível
    * no chão depende só do zoom (largura da tela e profundidade projetada pela inclinação).
    */
-  private observerViewRadius(): number {
+  /** Distância do foco até o canto mais distante da tela na visão aérea (metros). */
+  private observerReach(): number {
     const frustum = this.playerController.getZoomFrustumSize();
     const halfWidth = (frustum * (window.innerWidth / window.innerHeight)) / 2;
     const halfDepth = frustum / 2 / Math.sin(CONFIG.CAMERA.DEFAULT_PITCH);
-    const reach = Math.hypot(halfWidth, halfDepth);
-    const r = Math.ceil(reach / CONFIG.CHUNK_SIZE) + 2;
+    return Math.hypot(halfWidth, halfDepth);
+  }
+
+  private observerViewRadius(): number {
+    const r = Math.ceil(this.observerReach() / CONFIG.CHUNK_SIZE) + 2;
     return Math.min(CONFIG.MAX_VIEW_RADIUS_CHUNKS, Math.max(CONFIG.VIEW_RADIUS_CHUNKS, r));
   }
 
@@ -339,6 +343,13 @@ class App {
     this.worldEngine.updateSimulation(dt);
     this.syncAtmosphereWithWorld();
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
+    // Última faixa de sombra cobre a tela inteira na visão aérea (a rampa de transição ocupa os
+    // últimos 15% da faixa, por isso o /0.85), limitada ao terreno carregado; em 1ª pessoa volta
+    // ao raio base.
+    const shadowReach = this.playerController.getMode() === CameraMode.OBSERVER
+      ? Math.min(this.observerReach(), this.observerViewRadius() * CONFIG.CHUNK_SIZE) / 0.85
+      : 0;
+    if (this.atmosphere.getShadowClipmap().setCoverage(shadowReach)) this.shadowsNeedUpdate = true;
     this.atmosphere.update(dt, this.playerController.getCamera().position);
     // Neblina a partir do ponto focado (na visão aérea a câmera fica centenas de metros acima)
     this.atmosphere.setFocusDistance(this.playerController.getCamera().position.distanceTo(playerPos));
