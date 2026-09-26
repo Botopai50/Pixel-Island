@@ -63,6 +63,7 @@ ctx.onmessage = (ev: MessageEvent<BuildRequest>) => {
       const res = genChunkTexture(params, getPerlin(seed), terrainGen, minWorldX, minWorldZ, chunkSize, density);
       msg.texture = res;
       transfer.push(res.img.buffer as ArrayBuffer, res.imgD.buffer as ArrayBuffer);
+      if (res.grass) transfer.push(res.grass.buffer as ArrayBuffer);
     }
 
     ctx.postMessage(msg, transfer);

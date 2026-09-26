@@ -8,6 +8,7 @@ import { TextureForgeWidget } from './ui/textureForgeWidget.ts';
 import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
 import { setForgeTextureAnisotropy, DEFAULT_D } from './generation/terrain/terrainTextureForge.ts';
+import { AdaptiveQuality, QualityLevel, QUALITY_LEVELS, detectInitialQuality } from './quality.ts';
 
 /**
  * Aplicação Principal: Procedural Island Explorer
@@ -54,9 +55,16 @@ class App {
   private shadowsNeedUpdate: boolean = true;
   private lastShadowSceneVersion: number = -1;
   private lastSceneShadowRefresh: number = 0;
+  private lastVegShadowRefresh: number = 0;
+  private vegShadowPending: boolean = false;
   private lastShadowPos: THREE.Vector3 = new THREE.Vector3();
 
   private clock: THREE.Clock = new THREE.Clock();
+
+  // Qualidade adaptativa (resolução interna, sombras, alcance, vegetação)
+  private quality!: AdaptiveQuality;
+  private renderScale: number = 1.0;
+  private shadowStepSq: number = 0.36;
 
   constructor() {
     this.init();
@@ -81,6 +89,8 @@ class App {
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap;
     container.appendChild(this.renderer.domElement);
+    // Com a resolução interna reduzida, o navegador amplia o canvas: sem suavizar (pixel nítido)
+    this.renderer.domElement.style.imageRendering = 'pixelated';
     // Precisa vir antes do WorldEngine: o forge cria os atlas de parede no construtor.
     setForgeTextureAnisotropy(Math.min(8, this.renderer.capabilities.getMaxAnisotropy()));
 
@@ -126,6 +136,20 @@ class App {
       format: THREE.RGBAFormat,
     });
     this.reflectionCameraPerspective = new THREE.PerspectiveCamera(75, aspect, 0.1, 2500);
+
+    if (new URLSearchParams(window.location.search).get('pixel') === '1') CONFIG.PIXEL_SIZE = CONFIG.PIXELATION_SIZE;
+    this.quality = new AdaptiveQuality(detectInitialQuality(this.renderer.getContext()), (level) => this.applyQuality(level));
+
+    // Pixelização da cena: painel de Texturas (evento) ou tecla P
+    window.addEventListener('pixelation-change', (e) => this.setPixelation((e as CustomEvent<boolean>).detail));
+    window.addEventListener('player-scale-change', (e) => this.playerController.setPlayerScale((e as CustomEvent<number>).detail));
+    window.addEventListener('keydown', (e) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'p' || e.key === 'P') {
+        this.setPixelation(CONFIG.PIXEL_SIZE === 1);
+        window.dispatchEvent(new CustomEvent('pixelation-changed', { detail: CONFIG.PIXEL_SIZE > 1 }));
+      }
+    });
 
     // Semente opcional via parâmetro de URL (ex: ?seed=MinhaIlha)
     const urlSeed = new URLSearchParams(window.location.search).get('seed');
@@ -183,6 +207,7 @@ class App {
     (window as any).__PLAYER__ = this.playerController;
     (window as any).__TEXTURE_WIDGET__ = this.textureForgeWidget;
     (window as any).__TOUCH_CONTROLS__ = this.touchControlsWidget;
+    (window as any).__QUALITY__ = this.quality;
 
     // Clique interativo na água para gerar ondas e ondulações (Ripples)
     container.addEventListener('pointerdown', (e) => {
@@ -230,14 +255,37 @@ class App {
     );
   }
 
+  /** Liga/desliga a pixelização da cena (render em resolução menor, ampliado sem suavizar). */
+  private setPixelation(on: boolean): void {
+    CONFIG.PIXEL_SIZE = on ? CONFIG.PIXELATION_SIZE : 1;
+    this.applyQuality(QUALITY_LEVELS[this.quality.level]);
+  }
+
+  private applyQuality(level: QualityLevel): void {
+    this.renderScale = level.renderScale;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0) * level.renderScale / CONFIG.PIXEL_SIZE);
+    const buf = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.waterRenderTarget.setSize(buf.x, buf.y);
+    this.reflectionRenderTarget.setSize(level.reflectionSize, level.reflectionSize);
+    this.atmosphere.getShadowClipmap().setMapSize(level.shadowMapSize);
+    CONFIG.MAX_VIEW_RADIUS_CHUNKS = level.maxViewRadius;
+    CONFIG.VIEW_RADIUS_CHUNKS = level.baseViewRadius;
+    CONFIG.VEGETATION_RADIUS_CHUNKS = level.vegetationRadius;
+    CONFIG.TEXTURE_DENSITY_CAP = level.textureDensityCap;
+    this.shadowStepSq = level.shadowStep * level.shadowStep;
+    this.shadowsNeedUpdate = true;
+    console.info(`[qualidade] ${level.name}: resolução ${Math.round(level.renderScale * 100)}%, sombras ${level.shadowMapSize}px, alcance ${level.maxViewRadius} chunks`);
+  }
+
   private onWindowResize(): void {
     const width = window.innerWidth;
     const height = window.innerHeight;
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0) * this.renderScale / CONFIG.PIXEL_SIZE);
     this.playerController.onResize();
 
-    this.waterRenderTarget.setSize(width, height);
+    const buf = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.waterRenderTarget.setSize(buf.x, buf.y);
     this.reflectionCameraPerspective.aspect = width / height;
     this.reflectionCameraPerspective.updateProjectionMatrix();
   }
@@ -258,11 +306,21 @@ class App {
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
-    const dt = Math.min(this.clock.getDelta(), 0.1);
+    const rawDt = this.clock.getDelta();
+    const dt = Math.min(rawDt, 0.1);
+    this.quality.frame(rawDt * 1000);
 
     // 1. Atualização do Controlador de Câmera/Jogador (Aéreo / Primeira Pessoa / Transição)
     this.playerController.update(dt, this.worldEngine.getTerrainGenerator());
     const playerPos = this.playerController.getPosition();
+
+    // Grama 3D se afasta do personagem em 1ª pessoa (pés = olhos - altura dos olhos)
+    if (this.playerController.getMode() === CameraMode.FIRST_PERSON) {
+      const eye = 1.75 * CONFIG.PLAYER_SCALE;
+      this.worldEngine.setGrassPusher(playerPos.x, playerPos.y - eye, playerPos.z, 0.45 + 0.9 * CONFIG.PLAYER_SCALE);
+    } else {
+      this.worldEngine.setGrassPusher(0, -9999, 0, 0);
+    }
 
     // Emissão de ondulações na água ao caminhar em águas rasas em Primeira Pessoa
     if (this.playerController.getMode() === CameraMode.FIRST_PERSON && playerPos.y <= 0.45) {
@@ -282,6 +340,11 @@ class App {
     this.worldEngine.updateSimulation(dt);
     this.syncAtmosphereWithWorld();
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
+    // Faixa de sombra mais larga acompanha zoom/rotação da câmera aérea (cobre a tela toda)
+    const observerCam = this.playerController.getMode() === CameraMode.OBSERVER ? this.playerController.getCamera() : null;
+    if (this.atmosphere.getShadowClipmap().fitLastCascadeToView(observerCam, playerPos.y)) {
+      this.shadowsNeedUpdate = true;
+    }
     this.atmosphere.update(dt, this.playerController.getCamera().position);
     // Neblina a partir do ponto focado (na visão aérea a câmera fica centenas de metros acima)
     this.atmosphere.setFocusDistance(this.playerController.getCamera().position.distanceTo(playerPos));
@@ -292,7 +355,7 @@ class App {
 
     // Verificação de histerese para atualização de sombras sob demanda
     const distSq = playerPos.distanceToSquared(this.lastShadowPos);
-    if (distSq > 0.36) { // ~0.60m de deslocamento do jogador
+    if (distSq > this.shadowStepSq) { // ~0.60m de deslocamento do jogador
       this.shadowsNeedUpdate = true;
       this.lastShadowPos.copy(playerPos);
     }
@@ -309,6 +372,17 @@ class App {
     }
 
     const activeCamera = this.playerController.getCamera();
+    // Vegetação recortada pela câmera: quando o conjunto visível muda, as sombras são refeitas
+    // (no máximo ~6x/s, como no carregamento de chunks)
+    // A mudança fica pendente até ser atendida: descartá-la no intervalo de 160ms deixava o
+    // mapa com o conjunto recortado de ~1 quadro antes do fim da rotação, e árvores que
+    // entraram na tela por último ficavam sem sombra.
+    if (this.worldEngine.cullVegetation(activeCamera)) this.vegShadowPending = true;
+    if (this.vegShadowPending && now - this.lastVegShadowRefresh > 160) {
+      this.shadowsNeedUpdate = true;
+      this.vegShadowPending = false;
+      this.lastVegShadowRefresh = now;
+    }
     const isFirstPerson = this.playerController.getMode() === CameraMode.FIRST_PERSON;
     const seaLevel = 0.0;
 
@@ -378,8 +452,8 @@ class App {
       this.reflectionRenderTarget.texture,
       this.reflectTextureMatrix,
       activeCamera,
-      window.innerWidth,
-      window.innerHeight
+      this.waterRenderTarget.width,
+      this.waterRenderTarget.height
     );
 
     this.renderer.autoClear = false;

@@ -18,12 +18,12 @@ export interface GrassParams {
   clumpScale: number;     // quantas manchas cabem no lado da textura
   bands: number;          // 0..1 força da faixa diagonal
   centerBias: number;     // 0..1 (modo bloco) puxa a área clara para o centro
-  spill: number;          // largura (px) da transição entrelaçada entre os tons
-  density: number;        // 0..1 quantas folhas entrelaçam claro e médio na transição
+  spill: number;          // alcance (px) das folhas que transbordam nas fronteiras
+  density: number;        // 0..1 quantas folhas preenchem as fronteiras
   detail: number;         // 0..1 densidade de folhas dentro dos tufos médios/escuros
   spacing: number;        // distância entre posições candidatas de lâmina (px)
   pairs: number;          // 0..1 chance de formar um "V" com a lâmina espelhada
-  limeTufts: number;      // leques lima (encadeados de 2 em 2) nas clareiras
+  limeTufts: number;      // tufinhos lima nas clareiras
   flowerClusters: number;
   blade: number[][];      // máscara da lâmina (1 = pixel pintado), apontando para baixo-direita
   palette: string[];      // [lima, verde claro, verde médio, verde escuro, pétala, miolo]
@@ -46,20 +46,20 @@ export const DEFAULT_BLADE: number[][] = [
 export const DEFAULT_PALETTE = ['#cdfd6d', '#8cdc5b', '#3da06e', '#3b6d70', '#fefce8', '#fae277'];
 
 export const DEFAULT_PARAMS: GrassParams = {
-  size: 88,
+  size: 64,
   seed: 1337,
   mode: 'seamless',
-  lightCover: 0.6,
-  darkCover: 0.08,
+  lightCover: 0.35,
+  darkCover: 0.22,
   clumpScale: 2,
-  bands: 0.75,
-  centerBias: 0.35,
-  spill: 8,
-  density: 0.6,
+  bands: 0.5,
+  centerBias: 0.7,
+  spill: 3,
+  density: 0.8,
   detail: 0.55,
   spacing: 3,
   pairs: 0.3,
-  limeTufts: 6,
+  limeTufts: 5,
   flowerClusters: 2,
   blade: DEFAULT_BLADE,
   palette: DEFAULT_PALETTE,
@@ -68,19 +68,19 @@ export const DEFAULT_PARAMS: GrassParams = {
 const LIME = 0, LIGHT = 1, MID = 2, DARK = 3, PETAL = 4, CENTER = 5;
 const EMPTY = -1, OUTSIDE = -2;
 
-// Flor 7x7 tirada da referência: P = pétala, C = miolo.
+// Flor 5x5: P = pétala, C = miolo.
 const FLOWER = [
-  '.P..PP.',
-  'PPPPPPP',
-  'PPPCCPP',
-  '.PCCCC.',
-  '.PCCCCP',
-  'PPPPPPP',
-  'PPP.PP.',
+  '.P.P.',
+  'PPCPP',
+  '.CCC.',
+  'PPCPP',
+  '.P.P.',
 ];
 
 // 8 direções para procurar tons vizinhos.
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.7, 0.7], [-0.7, 0.7], [0.7, -0.7], [-0.7, -0.7]];
+// Só para cima: folhas penduram do tom que está acima delas, como escamas sobrepostas.
+const UP = [[0, -1], [0.6, -0.8], [-0.6, -0.8], [0.9, -0.4], [-0.9, -0.4]];
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -150,6 +150,7 @@ export function generateGrassIndices(p: GrassParams): { width: number; indices: 
     const px = x + margin, py = y + margin;
     return px < 0 || py < 0 || px >= W || py >= W ? -1 : py * W + px;
   };
+  const get = (x: number, y: number) => { const i = idx(x, y); return i < 0 ? OUTSIDE : buf[i]; };
   const set = (x: number, y: number, c: number) => { const i = idx(x, y); if (i >= 0) buf[i] = c; };
 
   // --- 1. Campo: manchas (fbm periódico) + faixa diagonal ondulada. 0 = claro, 1 = escuro.
@@ -191,40 +192,10 @@ export function generateGrassIndices(p: GrassParams): { width: number; indices: 
     return tone[mod(y, size) * size + mod(x, size)];
   };
 
-  // Distância (px, Chebyshev) até o pixel mais próximo cujo tom satisfaz `pred`.
-  // No modo contínuo a busca dá a volta nas bordas.
-  const distanceTo = (pred: (t: number) => boolean): Int16Array => {
-    const d = new Int16Array(size * size).fill(32767);
-    const queue = new Int32Array(size * size);
-    let head = 0, tail = 0;
-    for (let i = 0; i < tone.length; i++) if (pred(tone[i])) { d[i] = 0; queue[tail++] = i; }
-    while (head < tail) {
-      const i = queue[head++], x = i % size, y = (i / size) | 0;
-      for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) {
-        let nx = x + ox, ny = y + oy;
-        if (seamless) { nx = mod(nx, size); ny = mod(ny, size); } else if (nx < 0 || ny < 0 || nx >= size || ny >= size) continue;
-        const j = ny * size + nx;
-        if (d[j] > d[i] + 1) { d[j] = d[i] + 1; queue[tail++] = j; }
-      }
-    }
-    return d;
-  };
-
-  // O escuro nunca encosta no claro: sempre sobra uma faixa de médio entre os dois.
-  const nearDark = distanceTo(t => t === DARK);
-  for (let i = 0; i < tone.length; i++) if (tone[i] === LIGHT && nearDark[i] <= 3) tone[i] = MID;
-  const toLight = distanceTo(t => t === LIGHT);
-  const toMidOrDark = distanceTo(t => t !== LIGHT);
-  const toDark = distanceTo(t => t === DARK);
-  const toNotDark = distanceTo(t => t !== DARK);
-  const distAt = (a: Int16Array, x: number, y: number) => a[mod(y, size) * size + mod(x, size)];
-
   // --- 2. Chão liso com os três tons.
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) set(x, y, tone[y * size + x]);
 
-  // --- 3. Folhas. A transição claro/médio é entrelaçada nos dois sentidos, como na referência:
-  // folhas médias soltas salpicam a clareira e ficam mais densas perto do tufo, enquanto
-  // folhas claras invadem o tufo. A chance cai com a distância até a fronteira.
+  // --- 3. Lâminas nas fronteiras e pontilhado interno.
   const bh = p.blade.length, bw = Math.max(...p.blade.map(r => r.length));
   const blades: Blade[] = [];
   const addBlade = (x: number, y: number, color: number) => {
@@ -235,8 +206,6 @@ export function generateGrassIndices(p: GrassParams): { width: number; indices: 
     if (rng() < p.pairs) blades.push({ x: x + (flip ? -(bw + 1) : bw + 1), y, color, flip: !flip });
   };
 
-  const band = Math.max(1, p.spill);
-  const falloff = (d: number, width: number) => Math.max(0, 1 - d / width);
   const sp = Math.max(1, Math.round(p.spacing));
   const lo = seamless ? 0 : -margin, hi = seamless ? size : size + margin;
   for (let gy = lo; gy < hi; gy += sp) {
@@ -245,25 +214,27 @@ export function generateGrassIndices(p: GrassParams): { width: number; indices: 
       const cx = x + (bw >> 1), cy = y + (bh >> 1);
       const own = toneAt(cx, cy);
 
+      // Tom mais claro (e mais escuro) a uma distância aleatória até `spill`.
+      const r = 1 + rng() * Math.max(0, p.spill);
+      let lighter = own === OUTSIDE ? 99 : own, darker = OUTSIDE;
+      for (const [dx, dy] of own === OUTSIDE ? DIRS : UP) {
+        const t = toneAt(Math.round(cx + dx * r), Math.round(cy + dy * r));
+        if (t === OUTSIDE) continue;
+        if (t < lighter) lighter = t;
+        if (t > darker) darker = t;
+      }
+
       if (own === OUTSIDE) {
-        // Folhas escapando para fora do bloco herdam o tom da borda mais próxima
-        // (claras onde a clareira chega na borda).
-        const nx = Math.min(size - 1, Math.max(0, cx)), ny = Math.min(size - 1, Math.max(0, cy));
-        const out = Math.max(Math.abs(cx - nx), Math.abs(cy - ny));
-        if (rng() < Math.min(1, p.density * 1.4) * falloff(out, margin)) addBlade(x, y, toneAt(nx, ny));
+        // Folhas soltas escapando para fora do bloco, com a cor da borda.
+        if (darker !== OUTSIDE && rng() < p.density * 0.55) addBlade(x, y, Math.max(darker, MID));
         continue;
       }
-      if (own === LIGHT) {
-        const w = falloff(distAt(toMidOrDark, cx, cy), band);
-        if (rng() < p.density * w) addBlade(x, y, MID);            // médio salpicando a clareira
-      } else if (own === MID) {
-        const wl = falloff(distAt(toLight, cx, cy), band * 0.8);
-        const wd = falloff(distAt(toDark, cx, cy), band * 0.6);
-        if (rng() < p.density * wl) addBlade(x, y, LIGHT);           // claro invadindo o tufo
-        else if (rng() < p.detail * Math.max(wd, 0.2)) addBlade(x, y, DARK); // escuro perto da sombra
-      } else {
-        const wm = falloff(distAt(toNotDark, cx, cy), band * 0.6);
-        if (rng() < p.detail * Math.max(wm, 0.3)) addBlade(x, y, MID); // relevo dentro da sombra
+      if (lighter < own && rng() < p.density) {
+        addBlade(x, y, lighter);                 // tom claro de cima pende sobre o escuro
+      } else if (own === MID && rng() < p.detail) {
+        addBlade(x, y, rng() < 0.55 ? MID : DARK); // folhagem do tufo: tons alternados desenham as folhas
+      } else if (own === DARK && rng() < p.detail * 0.7) {
+        addBlade(x, y, rng() < 0.45 ? MID : DARK); // relevo dentro da sombra
       }
     }
   }
@@ -278,78 +249,73 @@ export function generateGrassIndices(p: GrassParams): { width: number; indices: 
   const deepLight = (x: number, y: number, r: number) =>
     inside(x, y) && DIRS.every(([dx, dy]) => toneAt(Math.round(x + dx * r), Math.round(y + dy * r)) === LIGHT);
 
-  // Flores (7x7) em grupos de 1 a 3 perto da beira da clareira, como na referência;
-  // o centro fica para o lima. Cada flor cai num ângulo/distância aleatórios no grupo.
-  const FS = FLOWER.length;
-  const flowers: { x: number; y: number; mirror: boolean }[] = [];
-  const flowerFree = (x: number, y: number) => {
-    const cx = x + (FS >> 1), cy = y + (FS >> 1);
-    return inside(x, y) && inside(x + FS - 1, y + FS - 1) && toneAt(cx, cy) === LIGHT
-      && distAt(toMidOrDark, cx, cy) >= 3
-      && !flowers.some(o => { const { dx, dy } = dist(x, y, o.x, o.y); return dx < FS + 1 && dy < FS + 1; });
-  };
+  // Flores escolhem lugar primeiro. Cada grupo sorteia um ponto qualquer da área clara,
+  // quantas flores terá (1 a 4, muitas vezes só uma) e o quão aberto é; cada flor cai num
+  // ângulo/distância aleatórios dentro dele. A posição guardada é o canto da flor 5x5.
+  const flowers: { x: number; y: number }[] = [];
+  const flowerFree = (x: number, y: number) =>
+    inside(x, y) && inside(x + 4, y + 5) && toneAt(x + 2, y + 2) === LIGHT
+    && !flowers.some(o => { const { dx, dy } = dist(x, y, o.x, o.y); return dx < 6 && dy < 6; });
   for (let c = 0; c < p.flowerClusters; c++) {
     let at: { x: number; y: number } | null = null;
-    for (let t = 0; t < 120 && !at; t++) {
+    for (let t = 0; t < 80 && !at; t++) {
       const x = Math.floor(rng() * size), y = Math.floor(rng() * size);
-      const edge = toneAt(x, y) === LIGHT ? distAt(toMidOrDark, x, y) : 0;
-      if (edge >= 3 && edge <= 9 && flowerFree(x - (FS >> 1), y - (FS >> 1))) at = { x, y };
+      if (deepLight(x, y, 2) && flowerFree(x - 2, y - 2)) at = { x, y };
     }
     if (!at) continue;
     const r = rng();
-    const count = r < 0.2 ? 1 : r < 0.65 ? 2 : 3;
-    const spread = FS + 1 + rng() * 4;
+    const count = r < 0.35 ? 1 : r < 0.7 ? 2 : r < 0.9 ? 3 : 4;
+    const spread = 4 + rng() * 7;
     for (let placed = 0, tries = 0; placed < count && tries < 40; tries++) {
-      const a = rng() * Math.PI * 2, d = placed === 0 ? 0 : spread * (0.8 + rng() * 0.5);
-      const x = Math.round(at.x - (FS >> 1) + Math.cos(a) * d), y = Math.round(at.y - (FS >> 1) + Math.sin(a) * d);
+      const a = rng() * Math.PI * 2, d = placed === 0 ? 0 : spread * (0.6 + rng() * 0.6);
+      const x = Math.round(at.x - 2 + Math.cos(a) * d), y = Math.round(at.y - 2 + Math.sin(a) * d);
       if (!flowerFree(x, y)) continue;
-      flowers.push({ x, y, mirror: rng() < 0.5 });
+      flowers.push({ x, y });
       placed++;
     }
   }
 
-  // Tufinhos lima: correntes de leques (4 a 6 folhas) no ponto mais claro das clareiras.
-  // O primeiro leque vai no mínimo do campo e os seguintes descem na diagonal, sem sobrepor
-  // (a caixa de um leque tem ~9x8 px acima da base).
+  // Tufinhos lima formam 1 ou 2 manchas de luz no ponto mais claro das clareiras:
+  // o primeiro tufinho vai no mínimo do campo e os outros crescem ao redor, lado a lado,
+  // sem sobrepor (a caixa de um tufinho tem ~9x8 px acima da base).
   const tufts: { x: number; y: number }[] = [];
   const TW = 2 * bw + 1, TH = 2 * bh;
-  const wrap = (d: number) => (seamless ? mod(d + size / 2, size) - size / 2 : d);
   const tuftFits = (x: number, y: number) => {
     if (!deepLight(x, y - (bh >> 1), 4)) return false;
     if (tufts.some(o => { const { dx, dy } = dist(x, y, o.x, o.y); return dx < TW + 1 && dy < TH + 1; })) return false;
-    // A caixa do leque não pode tocar nenhuma flor (+1px de folga).
+    // A caixa do tufinho (TW x TH acima da base) não pode tocar nenhuma flor
+    // (5x6 contando a sombra, +1px de folga).
+    const wrap = (d: number) => (seamless ? mod(d + size / 2, size) - size / 2 : d);
     return !flowers.some(o => {
       const ox = wrap(o.x - (x - bw)), oy = wrap(o.y - (y - TH + 1));
-      return ox - 1 < TW && ox + FS + 1 > 0 && oy - 1 < TH && oy + FS + 1 > 0;
+      return ox - 1 < TW && ox + 6 > 0 && oy - 1 < TH && oy + 7 > 0;
     });
   };
-  const NEIGHBORS = [[5, TH + 1], [-5, TH + 1], [TW + 1, 3], [-(TW + 1), 3], [5, -(TH + 1)], [-5, -(TH + 1)]];
-  const chains = Math.max(1, Math.ceil(p.limeTufts / 2));
+  const NEIGHBORS = [[TW + 1, 1], [-(TW + 1), 2], [4, TH + 1], [-5, TH + 1], [6, -(TH + 1)], [-4, -(TH + 1)], [TW + 2, -5], [-(TW + 2), -4]];
+  const patches = p.limeTufts <= 3 ? 1 : 2;
   const centers: { x: number; y: number }[] = [];
-  for (let k = 0; k < chains; k++) {
+  for (let k = 0; k < patches; k++) {
     let best: { x: number; y: number; v: number } | null = null;
     for (let t = 0; t < 300; t++) {
       const x = Math.floor(rng() * size), y = Math.floor(rng() * size);
-      if (!tuftFits(x, y) || centers.some(c => dist(x, y, c.x, c.y).d < size * 0.25)) continue;
+      if (!tuftFits(x, y) || centers.some(c => dist(x, y, c.x, c.y).d < size * 0.35)) continue;
       const v = fieldAt(x, y - (bh >> 1));
       if (!best || v < best.v) best = { x, y, v };
     }
     if (best) centers.push(best);
   }
-  let remaining = p.limeTufts;
   centers.forEach((c, k) => {
-    const want = Math.ceil(remaining / (centers.length - k));
-    const chain = [c];
+    const want = Math.round(p.limeTufts / centers.length) + (k === 0 ? p.limeTufts % centers.length : 0);
+    const patch = [c];
     tufts.push(c);
-    for (let t = 0; chain.length < want && t < 40; t++) {
-      const from = chain[chain.length - 1];
+    for (let t = 0; patch.length < want && t < 40; t++) {
+      const from = patch[Math.floor(rng() * patch.length)];
       const [ox, oy] = NEIGHBORS[Math.floor(rng() * NEIGHBORS.length)];
       const x = from.x + ox, y = from.y + oy;
       if (!tuftFits(x, y)) continue;
-      chain.push({ x, y });
+      patch.push({ x, y });
       tufts.push({ x, y });
     }
-    remaining -= chain.length;
   });
 
   for (const at of tufts) {
@@ -377,11 +343,20 @@ export function generateGrassIndices(p: GrassParams): { width: number; indices: 
     }
   }
 
-  // --- 4. Flores (posições já sorteadas acima), sem sombra, como na referência.
-  for (const fl of flowers) {
-    for (let r = 0; r < FS; r++) for (let k = 0; k < FS; k++) {
-      const ch = FLOWER[r][fl.mirror ? FS - 1 - k : k];
-      if (ch !== '.') set(fl.x + k, fl.y + r, ch === 'P' ? PETAL : CENTER);
+  // --- 4. Flores (posições já sorteadas acima).
+  {
+    for (const fl of flowers) {
+      for (let r = 0; r < 5; r++) for (let k = 0; k < 5; k++) {
+        const ch = FLOWER[r][k];
+        if (ch === '.') continue;
+        // sombra 1px abaixo, só onde ainda é grama clara
+        const below = get(fl.x + k, fl.y + r + 1);
+        if (below === LIGHT || below === LIME) set(fl.x + k, fl.y + r + 1, MID);
+      }
+      for (let r = 0; r < 5; r++) for (let k = 0; k < 5; k++) {
+        const ch = FLOWER[r][k];
+        if (ch !== '.') set(fl.x + k, fl.y + r, ch === 'P' ? PETAL : CENTER);
+      }
     }
   }
 

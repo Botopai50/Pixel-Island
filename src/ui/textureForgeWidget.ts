@@ -1,5 +1,6 @@
 import { WorldEngine } from '../generation/worldEngine.ts';
 import { ForgeParams, DEFAULT_FORGE_PARAMS, DEFAULT_D } from '../generation/terrain/terrainTextureForge.ts';
+import { CONFIG } from '../config.ts';
 
 interface TextureControlsState extends ForgeParams {
   density: number;
@@ -187,7 +188,7 @@ export class TextureForgeWidget {
               <b id="fg-density-v">${this.state.density.toFixed(1)} tx/m (${Math.round(64 * this.state.density)}² px)</b>
             </div>
             <input id="fg-density" type="range" min="1.0" max="24.0" step="0.5" value="${this.state.density}">
-            <span class="forge-hint">128px = 24 tx/un (HTML) | 384px = 6.0 tx/m (Padrão) | até 24.0 tx/m (1536² px)</span>
+            <span class="forge-hint">128px = 24 tx/un (HTML) | 512px = 8.0 tx/m (Padrão) | até 24.0 tx/m (1536² px)</span>
           </div>
 
           <div class="forge-row">
@@ -197,6 +198,67 @@ export class TextureForgeWidget {
             </div>
             <input id="fg-pixelscale" type="range" min="0.5" max="4.0" step="0.1" value="${this.state.pixelScale || 1.0}">
             <span class="forge-hint">Subdivide e diminui o tamanho dos pixels no chão em tempo real (GPU)</span>
+          </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-pixelation">Pixelização da cena (tecla P)</label>
+              <input id="fg-pixelation" type="checkbox" ${CONFIG.PIXEL_SIZE > 1 ? 'checked' : ''}>
+            </div>
+            <span class="forge-hint">Desenha a cena em resolução menor e amplia sem suavizar (visual de diorama pixel-art; também deixa o jogo mais leve)</span>
+          </div>
+        </div>
+
+        <!-- Grama 3D -->
+        <div class="forge-group">
+          <div class="forge-group-title">Grama 3D (Tufos)</div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-tuft-amount">Quantidade de Tufos</label>
+              <b id="fg-tuft-amount-v">${this.state.tuftAmount.toFixed(2)}</b>
+            </div>
+            <input id="fg-tuft-amount" type="range" min="0.0" max="3.0" step="0.05" value="${this.state.tuftAmount}">
+            <span class="forge-hint">0 = sem grama 3D. Na beirada das manchas nascem mais que no miolo</span>
+          </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-tuft-clump">Concentração</label>
+              <b id="fg-tuft-clump-v">${this.state.tuftClump.toFixed(2)}</b>
+            </div>
+            <input id="fg-tuft-clump" type="range" min="0.0" max="1.0" step="0.01" value="${this.state.tuftClump}">
+            <span class="forge-hint">0 = espalhados por igual | 1 = moitas cheias com espaços vazios entre elas</span>
+          </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-tuft-perm2">Tufos por m²</label>
+              <b id="fg-tuft-perm2-v">${Math.round(this.state.tuftPerM2)}</b>
+            </div>
+            <input id="fg-tuft-perm2" type="range" min="1" max="6" step="1" value="${this.state.tuftPerM2}">
+            <span class="forge-hint">Candidatos por metro quadrado (touceiras mais densas)</span>
+          </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-tuft-size">Tamanho dos Tufos</label>
+              <b id="fg-tuft-size-v">${this.state.tuftSize.toFixed(2)}x</b>
+            </div>
+            <input id="fg-tuft-size" type="range" min="0.4" max="2.5" step="0.05" value="${this.state.tuftSize}">
+          </div>
+        </div>
+
+        <!-- Personagem -->
+        <div class="forge-group">
+          <div class="forge-group-title">Personagem (1ª pessoa)</div>
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-player-scale">Altura do Personagem</label>
+              <b id="fg-player-scale-v">${(CONFIG.PLAYER_SCALE * 1.75).toFixed(2)} m</b>
+            </div>
+            <input id="fg-player-scale" type="range" min="0.3" max="2.0" step="0.05" value="${CONFIG.PLAYER_SCALE}">
+            <span class="forge-hint">Altura dos olhos; velocidade e passos acompanham a proporção</span>
           </div>
         </div>
 
@@ -290,6 +352,29 @@ export class TextureForgeWidget {
     registerSlider('fg-hang', 'hang', (v) => v.toFixed(2));
     registerSlider('fg-density', 'density', (v) => `${v.toFixed(1)} tx/m (${Math.round(64 * v)}² px)`);
     registerSlider('fg-pixelscale', 'pixelScale', (v) => `${v.toFixed(1)}x`);
+    registerSlider('fg-tuft-amount', 'tuftAmount', (v) => v.toFixed(2));
+    registerSlider('fg-tuft-clump', 'tuftClump', (v) => v.toFixed(2));
+    registerSlider('fg-tuft-perm2', 'tuftPerM2', (v) => Math.round(v).toString());
+    registerSlider('fg-tuft-size', 'tuftSize', (v) => `${v.toFixed(2)}x`);
+
+    const playerScale = this.panel.querySelector('#fg-player-scale') as HTMLInputElement | null;
+    const playerScaleLabel = this.panel.querySelector('#fg-player-scale-v') as HTMLElement | null;
+    if (playerScale) {
+      playerScale.addEventListener('input', () => {
+        const v = parseFloat(playerScale.value);
+        if (playerScaleLabel) playerScaleLabel.textContent = `${(v * 1.75).toFixed(2)} m`;
+        window.dispatchEvent(new CustomEvent('player-scale-change', { detail: v }));
+      });
+    }
+
+    const pixelation = this.panel.querySelector('#fg-pixelation') as HTMLInputElement | null;
+    if (pixelation) {
+      pixelation.addEventListener('change', () => {
+        window.dispatchEvent(new CustomEvent('pixelation-change', { detail: pixelation.checked }));
+      });
+      // Mantém o checkbox em sincronia quando a tecla P alterna
+      window.addEventListener('pixelation-changed', (e) => { pixelation.checked = (e as CustomEvent<boolean>).detail; });
+    }
 
     // Botão Copiar JSON
     const copyBtn = this.panel.querySelector('#fg-btn-copy');
