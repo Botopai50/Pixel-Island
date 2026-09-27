@@ -83,7 +83,7 @@ export class TextureForgeWidget {
 
           <div class="forge-row">
             <div class="forge-label-row">
-              <label for="fg-grass-mountain">Quantidade de Grama (Montanha)</label>
+              <label for="fg-grass-mountain">Quantidade de Grama (Vulcão)</label>
               <b id="fg-grass-mountain-v">${(this.state.grassMountain >= 0 ? '+' : '') + this.state.grassMountain.toFixed(2)}</b>
             </div>
             <input id="fg-grass-mountain" type="range" min="-0.35" max="0.42" step="0.01" value="${this.state.grassMountain}">
@@ -247,6 +247,14 @@ export class TextureForgeWidget {
             </div>
             <input id="fg-tuft-size" type="range" min="0.4" max="2.5" step="0.05" value="${this.state.tuftSize}">
           </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-grass-billboard">Sempre de frente (1 plano)</label>
+              <input id="fg-grass-billboard" type="checkbox" ${CONFIG.GRASS_BILLBOARD ? 'checked' : ''}>
+            </div>
+            <span class="forge-hint">Ligado: cada tufo é um plano que gira para a câmera | Desligado: dois planos cruzados</span>
+          </div>
         </div>
 
         <!-- Personagem -->
@@ -364,6 +372,15 @@ export class TextureForgeWidget {
         const v = parseFloat(playerScale.value);
         if (playerScaleLabel) playerScaleLabel.textContent = `${(v * 1.75).toFixed(2)} m`;
         window.dispatchEvent(new CustomEvent('player-scale-change', { detail: v }));
+        this.updateJsonArea();
+      });
+    }
+
+    const billboard = this.panel.querySelector('#fg-grass-billboard') as HTMLInputElement | null;
+    if (billboard) {
+      billboard.addEventListener('change', () => {
+        window.dispatchEvent(new CustomEvent('grass-billboard-change', { detail: billboard.checked }));
+        this.updateJsonArea();
       });
     }
 
@@ -371,9 +388,13 @@ export class TextureForgeWidget {
     if (pixelation) {
       pixelation.addEventListener('change', () => {
         window.dispatchEvent(new CustomEvent('pixelation-change', { detail: pixelation.checked }));
+        this.updateJsonArea();
       });
-      // Mantém o checkbox em sincronia quando a tecla P alterna
-      window.addEventListener('pixelation-changed', (e) => { pixelation.checked = (e as CustomEvent<boolean>).detail; });
+      // Mantém o checkbox (e o JSON) em sincronia quando a tecla P alterna
+      window.addEventListener('pixelation-changed', (e) => {
+        pixelation.checked = (e as CustomEvent<boolean>).detail;
+        this.updateJsonArea();
+      });
     }
 
     // Botão Copiar JSON
@@ -430,6 +451,9 @@ export class TextureForgeWidget {
         this.applyExternalConfig({
           ...DEFAULT_FORGE_PARAMS,
           density: DEFAULT_D,
+          pixelation: false,
+          grassBillboard: true,
+          playerHeight: 1.75,
         });
       });
     }
@@ -466,6 +490,13 @@ export class TextureForgeWidget {
       hang: Number(this.state.hang.toFixed(2)),
       density: Number(this.state.density.toFixed(1)),
       pixelScale: Number((this.state.pixelScale || 1.0).toFixed(1)),
+      pixelation: CONFIG.PIXEL_SIZE > 1,
+      tuftAmount: Number(this.state.tuftAmount.toFixed(2)),
+      tuftClump: Number(this.state.tuftClump.toFixed(2)),
+      tuftPerM2: Math.round(this.state.tuftPerM2),
+      tuftSize: Number(this.state.tuftSize.toFixed(2)),
+      grassBillboard: CONFIG.GRASS_BILLBOARD,
+      playerHeight: Number((CONFIG.PLAYER_SCALE * 1.75).toFixed(2)),
     };
     return JSON.stringify(exportable, null, 2);
   }
@@ -476,7 +507,7 @@ export class TextureForgeWidget {
     }
   }
 
-  public applyExternalConfig(cfg: Partial<TextureControlsState>): void {
+  public applyExternalConfig(cfg: Partial<TextureControlsState> & { pixelation?: boolean; playerHeight?: number; grassBillboard?: boolean }): void {
     if (cfg.pscale !== undefined) this.state.pscale = cfg.pscale;
     if (cfg.grass !== undefined) this.state.grass = cfg.grass;
     if (cfg.grassMountain !== undefined) this.state.grassMountain = cfg.grassMountain;
@@ -491,6 +522,20 @@ export class TextureForgeWidget {
     if (cfg.hang !== undefined) this.state.hang = cfg.hang;
     if (cfg.density !== undefined) this.state.density = cfg.density;
     if (cfg.pixelScale !== undefined) this.state.pixelScale = cfg.pixelScale;
+    if (cfg.tuftAmount !== undefined) this.state.tuftAmount = cfg.tuftAmount;
+    if (cfg.tuftClump !== undefined) this.state.tuftClump = cfg.tuftClump;
+    if (cfg.tuftPerM2 !== undefined) this.state.tuftPerM2 = cfg.tuftPerM2;
+    if (cfg.tuftSize !== undefined) this.state.tuftSize = cfg.tuftSize;
+    // Opções fora das texturas: aplicadas pelos mesmos eventos que os controles do painel usam
+    if (cfg.pixelation !== undefined && cfg.pixelation !== (CONFIG.PIXEL_SIZE > 1)) {
+      window.dispatchEvent(new CustomEvent('pixelation-change', { detail: !!cfg.pixelation }));
+    }
+    if (cfg.grassBillboard !== undefined) {
+      window.dispatchEvent(new CustomEvent('grass-billboard-change', { detail: !!cfg.grassBillboard }));
+    }
+    if (cfg.playerHeight !== undefined && cfg.playerHeight > 0) {
+      window.dispatchEvent(new CustomEvent('player-scale-change', { detail: cfg.playerHeight / 1.75 }));
+    }
 
     this.syncInputsFromState();
     this.updateJsonArea();
@@ -519,6 +564,15 @@ export class TextureForgeWidget {
     updateInput('fg-hang', this.state.hang, (v) => v.toFixed(2));
     updateInput('fg-density', this.state.density, (v) => `${v.toFixed(1)} tx/m (${Math.round(64 * v)}² px)`);
     updateInput('fg-pixelscale', this.state.pixelScale || 1.0, (v) => `${v.toFixed(1)}x`);
+    updateInput('fg-tuft-amount', this.state.tuftAmount, (v) => v.toFixed(2));
+    updateInput('fg-tuft-clump', this.state.tuftClump, (v) => v.toFixed(2));
+    updateInput('fg-tuft-perm2', this.state.tuftPerM2, (v) => Math.round(v).toString());
+    updateInput('fg-tuft-size', this.state.tuftSize, (v) => `${v.toFixed(2)}x`);
+    updateInput('fg-player-scale', CONFIG.PLAYER_SCALE, (v) => `${(v * 1.75).toFixed(2)} m`);
+    const pixelation = this.panel.querySelector('#fg-pixelation') as HTMLInputElement | null;
+    if (pixelation) pixelation.checked = CONFIG.PIXEL_SIZE > 1;
+    const billboard = this.panel.querySelector('#fg-grass-billboard') as HTMLInputElement | null;
+    if (billboard) billboard.checked = CONFIG.GRASS_BILLBOARD;
   }
 
   public togglePanel(): void {

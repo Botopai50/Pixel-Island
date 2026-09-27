@@ -28,6 +28,14 @@ export const GRANITE: [number, number, number][] = [[44,46,56],[70,74,88],[102,1
 export const ALPINE: [number, number, number][]  = [[16,36,24],[26,58,32],[40,84,40],[58,110,50],[88,144,64],[126,180,90]];
 export const ACC_M: [number, number, number][]   = [[198,186,150],[220,210,180],[176,150,110]];
 
+// Vulcânico (usa o índice do antigo "montanhoso": só o vulcão cai nele) - cinza vulcânica
+// marrom, basalto cinza-chumbo com sombras quase pretas, mato seco e acentos de cinza clara
+export const ASHSAND: [number, number, number][] = [[64,50,46],[96,76,64],[128,104,84],[156,130,104],[180,154,124],[204,180,146]];
+export const ASH: [number, number, number][]     = [[52,38,38],[82,60,54],[112,84,68],[140,108,84],[164,130,102],[190,156,122]];
+export const BASALT: [number, number, number][]  = [[22,20,24],[40,38,42],[60,58,62],[86,84,88],[116,114,116],[150,148,146]];
+export const DRYGRASS: [number, number, number][] = [[24,20,22],[40,32,30],[60,46,38],[86,64,48],[116,86,58],[150,112,72]];
+export const ASH_ACC: [number, number, number][] = [[104,86,72],[136,114,94],[92,62,52]];
+
 // Polar
 export const ICE: [number, number, number][]     = [[92,128,170],[128,166,204],[168,202,230],[204,228,246],[228,242,252],[248,252,255]];
 export const SNOW: [number, number, number][]    = [[60,68,108],[104,120,166],[160,180,218],[206,220,240],[236,243,251],[255,255,255]];
@@ -64,9 +72,9 @@ export const BIOMES: BiomeForgeDef[] = [
     ramps:[SAND,  DIRT,  ROCK,    GRASS,   ACC  ],
     ground:'canais', wallHi:'terra',   wallLo:'bloco',
     veg:'tufo',     vegBias: 0.00, rockBias: 0.00, vegDens:1.00, bushes:true },
-  { key:'montanha',  label:'Montanhoso', swatch:'#a49880',
-    ramps:[TALUS, SCREE, GRANITE, ALPINE,  ACC_M],
-    ground:'talus',  wallHi:'fratura', wallLo:'bloco',
+  { key:'montanha',  label:'Vulcânico', swatch:'#4a3a36',
+    ramps:[ASHSAND, ASH, BASALT, DRYGRASS, ASH_ACC],
+    ground:'cinza',  wallHi:'basalto',  wallLo:'basalto',
     veg:'alpino',   vegBias:-0.20, rockBias: 0.34, vegDens:0.45, bushes:false },
   { key:'polar',     label:'Polar', swatch:'#d6e4f0',
     ramps:[ICE,   SNOW,  FROZEN,  CONIFER, ACC_P],
@@ -481,7 +489,7 @@ export const DEFAULT_FORGE_PARAMS: ForgeParams = {
   grass: 0.15,
   grassMountain: 0.00,
   grassPolar: -0.10,
-  rock: 0.00,
+  rock: 0.40,
   dirt: 0.45,
   tuft: 0.85,
   clusterSize: 4,
@@ -489,10 +497,10 @@ export const DEFAULT_FORGE_PARAMS: ForgeParams = {
   greens: 4,
   hang: 0.20,
   pixelScale: 1.0,
-  tuftAmount: 1.0,
-  tuftClump: 0.6,
-  tuftPerM2: 3,
-  tuftSize: 1.0,
+  tuftAmount: 1.25,
+  tuftClump: 1.0,
+  tuftPerM2: 6,
+  tuftSize: 1.25,
 };
 
 export const MARGIN = 12;
@@ -517,6 +525,8 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
     ? facetRelief(W, H, sd + 500, { cw: 14, ch: 12, tilt: 0.75, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.15 })
     : kind === 'seixo'
     ? facetRelief(W, H, sd + 500, { cw: 11, ch: 10, tilt: 0.80, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.10 })
+    : kind === 'basalto'
+    ? facetRelief(W, H, sd + 500, { cw: 12, ch: 11, tilt: 0.90, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.05 })
     : kind === 'gelo'
     ? facetRelief(W, H, sd + 500, { cw: 16, ch: 13, tilt: 0.85, lx: -0.45, ly: -0.70, lz: 0.60, warp: 3, sub: 0.0, up: 0.10 })
     : null;
@@ -532,6 +542,17 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
         if (g < 0.04 && L < 0.20) v = 0;                                     // vinco quase preto só dentro da sombra
         if (v === 4 && tfbm2(x, y, 8, 4, W, H, sd + 84) < 0.24) v = 3;       // manchas laranja
         put(x, y, M_DIRT, v);
+
+      } else if (kind === 'basalto') {
+        // Paredão de basalto: blocos naturais graúdos (relevo facetado) em cinza-chumbo escuro,
+        // só as faces de cima claras, grão fino de pixels soltos e juntas finas quase pretas
+        const i = y * W + x, L = relief!.lum[i], g = relief!.gap[i];
+        const l = L + (relief!.cid[i] - 0.5) * 0.16 + (tfbm2(x, y, 4, 4, W, H, sd + 313) - 0.5) * 0.10;
+        let v = l > 0.86 ? 4 : l > 0.70 ? 3 : l > 0.46 ? 2 : 1;
+        const gr = ihash(x, y, sd + 324);
+        if (gr > 0.90) v += 1; else if (gr < 0.08) v -= 1;       // grão da pedra
+        if (g < 0.022) v = 0;                                    // junta
+        else if (g < 0.05 && L < 0.55) v = Math.min(v, 1);        put(x, y, M_ROCK, clamp(v, 0, 5));
 
       } else if (kind === 'gelo' || (kind === 'seixo' && (bioIdx | 0) === B_POLAR)) {
         // Encosta de inverno: rocha cinza-amarronzada facetada; as faces que olham para cima
@@ -636,7 +657,7 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
     }
   }
 
-  const isRockWall = (kind === 'seixo' || kind === 'bloco');
+  const isRockWall = (kind === 'seixo' || kind === 'bloco' || kind === 'basalto');
   // rachaduras horizontais / fendas verticais
   for (let k = 0; k < (isRockWall ? 0 : kind === 'terra' ? 0 : 52); k++) {
     const y0 = (ihash(k, 0, sd + 31) * H) | 0, x0 = (ihash(k, 1, sd + 32) * W) | 0;
@@ -692,9 +713,10 @@ export interface ChunkTextureResult {
   /** RGB = um degrau mais escuro da paleta, A = índice do bioma (lido com texelFetch, sem filtro) */
   imgD: Uint8ClampedArray;
   /**
-   * Tufos de grama 3D (só chunks comuns): 7 floats por tufo - x, y, z do mundo, escala, índice
-   * do bioma e a inclinação do chão (dh/dx, dh/dz). y e a inclinação são os do triângulo da malha
-   * de relevo (grade de 2m), então o tufo assenta exatamente na superfície desenhada.
+   * Tufos de grama 3D (só chunks comuns): 9 floats por tufo - x, y, z do mundo, escala, índice
+   * do bioma, a inclinação do chão (dh/dx, dh/dz) e os multiplicadores de altura e largura.
+   * y e a inclinação são os do triângulo da malha de relevo (grade de 2m), então o tufo assenta
+   * exatamente na superfície desenhada.
    */
   grass?: Float32Array;
   width: number;
@@ -1123,7 +1145,7 @@ export function genChunkTexture(
       const BI  = BIOMES[bio[i]];
 
       if (mat[i] === M_ROCK) {
-        const cell = bio[i] === B_MOUNT ? Math.round(ROCK_CELL * 1.5) : ROCK_CELL;
+        const cell = ROCK_CELL;
         const c = cobble(tx, ty, cell, sd + 301);
         let v = cobbleTone(c, bio[i] === B_TEMP ? 3 : 2, 0.71, -0.71);
         if (big > 0.22) v += 1; else if (big < -0.22) v -= 1;
@@ -1146,14 +1168,15 @@ export function genChunkTexture(
         if (v >= 3 && ihash(tx, ty, sd + 902) > 0.992) v = 2;                // grãos soltos no creme
         idx[i] = clamp(v, 0, RL - 1);
 
-      } else if (BI.ground === 'talus') {
-        // Cascalho de montanha em pedras graúdas (~1.3m) com contorno, sem chuvisco
-        const c = cobble(tx, ty, Math.max(4, Math.round(D * 1.3)), sd + 311);
-        let v = cobbleTone(c, 3, 0.71, -0.71);
-        if (big > 0.24) v += 1;
-        else if (big + bay * 0.18 < -0.20) v -= 1;
-        if (cluster(tx * 0.5 + 9, ty * 0.5 + 2, sd + 312) > 0.82) v += 1;
+      } else if (BI.ground === 'cinza') {
+        // Chão vulcânico: cinza marrom com grão fino (pixels claros e escuros soltos), manchas
+        // grandes mais escuras e pedrinhas de basalto
+        let v = 3;
+        const gr = ihash(tx, ty, sd + 941);
+        if (gr > 0.86) v = 4; else if (gr < 0.14) v = 2;
+        if (big < -0.18) v -= 1; else if (big > 0.30) v += 1;
         idx[i] = clamp(v, 0, RL - 1);
+        if (cluster(tx * 0.6 + 5, ty * 0.6 + 9, sd + 942) > 0.88) { mat[i] = M_ROCK; idx[i] = cl > 0.5 ? 3 : 2; }
 
       } else if (BI.ground === 'neve') {
         const wa = (P.seed % 628) / 100;
@@ -1566,7 +1589,6 @@ export function genChunkTexture(
   if (chunkSize <= 64) {
     const list: number[] = [];
     const S = Math.round(chunkSize);
-    const perCell = clamp(Math.round(P.tuftPerM2 ?? 3), 1, 6);
     const tuftAmount = P.tuftAmount ?? 1, tuftClump = P.tuftClump ?? 0.6, tuftSize = P.tuftSize ?? 1;
     // Altura e inclinação no triângulo da malha do chunk (PlaneGeometry de 32 subdivisões: vértices
     // a cada 2m em coordenadas pares do mundo; faces (a,b,d) e (b,c,d) como em chunkGeometry)
@@ -1587,6 +1609,7 @@ export function genChunkTexture(
       }
       return { h: hc + (hb - hc) * (1 - fx) + (hd - hc) * (1 - fz), gx: (hc - hb) / MESH, gz: (hc - hd) / MESH };
     };
+    const perCell = clamp(Math.round(P.tuftPerM2 ?? 3), 1, 6);
     for (let cz = 0; cz < S; cz++) {
       for (let cx = 0; cx < S; cx++) {
         const gx = Math.floor(minWorldX) + cx, gz = Math.floor(minWorldZ) + cz;
@@ -1596,12 +1619,13 @@ export function genChunkTexture(
         const lx = M + Math.min(CW - 1, Math.floor((cx + jx) * D));
         const ly = M + Math.min(CW - 1, Math.floor((cz + jz) * D));
         const j = ly * W + lx;
-        // Bioma de gelo: tufos nevados espalhados sobre a neve, com as mesmas configurações da grama
+        // Bioma de gelo: tufos nevados espalhados sobre a neve (em menor quantidade)
         const onSnow = bio[j] === B_POLAR && mat[j] === M_DIRT;
         if (!onSnow && (mat[j] !== M_GRASS || gl[j] < 2)) continue;
         // Distância até a borda em metros: beirada = mais tufos, miolo = menos
         const dm = (grassDistMap ? grassDistMap[j] : 6) / D;
-        let p = (onSnow ? 0.32 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
+        let p = (onSnow ? 0.11 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
+        if (bio[j] === B_MOUNT) p *= 0.35;                    // vulcão: capim seco e ralo
         // Concentração: moitas cheias onde o ruído é alto, vazios onde é baixo
         if (tuftClump > 0) {
           const wxc = minWorldX + cx + jx, wzc = minWorldZ + cz + jz;
@@ -1613,7 +1637,12 @@ export function genChunkTexture(
         const wx = minWorldX + cx + jx, wz = minWorldZ + cz + jz;
         const surf = meshSurface(wx, wz);
         if (surf.gx * surf.gx + surf.gz * surf.gz > 1.0) continue; // encosta íngreme demais (> 45°)
-        list.push(wx, surf.h, wz, (0.8 + ihash(kx, kz, sd + 604) * 0.6) * tuftSize, bio[j], surf.gx, surf.gz);
+        // Altura própria de cada tufo (suave: o formato do tufo - leque, alto, baixo, espiga,
+        // tombado - é escolhido depois, na vegetação): trechos mais altos/baixos + variação individual
+        const tall = per.fbm(wx * 0.16 + 31.7, wz * 0.16 + 8.9, 2) * 0.5 + 0.5;
+        const hy = clamp(0.72 + tall * 0.50 + (ihash(kx, kz, sd + 605) - 0.5) * 0.30, 0.70, 1.35);
+        const wxz = 0.85 + ihash(kx, kz, sd + 606) * 0.30;
+        list.push(wx, surf.h, wz, (0.8 + ihash(kx, kz, sd + 604) * 0.6) * tuftSize, bio[j], surf.gx, surf.gz, hy, wxz);
         }
       }
     }

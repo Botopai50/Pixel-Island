@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildGrassTuftPixels, GRASS_TUFT_SHAPES, GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 
 /**
  * Utilitário para geração de texturas procedurais estilizadas em Pixel Art
@@ -16,7 +17,6 @@ export class VegetationTextures {
   private static burntWoodTex: THREE.CanvasTexture | null = null;
   private static rockTex: THREE.CanvasTexture | null = null;
   private static weatheredWoodTex: THREE.CanvasTexture | null = null;
-  private static grassBladeTex: THREE.CanvasTexture | null = null;
 
   /**
    * Pixel nítido de perto (magFilter Nearest) e mipmap de longe, para a textura não cintilar
@@ -234,64 +234,28 @@ export class VegetationTextures {
   }
 
   /**
-   * Tufo de grama 3D em pixel art (fundo transparente, recortado por alphaTest): lâminas
-   * verticais e inclinadas com base escura (verde/azul-petróleo), corpo verde vivo e pontas
-   * verde-amareladas - mesma paleta da grama pintada no chão.
+   * Tufos de grama 3D em pixel art (fundo transparente, recortado por alphaTest), desenhados em
+   * grassSprites.ts: os 5 formatos (moita, alta, rasteira, espiga, tombada) nas paletas verde
+   * (a mesma da grama pintada no chão), nevada e seca.
    */
-  /**
-   * Tufo em leque (como os da referência): 7 lâminas saem juntas da base e se abrem para os lados,
-   * curvando. Sem contorno: cada lâmina tem 2px, o lado da luz mais claro e o outro lado mais
-   * escuro, como sombra. TONES: [sombra funda, sombra, sombra perto da ponta, luz, luz perto da
-   * ponta, ponta]. Com snow, as pontas ganham uma capa de neve e alguns flocos presos nas lâminas.
-   */
-  private static buildGrassFan(TONES: number[][], snow: boolean, seed: number): HTMLCanvasElement {
-    const W = 32, H = 24;
-    const canvas = document.createElement('canvas');
-    canvas.width = W;
-    canvas.height = H;
-    const ctx = canvas.getContext('2d')!;
-    const img = ctx.createImageData(W, H);
-    const SNOW = [236, 244, 252], SNOW_SHADE = [176, 196, 222];
-    const buf: (number[] | null)[] = new Array(W * H).fill(null);
-    const put = (x: number, y: number, col: number[]) => {
-      if (x < 0 || x >= W || y < 0 || y >= H) return;
-      buf[y * W + x] = col;
+  private static grassSets: Record<string, THREE.CanvasTexture[]> = {};
+  public static getGrassVariantTextures(kind: 'green' | 'snow' | 'dry'): THREE.CanvasTexture[] {
+    if (this.grassSets[kind]) return this.grassSets[kind];
+    const TONES: Record<string, number[][]> = {
+      green: [[32, 56, 64], [48, 112, 64], [72, 140, 90], [90, 186, 50], [160, 194, 72], [206, 222, 110]],
+      snow: [[104, 116, 146], [140, 156, 184], [172, 188, 212], [206, 218, 236], [230, 238, 248], [255, 255, 255]],
+      dry: [[52, 38, 30], [84, 62, 44], [112, 86, 58], [158, 124, 78], [194, 160, 104], [222, 194, 138]],
     };
-    let s = seed;
-    const rnd = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
-    const blades = 7;
-    // Desenha das lâminas de fora para as do meio (as do meio ficam na frente)
-    for (const k of [0, 6, 1, 5, 2, 4, 3]) {
-      const t = k / (blades - 1);
-      const ang = (t - 0.5) * 2.3 + (rnd() - 0.5) * 0.25;
-      const len = (1 - Math.abs(t - 0.5) * 0.9) * (H - 2) * (0.8 + rnd() * 0.2);
-      const bend = (rnd() - 0.5) * 0.6 + (t - 0.5) * 0.9;
-      let x = W / 2 + (t - 0.5) * 4, y = H - 1;
-      const steps = Math.ceil(len);
-      for (let i = 0; i < steps; i++) {
-        const u = i / steps;
-        const a2 = ang + bend * u * u;
-        const px = Math.round(x), py = Math.round(y);
-        let lit = TONES[u < 0.12 ? 1 : u < 0.75 ? 3 : u < 0.92 ? 4 : 5];
-        let shade = TONES[u < 0.25 ? 0 : u < 0.7 ? 1 : 2];
-        if (snow) {
-          // capa de neve no último quarto da lâmina e flocos presos pelo meio
-          if (u > 0.74) { lit = SNOW; shade = SNOW_SHADE; }
-          else if (u > 0.35 && rnd() < 0.10) lit = SNOW;
-        }
-        if (u < 0.85) { put(px, py, lit); put(px + 1, py, shade); }
-        else put(px, py, lit);
-        x += Math.sin(a2);
-        y -= Math.cos(a2);
-      }
-    }
-    for (let i = 0; i < W * H; i++) {
-      const col = buf[i];
-      if (!col) continue;
-      img.data[i * 4] = col[0]; img.data[i * 4 + 1] = col[1]; img.data[i * 4 + 2] = col[2]; img.data[i * 4 + 3] = 255;
-    }
-    ctx.putImageData(img, 0, 0);
-    return canvas;
+    const seeds: Record<string, number> = { green: 7919, snow: 4217, dry: 3301 };
+    return (this.grassSets[kind] = GRASS_TUFT_SHAPES.map((shape, i) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = GRASS_SPRITE_W; canvas.height = GRASS_SPRITE_H;
+      const ctx = canvas.getContext('2d')!;
+      const img = ctx.createImageData(GRASS_SPRITE_W, GRASS_SPRITE_H);
+      img.data.set(buildGrassTuftPixels(TONES[kind], kind === 'snow', seeds[kind] + i * 131, shape));
+      ctx.putImageData(img, 0, 0);
+      return this.finishGrassTexture(canvas);
+    }));
   }
 
   private static finishGrassTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
@@ -302,24 +266,6 @@ export class VegetationTextures {
     tex.generateMipmaps = false;
     tex.colorSpace = THREE.SRGBColorSpace; // cores exatas da paleta do chão
     return tex;
-  }
-
-  public static getGrassBladeTexture(): THREE.CanvasTexture {
-    if (this.grassBladeTex) return this.grassBladeTex;
-    const canvas = this.buildGrassFan([
-      [32, 56, 64], [48, 112, 64], [72, 140, 90], [90, 186, 50], [160, 194, 72], [206, 222, 110],
-    ], false, 7919);
-    return (this.grassBladeTex = this.finishGrassTexture(canvas));
-  }
-
-  private static snowGrassBladeTex: THREE.CanvasTexture | null = null;
-  /** Tufo nevado do bioma de gelo: capim congelado (branco-azulado, sombra cinza-azulada), pontas com neve. */
-  public static getSnowGrassBladeTexture(): THREE.CanvasTexture {
-    if (this.snowGrassBladeTex) return this.snowGrassBladeTex;
-    const canvas = this.buildGrassFan([
-      [104, 116, 146], [140, 156, 184], [172, 188, 212], [206, 218, 236], [230, 238, 248], [255, 255, 255],
-    ], true, 4217);
-    return (this.snowGrassBladeTex = this.finishGrassTexture(canvas));
   }
 
   // =========================================================================

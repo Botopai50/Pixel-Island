@@ -13,6 +13,8 @@ export const CONFIG = {
   // Tamanho do personagem em 1ª pessoa (1 = humano de 1.75m). Altura dos olhos, velocidades,
   // balanço da cabeça e sondagens de colisão escalam juntos, mantendo as proporções.
   PLAYER_SCALE: 1.0,
+  /** Grama 3D em um plano sempre de frente para a câmera (false = dois planos cruzados) */
+  GRASS_BILLBOARD: true as boolean,
 
   // Pixelização da cena (pixels de tela por pixel renderizado). 1 = desligada (padrão). Ligada
   // (PIXELATION_SIZE), a cena é desenhada em resolução menor e ampliada sem suavizar: tudo (chão,

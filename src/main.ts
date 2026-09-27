@@ -142,6 +142,11 @@ class App {
     // Pixelização da cena: painel de Texturas (evento) ou tecla P
     window.addEventListener('pixelation-change', (e) => this.setPixelation((e as CustomEvent<boolean>).detail));
     window.addEventListener('player-scale-change', (e) => this.playerController.setPlayerScale((e as CustomEvent<number>).detail));
+    window.addEventListener('grass-billboard-change', (e) => {
+      CONFIG.GRASS_BILLBOARD = (e as CustomEvent<boolean>).detail;
+      this.worldEngine.setGrassBillboard(CONFIG.GRASS_BILLBOARD);
+    });
+    this.worldEngine.setGrassBillboard(CONFIG.GRASS_BILLBOARD);
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       if (e.key === 'p' || e.key === 'P') {

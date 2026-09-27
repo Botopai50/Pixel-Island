@@ -288,6 +288,10 @@ export class WorldEngine {
     return this.vegetationMgr.instances.cull(camera);
   }
 
+  public setGrassBillboard(on: boolean): void {
+    this.vegetationMgr.setGrassBillboard(on);
+  }
+
   public setGrassPusher(x: number, y: number, z: number, radius: number): void {
     this.vegetationMgr.setGrassPusher(x, y, z, radius);
   }

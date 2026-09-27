@@ -399,20 +399,22 @@ function setupCartoonMaterial(mat: THREE.MeshLambertMaterial): THREE.MeshLambert
  */
 function buildGrassClumpGeometry(): THREE.BufferGeometry {
   const w = 0.75, h = 1.1;
-  const pos: number[] = [], uv: number[] = [], nrm: number[] = [], index: number[] = [];
+  const pos: number[] = [], uv: number[] = [], nrm: number[] = [], plane: number[] = [], index: number[] = [];
   for (let k = 0; k < 2; k++) {
     const a = k * Math.PI / 2 + Math.PI / 4;
     const dx = Math.cos(a) * w, dz = Math.sin(a) * w;
     const b = pos.length / 3;
     pos.push(-dx, 0, -dz, dx, 0, dz, dx, h, dz, -dx, h, -dz);
     uv.push(0, 0, 1, 0, 1, 1, 0, 1);
-    for (let n = 0; n < 4; n++) nrm.push(0, 1, 0);
+    for (let n = 0; n < 4; n++) { nrm.push(0, 1, 0); plane.push(k); }
     index.push(b, b + 1, b + 2, b, b + 2, b + 3);
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  // 0 = primeiro plano, 1 = segundo (no modo "sempre de frente" o segundo é descartado)
+  g.setAttribute('grassPlane', new THREE.Float32BufferAttribute(plane, 1));
   g.setIndex(index);
   return g;
 }
@@ -434,11 +436,14 @@ export class VegetationManager {
 
   // Grama 3D (tufos de lâminas em pixel art) com balanço de vento no vertex shader
   private grassGeometry: THREE.BufferGeometry;
-  private grassMaterial: THREE.MeshLambertMaterial;
-  private snowGrassMaterial: THREE.MeshLambertMaterial;
+  /** Um material por formato de tufo (moita, alta, rasteira, espiga, tombada) em cada paleta */
+  private grassMaterials: THREE.MeshLambertMaterial[];
+  private dryGrassMaterials: THREE.MeshLambertMaterial[];
+  private snowGrassMaterials: THREE.MeshLambertMaterial[];
   private readonly windTime = { value: 0 };
   // Quem empurra a grama ao passar (xyz = pés do personagem, w = raio; w = 0 desliga)
   private readonly grassPusher = { value: new THREE.Vector4(0, -9999, 0, 0) };
+  private readonly grassBillboard = { value: 1 };
 
   /** Instâncias de todos os chunks, agrupadas por (geometria, material). Adicione `instances.root` à cena. */
   public readonly instances = new VegetationInstancePool();
@@ -532,8 +537,9 @@ export class VegetationManager {
     }));
 
     this.grassGeometry = buildGrassClumpGeometry();
-    this.grassMaterial = this.makeGrassMaterial(VegetationTextures.getGrassBladeTexture());
-    this.snowGrassMaterial = this.makeGrassMaterial(VegetationTextures.getSnowGrassBladeTexture());
+    this.grassMaterials = VegetationTextures.getGrassVariantTextures('green').map((t) => this.makeGrassMaterial(t));
+    this.dryGrassMaterials = VegetationTextures.getGrassVariantTextures('dry').map((t) => this.makeGrassMaterial(t));
+    this.snowGrassMaterials = VegetationTextures.getGrassVariantTextures('snow').map((t) => this.makeGrassMaterial(t));
 
     this.groundFloraMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: foliageTex,
@@ -1157,11 +1163,13 @@ export class VegetationManager {
     const cartoon = mat.onBeforeCompile;
     const windTime = this.windTime;
     const pusher = this.grassPusher;
+    const billboard = this.grassBillboard;
     mat.onBeforeCompile = (shader, renderer) => {
       cartoon.call(mat, shader, renderer);
       shader.uniforms.uWindTime = windTime;
       shader.uniforms.uGrassPusher = pusher;
-      shader.vertexShader = 'uniform float uWindTime;\nuniform vec4 uGrassPusher;\n' + shader.vertexShader.replace(
+      shader.uniforms.uGrassBillboard = billboard;
+      shader.vertexShader = 'uniform float uWindTime;\nuniform vec4 uGrassPusher;\nuniform float uGrassBillboard;\nattribute float grassPlane;\n' + shader.vertexShader.replace(
         '#include <begin_vertex>',
         [
           '#include <begin_vertex>',
@@ -1182,6 +1190,24 @@ export class VegetationManager {
           'vec4 mvPosition = vec4( transformed, 1.0 );',
           '#ifdef USE_INSTANCING',
           '  mvPosition = instanceMatrix * mvPosition;',
+          '  if (uGrassBillboard > 0.5) {',
+          '    // Um plano só, sempre de frente para a câmera: gira em volta do eixo vertical (o tufo',
+          '    // continua em pé); com a câmera olhando de cima, o topo pende para longe dela, de modo',
+          '    // que a face do tufo fique virada para a câmera em vez de aparecer achatada',
+          '    vec3 bBase = instanceMatrix[3].xyz;',
+          '    float sW = length(instanceMatrix[0].xyz), sH = length(instanceMatrix[1].xyz);',
+          '    vec3 camRight = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);',
+          '    vec3 camFwd = -vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);',
+          '    vec2 rH = length(camRight.xz) > 1e-4 ? normalize(camRight.xz) : vec2(1.0, 0.0);',
+          '    vec2 bAway = length(camFwd.xz) > 1e-4 ? normalize(camFwd.xz) : vec2(0.0, 1.0);   // para longe da câmera',
+          '    float tiltA = asin(clamp(-camFwd.y, 0.0, 1.0)) * 0.75;   // 75% da inclinação da câmera',
+          '    vec3 upV = vec3(bAway.x * sin(tiltA), cos(tiltA), bAway.y * sin(tiltA));',
+          '    float xL = (uv.x * 2.0 - 1.0) * 0.75, yL = position.y;',
+          '    vec3 wp = bBase + vec3(rH.x, 0.0, rH.y) * xL * sW + upV * yL * sH;',
+          '    wp.x += sway * 0.07 * yL * sH;',
+          '    wp.z += sway * 0.04 * yL * sH;',
+          '    mvPosition = vec4(grassPlane > 0.5 ? bBase : wp, 1.0);',
+          '  }',
           '  // Personagem passando: as lâminas perto dele se afastam e abaixam (pontas mais que a base)',
           '  vec3 tuftBase = instanceMatrix[3].xyz;',
           '  vec2 away = tuftBase.xz - uGrassPusher.xz;',
@@ -1199,8 +1225,13 @@ export class VegetationManager {
         ].join('\n')
       );
     };
-    mat.customProgramCacheKey = () => 'pixel_grass_wind';
+    mat.customProgramCacheKey = () => 'pixel_grass_wind_bb';
     return mat;
+  }
+
+  /** Grama 3D em um plano só, sempre de frente para a câmera (true) ou dois planos cruzados. */
+  public setGrassBillboard(on: boolean): void {
+    this.grassBillboard.value = on ? 1 : 0;
   }
 
   /** Personagem que empurra a grama (pés em x, y, z; raio em metros). radius = 0 desliga. */
@@ -1222,38 +1253,52 @@ export class VegetationManager {
     if (!data.length) return;
     const TINTS = [
       new THREE.Color(1.0, 1.0, 1.0),    // temperado: paleta da própria textura
-      new THREE.Color(0.72, 0.82, 0.70), // montanha: mais apagada
+      new THREE.Color(0.55, 0.42, 0.34), // vulcão: capim seco queimado
       new THREE.Color(0.72, 0.88, 0.86), // polar: verde-azulado frio, com geada
       new THREE.Color(1.0, 0.92, 0.55),  // deserto: palha
     ];
-    const matrices: THREE.Matrix4[] = [];
-    const colors: THREE.Color[] = [];
-    const snowMatrices: THREE.Matrix4[] = [];
-    const snowColors: THREE.Color[] = [];
+    // Listas por (paleta, formato)
+    const NV = this.grassMaterials.length;
+    const mk = () => Array.from({ length: NV }, () => ({ m: [] as THREE.Matrix4[], c: [] as THREE.Color[] }));
+    const green = mk(), snow = mk(), dry = mk();
+    // Proporção dos formatos: moita 32%, alta 20%, rasteira 20%, espiga 12%, tombada 16%
+    const CUM = [0.32, 0.52, 0.72, 0.84, 1.0];
     const white = new THREE.Color(1, 1, 1);
     const dryTint = new THREE.Color(0.78, 0.52, 0.34);
+    const burntTint = new THREE.Color(0.62, 0.50, 0.42);
     const up = new THREE.Vector3(0, 1, 0), normal = new THREE.Vector3();
     const yaw = new THREE.Quaternion(), tilt = new THREE.Quaternion(), q = new THREE.Quaternion();
-    for (let k = 0; k + 6 < data.length; k += 7) {
+    for (let k = 0; k + 8 < data.length; k += 9) {
       const s = data[k + 3];
+      const sy = s * data[k + 7], sxz = s * data[k + 8];
       normal.set(-data[k + 5], 1, -data[k + 6]).normalize();
       tilt.setFromUnitVectors(up, normal);
       yaw.setFromAxisAngle(up, (data[k] * 12.9898 + data[k + 2] * 78.233) % (Math.PI * 2));
       q.copy(tilt).multiply(yaw);
       const m = new THREE.Matrix4().compose(
-        new THREE.Vector3(data[k], data[k + 1] - 0.04 * s, data[k + 2]), q, new THREE.Vector3(s, s, s)
+        new THREE.Vector3(data[k], data[k + 1] - 0.04 * s, data[k + 2]), q, new THREE.Vector3(sxz, sy, sxz)
       );
       // Bioma de gelo (2): tufo nevado próprio, com a cor da textura
       // (alguns tufos de capim seco marrom no meio do congelado, como na referência)
-      if ((data[k + 4] | 0) === 2) {
-        snowMatrices.push(m);
-        snowColors.push(((data[k] * 7.13 + data[k + 2] * 3.71) % 1 + 1) % 1 < 0.15 ? dryTint : white);
+      // Vulcão (1): capim seco próprio (palha / marrom queimado)
+      // Formato do tufo sorteado pela posição (estável entre recarregamentos)
+      const hv = ((data[k] * 3.917 + data[k + 2] * 7.411) % 1 + 1) % 1;
+      let v = 0; while (v < NV - 1 && hv >= CUM[v]) v++;
+      if ((data[k + 4] | 0) === 1) {
+        dry[v].m.push(m);
+        dry[v].c.push(((data[k] * 5.17 + data[k + 2] * 2.39) % 1 + 1) % 1 < 0.35 ? burntTint : white);
+      } else if ((data[k + 4] | 0) === 2) {
+        snow[v].m.push(m);
+        snow[v].c.push(((data[k] * 7.13 + data[k + 2] * 3.71) % 1 + 1) % 1 < 0.15 ? dryTint : white);
       }
-      else { matrices.push(m); colors.push(TINTS[data[k + 4] | 0] ?? TINTS[0]); }
+      else { green[v].m.push(m); green[v].c.push(TINTS[data[k + 4] | 0] ?? TINTS[0]); }
     }
     // Grama não projeta sombra (só recebe a das árvores e do relevo)
-    this.instances.add(owner, this.grassGeometry, this.grassMaterial, matrices, colors, 'grass', false);
-    this.instances.add(owner, this.grassGeometry, this.snowGrassMaterial, snowMatrices, snowColors, 'grass', false);
+    for (let v = 0; v < NV; v++) {
+      this.instances.add(owner, this.grassGeometry, this.grassMaterials[v], green[v].m, green[v].c, 'grass', false);
+      this.instances.add(owner, this.grassGeometry, this.snowGrassMaterials[v], snow[v].m, snow[v].c, 'grass', false);
+      this.instances.add(owner, this.grassGeometry, this.dryGrassMaterials[v], dry[v].m, dry[v].c, 'grass', false);
+    }
   }
 
   /** Remove todas as instâncias que um chunk adicionou. */
