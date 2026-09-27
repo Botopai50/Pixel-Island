@@ -149,7 +149,14 @@ export class MacroGeography {
     // 1. Grandes Cordilheiras Tectônicas (Montanhas Altas e Cumes Nevados até ~110m)
     // Comprimento de onda amplo (> 150m) com cristas facetadas e sólidas
     const ridgeDetail = this.noise.ridgedFBM(x * 0.0014, z * 0.0014, 3, 2.0, 0.46);
-    const mountainHeight = (spineFactor * 96.0) * (0.38 + 0.62 * ridgeDetail);
+    let mountainHeight = (spineFactor * 96.0) * (0.38 + 0.62 * ridgeDetail);
+
+    // 1b. Encostas esculpidas: ravinas de erosão descendo pelos flancos, separadas por espigões.
+    // Sem isso cada flanco era uma rampa lisa e uniforme (abaixo do limite de parede do shader),
+    // e a montanha inteira parecia um monte de neve/grama sem relevo próprio.
+    if (mountainHeight > 4.0) {
+      mountainHeight -= this.flankErosion(x, z, spineFactor, ridgeDetail) * mountainHeight;
+    }
 
     // 2. Vales Fluviais e Cânions que cortam as montanhas
     const valleyNoise = this.noise.fbm2D(x * 0.0012 + 44.0, z * 0.0012 + 92.0, 3);
@@ -165,5 +172,57 @@ export class MacroGeography {
     // Relevo combinado escalado proporcionalmente pela proximidade da terra firme
     const relief = (mountainHeight * valleyCut + plateauContribution + hillsContribution) * landFactor;
     return relief;
+  }
+
+  /**
+   * Fração da altura da montanha a remover neste ponto (0 = espigão, até ~0.2 = fundo da ravina).
+   * As ravinas seguem a direção de descida do flanco: ondas cujas cristas correm morro abaixo,
+   * espalhadas em células com jitter e misturadas por peso gaussiano (ruído de erosão tipo
+   * Gabor), então nunca formam linhas retas nem uma grade. Duas escalas: ravinas principais
+   * (~34m) e sulcos menores (~13m). Como cos() é par, inverter a direção na crista não muda nada.
+   */
+  private flankErosion(x: number, z: number, spineFactor: number, ridgeDetail: number): number {
+    // Inclinação do flanco (m/m) e direção de descida, por diferença finita do mesmo ridgedFBM
+    const e = 3.0;
+    const rx = this.noise.ridgedFBM((x + e) * 0.0014, z * 0.0014, 3, 2.0, 0.46);
+    const rz = this.noise.ridgedFBM(x * 0.0014, (z + e) * 0.0014, 3, 2.0, 0.46);
+    const k = spineFactor * 96.0 * 0.62 / e;
+    const gx = (rx - ridgeDetail) * k;
+    const gz = (rz - ridgeDetail) * k;
+    const slope = Math.hypot(gx, gz);
+    const flank = smoothstep(0.12, 0.55, slope);
+    if (flank <= 0.0) return 0.0;
+
+    // Eixo ao longo do qual as ondas variam: perpendicular à descida -> sulcos morro abaixo
+    const px = -gz / slope;
+    const pz = gx / slope;
+    const main = this.gullyWaves(x / 34.0, z / 34.0, px, pz, 0x2c1b3c6d);
+    const fine = this.gullyWaves(x / 13.0 + 17.0, z / 13.0 + 5.0, px, pz, 0x297a2d39);
+    // (1 - onda)/2: 0 na crista do espigão, 1 no fundo; ^1.6 estreita o fundo em "V"
+    const carve = Math.pow((1.0 - main) * 0.5, 1.6) * 0.75 + Math.pow((1.0 - fine) * 0.5, 1.6) * 0.25;
+    return carve * flank * 0.20;
+  }
+
+  private gullyWaves(u: number, v: number, px: number, pz: number, salt: number): number {
+    const iu = Math.floor(u), iv = Math.floor(v);
+    const fu = u - iu, fv = v - iv;
+    let sum = 0.0, wsum = 0.0;
+    for (let j = -1; j <= 1; j++) {
+      for (let i = -1; i <= 1; i++) {
+        let h = Math.imul(iu + i, 0x27d4eb2d) ^ Math.imul(iv + j, 0x165667b1) ^ this.seed ^ salt;
+        h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+        h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+        h ^= h >>> 16;
+        const ju = (h & 0xffff) / 65535.0 - 0.5;
+        const jv = ((h >>> 16) & 0xffff) / 65535.0 - 0.5;
+        const du = fu - i - 0.5 - ju * 0.8;
+        const dv = fv - j - 0.5 - jv * 0.8;
+        const w = Math.exp(-(du * du + dv * dv) * 2.0);
+        sum += Math.cos((du * px + dv * pz) * 6.2831853) * w;
+        wsum += w;
+      }
+    }
+    // a mistura de células atenua a onda (p95 ~0.62): reescala para ocupar [-1, 1]
+    return clamp(sum / wsum / 0.65, -1.0, 1.0);
   }
 }
