@@ -253,17 +253,46 @@ export class VegetationTextures {
       const ctx = canvas.getContext('2d')!;
       const img = ctx.createImageData(GRASS_SPRITE_W, GRASS_SPRITE_H);
       img.data.set(buildGrassTuftPixels(TONES[kind], kind === 'snow', seeds[kind] + i * 131, shape));
+      this.bleedTransparent(img.data, GRASS_SPRITE_W, GRASS_SPRITE_H);
       ctx.putImageData(img, 0, 0);
       return this.finishGrassTexture(canvas);
     }));
+  }
+
+  /**
+   * Espalha a cor dos pixels opacos para os transparentes vizinhos (alfa continua 0): os mipmaps
+   * misturam cor com os pixels em volta, e com o preto dos transparentes a borda dos fios de
+   * grama escurecia de longe.
+   */
+  private static bleedTransparent(px: Uint8ClampedArray, w: number, h: number): void {
+    for (let pass = 0; pass < 4; pass++) {
+      const src = px.slice();
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        if (src[i + 3] > 0) continue;
+        let r = 0, g = 0, b = 0, n = 0;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = x + dx, yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          const j = (yy * w + xx) * 4;
+          if (src[j + 3] === 0 && !(src[j] | src[j + 1] | src[j + 2])) continue;
+          r += src[j]; g += src[j + 1]; b += src[j + 2]; n++;
+        }
+        if (n) { px[i] = r / n; px[i + 1] = g / n; px[i + 2] = b / n; }
+      }
+    }
   }
 
   private static finishGrassTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
     const tex = this.createPixelTexture(canvas);
     tex.wrapS = THREE.ClampToEdgeWrapping;
     tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.minFilter = THREE.NearestFilter; // mipmap misturaria o recorte transparente
-    tex.generateMipmaps = false;
+    // Pixel nítido de perto e mipmaps de longe: sem mipmap, de longe cada pixel da tela caía num
+    // fio diferente a cada movimento e a grama cintilava. O recorte do alfa é ajustado no shader
+    // (makeGrassMaterial) para os fios não afinarem nem sumirem nos mipmaps.
+    tex.magFilter = THREE.NearestFilter;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.generateMipmaps = true;
     tex.colorSpace = THREE.SRGBColorSpace; // cores exatas da paleta do chão
     return tex;
   }

@@ -19,6 +19,8 @@ interface BuildRequest {
   density: number;
   /** subdivisões da malha; 0 = só textura */
   segments: number;
+  /** medir os paredões na malha (só nos chunks perto da câmera) */
+  walls?: boolean;
 }
 
 const terrainGenCache = new Map<number, TerrainGenerator>();
@@ -43,27 +45,65 @@ function getPerlin(seed: number): ReturnType<typeof makePerlin> {
 }
 
 const ctx: Worker = self as any;
+/** Ilhas de hidrologia já mandadas para a thread principal (por seed) */
+const sentIslands = new Map<number, Set<number>>();
+function installIslands(seed: number, items: { key: number; data: any }[]): void {
+  const g = getTerrainGen(seed);
+  let sent = sentIslands.get(seed);
+  if (!sent) { sent = new Set(); sentIslands.set(seed, sent); }
+  for (const it of items) { g.getHydrology().installIsland(it.key, it.data); sent.add(it.key); }
+}
 
-ctx.onmessage = (ev: MessageEvent<BuildRequest>) => {
-  const { reqId, seed, params, minWorldX, minWorldZ, chunkSize, density, segments } = ev.data;
+ctx.onmessage = (ev: MessageEvent<any>) => {
+  // hidrologia de ilhas calculada em outro worker (ou na thread principal): instala e não responde
+  if (ev.data.type === 'install') {
+    installIslands(ev.data.seed, ev.data.items);
+    return;
+  }
+  const { reqId, seed, params, minWorldX, minWorldZ, chunkSize, density, segments, walls } = ev.data as BuildRequest;
   try {
     const terrainGen = getTerrainGen(seed);
     const msg: any = { reqId };
+    const tStart = performance.now();
+    const nIslands = terrainGen.getHydrology().cachedIslandCount();
     const transfer: ArrayBuffer[] = [];
 
+    // pré-cálculo da hidrologia de uma ilha (pedido com antecedência pela thread principal)
+    if (ev.data.type === 'island') terrainGen.getHydrology().getIslandHydrology(ev.data.cx, ev.data.cz);
+
+    const tG0 = performance.now();
+    let meshHeights: { heights: Float32Array; grid: number; step: number } | undefined;
     if (segments > 0) {
       const geo = buildChunkGeometry(
-        terrainGen, minWorldX + chunkSize / 2, minWorldZ + chunkSize / 2, chunkSize, segments
+        terrainGen, minWorldX + chunkSize / 2, minWorldZ + chunkSize / 2, chunkSize, segments, walls !== false
       );
       msg.geometry = geo;
-      transfer.push(geo.positions.buffer as ArrayBuffer, geo.normals.buffer as ArrayBuffer, geo.index.buffer as ArrayBuffer);
+      // alturas dos vértices (antes de transferir o buffer) para os tufos de grama da textura
+      const grid = segments + 1, hs = new Float32Array(grid * grid);
+      for (let i = 0; i < grid * grid; i++) hs[i] = geo.positions[i * 3 + 1];
+      meshHeights = { heights: hs, grid, step: chunkSize / segments };
+      transfer.push(geo.positions.buffer as ArrayBuffer, geo.normals.buffer as ArrayBuffer, geo.wall.buffer as ArrayBuffer, geo.index.buffer as ArrayBuffer);
     }
 
+    msg.tGeo = performance.now() - tG0;
+    const tT0 = performance.now();
     if (density > 0) {
-      const res = genChunkTexture(params, getPerlin(seed), terrainGen, minWorldX, minWorldZ, chunkSize, density);
+      const res = genChunkTexture(params, getPerlin(seed), terrainGen, minWorldX, minWorldZ, chunkSize, density, meshHeights);
       msg.texture = res;
       transfer.push(res.img.buffer as ArrayBuffer, res.imgD.buffer as ArrayBuffer);
       if (res.grass) transfer.push(res.grass.buffer as ArrayBuffer);
+    }
+
+    msg.tTex = performance.now() - tT0;
+    // hidrologia das ilhas calculadas neste worker: a thread principal instala em vez de recalcular
+    let sent = sentIslands.get(seed);
+    if (!sent) { sent = new Set(); sentIslands.set(seed, sent); }
+    const hydro = terrainGen.getHydrology().exportIslands(sent);
+    // tempos do job (para medir a geração): total e se calculou hidrologia de ilha nova
+    msg.ms = performance.now() - tStart;
+    msg.newIslands = terrainGen.getHydrology().cachedIslandCount() - nIslands;
+    if (hydro.length) {
+      msg.hydro = hydro; msg.seed = seed;
     }
 
     ctx.postMessage(msg, transfer);

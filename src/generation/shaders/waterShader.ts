@@ -14,6 +14,8 @@ export interface WaterPreset {
   sunColor?: string;
   waterOpacity: number;
   foamAmount: number;
+  /** Profundidade (m) até onde vai a espuma de contato da orla. Com a margem que desce logo na
+   *  borda, 0.052 virava um fio; 0.16 dá de novo uma faixa visível */
   foamDistance: number;
 }
 
@@ -32,7 +34,7 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
     sunColor: '#fffbeb',
     waterOpacity: 0.92,
     foamAmount: 0.65,
-    foamDistance: 0.052,
+    foamDistance: 0.16,
   },
   sunset: {
     id: 'sunset',
@@ -48,7 +50,7 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
     sunColor: '#fef08a',
     waterOpacity: 0.94,
     foamAmount: 0.65,
-    foamDistance: 0.052,
+    foamDistance: 0.16,
   },
   midnight: {
     id: 'midnight',
@@ -64,7 +66,7 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
     sunColor: '#38bdf8',
     waterOpacity: 0.95,
     foamAmount: 0.65,
-    foamDistance: 0.052,
+    foamDistance: 0.16,
   },
   toxic: {
     id: 'toxic',
@@ -80,7 +82,7 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
     sunColor: '#facc15',
     waterOpacity: 0.96,
     foamAmount: 0.65,
-    foamDistance: 0.052,
+    foamDistance: 0.16,
   },
   magma: {
     name: 'Volcanic Magma',
@@ -90,7 +92,7 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
     crestColor: '#fbbf24', // Lava bubbles
     waterOpacity: 0.98,
     foamAmount: 0.70,
-    foamDistance: 0.052,
+    foamDistance: 0.16,
   },
   crystal: {
     name: 'Glacial Crystal',
@@ -100,7 +102,7 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
     crestColor: '#60a5fa', // Ice glint
     waterOpacity: 0.92,
     foamAmount: 0.60,
-    foamDistance: 0.052,
+    foamDistance: 0.16,
   },
 };
 
@@ -126,7 +128,7 @@ export const WaterShader = {
     uCameraFar: { value: 2500.0 },
     uIsOrthographic: { value: 1.0 }, // 1.0 = orthographic observer, 0.0 = perspective first-person
     uResolution: { value: new THREE.Vector2(320, 240) },
-    uFoamDistance: { value: 0.052 },
+    uFoamDistance: { value: 0.16 },
     uBiomeColorEnabled: { value: 1.0 },
     // Pixels por metro da grade pixel-art da água: igual à densidade de texels do terreno
     uTexelDensity: { value: 6.0 },
@@ -475,12 +477,12 @@ export const WaterShader = {
       // Águas rasas na beira (0m a 1.5m): luz solar atravessa com translucidez cristalina
       float shallowRamp = clamp(1.0 - verticalDepth / 1.5, 0.0, 1.0);
       
-      // Transição para profundidade média do corpo d'água (0.4m a 2.5m)
-      float deepRamp = smoothstep(0.4, 2.5, verticalDepth);
+      // Transição para profundidade média (0.25m a 1.6m): com a faixa mais longa, lagos de 4m pareciam rasos
+      float deepRamp = smoothstep(0.25, 1.6, verticalDepth);
       
-      // Escurecimento expressivo em partes profundas do lago / mar (2.0m a 6.5m+)
+      // Escurecimento expressivo em partes profundas do lago / mar (1.6m a 5m+)
       // No centro do lago e nas fossas marinhas, a luz é absorvida e a água escurece nitidamente
-      float abyssRamp = smoothstep(2.0, 6.5, verticalDepth);
+      float abyssRamp = smoothstep(1.6, 5.0, verticalDepth);
 
       // Composição estratificada de cores por profundidade
       vec3 depthColor = mix(activeShallow, activeDeep, deepRamp);
@@ -546,8 +548,8 @@ export const WaterShader = {
 
       // Opacidade da espuma suave (translucidez cel-shaded: a água azul transluz por baixo)
       // Na orla é ~0.55, caindo suavemente para 0.0 na água mais profunda
-      // Alcance próprio (até ~4m): com o gradiente da orla ela sumia já a ~2m de profundidade.
-      float softGrad = 1.0 - smoothstep(0.10, 4.0, verticalDepth);
+      // Alcance próprio (até ~2.2m): com 4m ela cobria os lagos inteiros e a água parecia rasa.
+      float softGrad = 1.0 - smoothstep(0.10, 2.2, verticalDepth);
       float softAlpha = pow(softGrad, 0.85) * 0.50;
 
       // Opacidade dos realces brancos (a parte mais clara): concentra-se na orla e some primeiro

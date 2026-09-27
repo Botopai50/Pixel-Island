@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
+import { getTextureWorkerPool } from './generation/terrain/textureWorkerPool.ts';
 import { WorldEngine } from './generation/worldEngine.ts';
 import { PlayerController, CameraMode } from './player/playerController.ts';
 import { SkyAtmosphere } from './atmosphere/skyAtmosphere.ts';
@@ -15,6 +17,15 @@ import { AdaptiveQuality, QualityLevel, QUALITY_LEVELS, detectInitialQuality } f
  * Suporta modo contemplativo aéreo e exploração imersiva em 1ª Pessoa
  * acionada via Pegman do Google Maps (arrastar e soltar).
  */
+/**
+ * Pixels reais da tela por pixel CSS. Antes era limitado a 1.0: em telas com escala do Windows
+ * (125%, 150%) ou Retina o jogo renderizava abaixo da resolução da tela e o navegador ampliava a
+ * imagem (borrada/pixelada). Teto de 2 para telas 4K não pesarem demais.
+ */
+function nativePixelRatio(): number {
+  return Math.min(window.devicePixelRatio || 1, 2);
+}
+
 class App {
   private renderer!: THREE.WebGLRenderer;
   private scene!: THREE.Scene;
@@ -43,6 +54,18 @@ class App {
   private blitScene!: THREE.Scene;
   private blitCamera!: THREE.OrthographicCamera;
   private blitMaterial!: THREE.MeshBasicMaterial;
+  // FXAA: a cena opaca (já com tonemapping e sRGB, pelo blitToDisplay) e a água vão para
+  // fxaaTarget; o passe de FXAA suaviza as bordas e desenha na tela
+  private fxaaTarget!: THREE.WebGLRenderTarget;
+  private fxaaScene!: THREE.Scene;
+  private fxaaMaterial!: THREE.ShaderMaterial;
+  private blitToDisplayScene!: THREE.Scene;
+  private blitToDisplayMaterial!: THREE.ShaderMaterial;
+  // encaixe da câmera na grade de pixels (modo P)
+  private _bufSize = new THREE.Vector2();
+  private _camSaved = new THREE.Vector3();
+  private _snapRight = new THREE.Vector3();
+  private _snapUp = new THREE.Vector3();
 
   // 6. Planar Reflection para o Pixel Water Shader de untitled
   private reflectionCameraPerspective!: THREE.PerspectiveCamera;
@@ -79,7 +102,7 @@ class App {
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0)); // 1.0 nativo (alívio de 75% em telas Retina/4K)
+    this.renderer.setPixelRatio(nativePixelRatio());
     this.renderer.localClippingEnabled = true;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
@@ -88,8 +111,9 @@ class App {
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap;
     container.appendChild(this.renderer.domElement);
-    // Com a resolução interna reduzida, o navegador amplia o canvas: sem suavizar (pixel nítido)
-    this.renderer.domElement.style.imageRendering = 'pixelated';
+    // Ampliação do canvas pelo navegador: sem suavizar só no modo pixelizado (P); fora dele, se a
+    // qualidade automática reduzir a resolução, a imagem é suavizada em vez de virar blocos
+    this.renderer.domElement.style.imageRendering = CONFIG.PIXEL_SIZE > 1 ? 'pixelated' : 'auto';
     // Precisa vir antes do WorldEngine: o forge cria os atlas de parede no construtor.
     setForgeTextureAnisotropy(Math.min(8, this.renderer.capabilities.getMaxAnisotropy()));
 
@@ -126,6 +150,60 @@ class App {
     const blitMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.blitMaterial);
     this.blitScene.add(blitMesh);
 
+    // FXAA. Num render target o Three não aplica tonemapping nem a conversão para sRGB (só na
+    // tela), e o shader da água escreve a cor final sem conversão: então a cena opaca entra no
+    // alvo já convertida (o mesmo ACES + sRGB do blit normal) e a água por cima, como no canvas.
+    this.fxaaTarget = new THREE.WebGLRenderTarget(rw, rh, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      depthBuffer: true,
+    });
+    this.blitToDisplayMaterial = new THREE.ShaderMaterial({
+      uniforms: { tScene: { value: this.waterRenderTarget.texture }, uExposure: { value: 1.0 } },
+      vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+      fragmentShader: `
+        uniform sampler2D tScene;
+        uniform float uExposure;
+        varying vec2 vUv;
+        vec3 RRTAndODTFitD(vec3 v) {
+          vec3 a = v * (v + 0.0245786) - 0.000090537;
+          vec3 b = v * (0.983729 * v + 0.4329510) + 0.238081;
+          return a / b;
+        }
+        vec3 acesD(vec3 color) {
+          const mat3 ACESInputMat = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
+          const mat3 ACESOutputMat = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
+          color *= uExposure / 0.6;
+          color = ACESInputMat * color;
+          color = RRTAndODTFitD(color);
+          color = ACESOutputMat * color;
+          return clamp(color, 0.0, 1.0);
+        }
+        void main() {
+          vec3 t = acesD(texture2D(tScene, vUv).rgb);
+          vec3 srgb = mix(pow(t, vec3(0.41666)) * 1.055 - vec3(0.055), t * 12.92, vec3(lessThanEqual(t, vec3(0.0031308))));
+          gl_FragColor = vec4(srgb, 1.0);
+        }`,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.blitToDisplayScene = new THREE.Scene();
+    this.blitToDisplayScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.blitToDisplayMaterial));
+    this.fxaaMaterial = new THREE.ShaderMaterial({
+      uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
+      vertexShader: FXAAShader.vertexShader,
+      fragmentShader: FXAAShader.fragmentShader,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.fxaaMaterial.uniforms.tDiffuse.value = this.fxaaTarget.texture;
+    this.fxaaMaterial.uniforms.resolution.value.set(1 / rw, 1 / rh);
+    this.fxaaScene = new THREE.Scene();
+    this.fxaaScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.fxaaMaterial));
+
     const aspect = window.innerWidth / window.innerHeight;
 
     // Configuração dos Render Targets e Câmeras de Reflexão Planar (LinearFilter para eliminar shimmer/flicker)
@@ -136,12 +214,18 @@ class App {
     });
     this.reflectionCameraPerspective = new THREE.PerspectiveCamera(75, aspect, 0.1, 2500);
 
-    if (new URLSearchParams(window.location.search).get('pixel') === '1') CONFIG.PIXEL_SIZE = CONFIG.PIXELATION_SIZE;
+    if (new URLSearchParams(window.location.search).get('pixel') === '1') {
+      CONFIG.PIXEL_SIZE = CONFIG.PIXELATION_SIZE;
+      this.renderer.domElement.style.imageRendering = 'pixelated';
+    }
     this.quality = new AdaptiveQuality(detectInitialQuality(this.renderer.getContext()), (level) => this.applyQuality(level));
 
     // Pixelização da cena: painel de Texturas (evento) ou tecla P
     window.addEventListener('pixelation-change', (e) => this.setPixelation((e as CustomEvent<boolean>).detail));
     window.addEventListener('player-scale-change', (e) => this.playerController.setPlayerScale((e as CustomEvent<number>).detail));
+    window.addEventListener('fxaa-change', (e) => {
+      CONFIG.FXAA = (e as CustomEvent<boolean>).detail;
+    });
     window.addEventListener('grass-billboard-change', (e) => {
       CONFIG.GRASS_BILLBOARD = (e as CustomEvent<boolean>).detail;
       this.worldEngine.setGrassBillboard(CONFIG.GRASS_BILLBOARD);
@@ -262,14 +346,22 @@ class App {
   /** Liga/desliga a pixelização da cena (render em resolução menor, ampliado sem suavizar). */
   private setPixelation(on: boolean): void {
     CONFIG.PIXEL_SIZE = on ? CONFIG.PIXELATION_SIZE : 1;
+    this.renderer.domElement.style.imageRendering = on ? 'pixelated' : 'auto';
     this.applyQuality(QUALITY_LEVELS[this.quality.level]);
+  }
+
+  private resizeFxaa(w: number, h: number): void {
+    if (!this.fxaaTarget) return;
+    this.fxaaTarget.setSize(w, h);
+    this.fxaaMaterial.uniforms.resolution.value.set(1 / w, 1 / h);
   }
 
   private applyQuality(level: QualityLevel): void {
     this.renderScale = level.renderScale;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0) * level.renderScale / CONFIG.PIXEL_SIZE);
+    this.renderer.setPixelRatio(nativePixelRatio() * level.renderScale / CONFIG.PIXEL_SIZE);
     const buf = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     this.waterRenderTarget.setSize(buf.x, buf.y);
+    this.resizeFxaa(buf.x, buf.y);
     this.reflectionRenderTarget.setSize(level.reflectionSize, level.reflectionSize);
     this.atmosphere.getShadowClipmap().setMapSize(level.shadowMapSize);
     CONFIG.MAX_VIEW_RADIUS_CHUNKS = level.maxViewRadius;
@@ -285,11 +377,12 @@ class App {
     const width = window.innerWidth;
     const height = window.innerHeight;
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.0) * this.renderScale / CONFIG.PIXEL_SIZE);
+    this.renderer.setPixelRatio(nativePixelRatio() * this.renderScale / CONFIG.PIXEL_SIZE);
     this.playerController.onResize();
 
     const buf = this.renderer.getDrawingBufferSize(new THREE.Vector2());
     this.waterRenderTarget.setSize(buf.x, buf.y);
+    this.resizeFxaa(buf.x, buf.y);
     this.reflectionCameraPerspective.aspect = width / height;
     this.reflectionCameraPerspective.updateProjectionMatrix();
   }
@@ -312,7 +405,8 @@ class App {
 
     const rawDt = this.clock.getDelta();
     const dt = Math.min(rawDt, 0.1);
-    this.quality.frame(rawDt * 1000);
+    // enquanto os workers geram terreno a CPU fica cheia e o FPS cai de propósito: não é o PC fraco
+    this.quality.frame(rawDt * 1000, getTextureWorkerPool().isBusy());
 
     // 1. Atualização do Controlador de Câmera/Jogador (Aéreo / Primeira Pessoa / Transição)
     this.playerController.update(dt, this.worldEngine.getTerrainGenerator());
@@ -425,6 +519,30 @@ class App {
       this.reflectTextureMatrix.multiply(rPersp.matrixWorldInverse);
     }
 
+    // Estabilidade da pixelização (modo P, câmera aérea): a câmera anda só em passos inteiros de um
+    // pixel da imagem reduzida - com frações de pixel cada pixel grande trocava de cor a cada frame
+    // (cintilação). A fração que sobra é compensada movendo o canvas na tela, e o movimento
+    // continua suave. Devolvida à posição real no fim do quadro.
+    const snapCam = CONFIG.PIXEL_SIZE > 1 && (activeCamera as THREE.OrthographicCamera).isOrthographicCamera
+      ? activeCamera as THREE.OrthographicCamera : null;
+    const canvasStyle = this.renderer.domElement.style;
+    if (snapCam) {
+      const bufH = this.renderer.getDrawingBufferSize(this._bufSize).y;
+      const wpp = (snapCam.top - snapCam.bottom) / snapCam.zoom / bufH; // metros por pixel reduzido
+      this._camSaved.copy(snapCam.position);
+      this._snapRight.set(1, 0, 0).applyQuaternion(snapCam.quaternion);
+      this._snapUp.set(0, 1, 0).applyQuaternion(snapCam.quaternion);
+      const r = snapCam.position.dot(this._snapRight), u = snapCam.position.dot(this._snapUp);
+      const dr = Math.round(r / wpp) * wpp - r, du = Math.round(u / wpp) * wpp - u;
+      snapCam.position.addScaledVector(this._snapRight, dr).addScaledVector(this._snapUp, du);
+      snapCam.updateMatrixWorld();
+      // a imagem saiu deslocada de (dr, du): o canvas anda o mesmo tanto em pixels CSS
+      const css = CONFIG.PIXEL_SIZE / nativePixelRatio() / this.renderScale;
+      canvasStyle.transform = `translate(${(dr / wpp) * css}px, ${(-du / wpp) * css}px)`;
+    } else if (canvasStyle.transform) {
+      canvasStyle.transform = '';
+    }
+
     // Passo 2: Renderizar mundo opaco (sem água) com câmera principal e atualização sob demanda de sombras
     this.worldEngine.setWaterVisible(false);
     if (this.shadowsNeedUpdate) {
@@ -435,9 +553,18 @@ class App {
     this.renderer.clear();
     this.renderer.render(this.scene, activeCamera);
 
-    // Passo 3: Blit em tela cheia da cena opaca para o canvas
-    this.renderer.setRenderTarget(null);
-    this.renderer.render(this.blitScene, this.blitCamera);
+    // Passo 3: Blit em tela cheia da cena opaca para o canvas (ou, com FXAA, para o alvo do FXAA,
+    // já convertida para as cores da tela). Com a pixelização ligada o FXAA não entra: borraria
+    // os pixels grandes de propósito.
+    const useFxaa = CONFIG.FXAA && CONFIG.PIXEL_SIZE <= 1;
+    if (useFxaa) {
+      this.blitToDisplayMaterial.uniforms.uExposure.value = this.renderer.toneMappingExposure;
+      this.renderer.setRenderTarget(this.fxaaTarget);
+      this.renderer.render(this.blitToDisplayScene, this.blitCamera);
+    } else {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.blitScene, this.blitCamera);
+    }
 
     // Passo 4: Atualizar uniforms da água e renderizar água transparente por cima com blend analítico
     this.worldEngine.setWaterVisible(true);
@@ -453,6 +580,17 @@ class App {
     this.renderer.autoClear = false;
     this.renderer.render(this.worldEngine.getWaterGroup(), activeCamera);
     this.renderer.autoClear = true;
+
+    // Passo 5: FXAA da imagem final para a tela
+    if (useFxaa) {
+      this.renderer.setRenderTarget(null);
+      this.renderer.render(this.fxaaScene, this.blitCamera);
+    }
+
+    if (snapCam) {
+      snapCam.position.copy(this._camSaved);
+      snapCam.updateMatrixWorld();
+    }
   };
 }
 

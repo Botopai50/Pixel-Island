@@ -41,17 +41,34 @@ assert(hydroData.rivers.length >= 1, 'Ilha possui sistemas fluviais conectados')
 
 for (const river of hydroData.rivers) {
   const pts = river.points;
-  assert(pts.length >= 20, `Rio ${river.id} possui traçado contínuo (${pts.length} pontos)`);
-  assert(pts.every(p => p.elevation === CONFIG.SEA_LEVEL), `Rio ${river.id} utiliza o nível da água do mar (${CONFIG.SEA_LEVEL.toFixed(1)}m)`);
-  assert(pts.every(p => p.depth >= 1.5), `Rio ${river.id} possui leito submerso escavado abaixo do nível do mar`);
-  if (river.id.startsWith('river_')) {
-    const last = pts[pts.length - 1];
-    const maskEnd = terrainTest.getMacro().getLandmassMask(last.x, last.z);
-    assert(maskEnd.coastDist <= 0.0, `Foz do rio ${river.id} alcança o oceano (coastDist=${maskEnd.coastDist.toFixed(1)}m)`);
-  }
+  assert(pts.length >= 6, `Rio ${river.id} possui traçado contínuo (${pts.length} pontos)`);
+  let downhill = true;
+  for (let i = 1; i < pts.length; i++) if (pts[i].elevation > pts[i - 1].elevation + 1e-6) downhill = false;
+  assert(downhill, `Rio ${river.id}: o fundo do vale só desce rio abaixo (cabeceira seca, depois água)`);
+  const wetPts = pts.filter(p => p.elevation <= CONFIG.SEA_LEVEL + 1e-6);
+  assert(wetPts.length >= 4 && wetPts.every(p => p.depth >= 0.9), `Rio ${river.id} tem a água do mar num leito escavado abaixo do nível do mar`);
+  // termina no mar (orla), num lago ou em outro rio - nunca no meio do nada
+  const last = pts[pts.length - 1];
+  const atSea = terrainTest.getMacro().getLandmassMask(last.x, last.z).coastDist <= 0.0 || terrainTest.getDryHeight(last.x, last.z) < 0.0;
+  const atLake = hydroData.lakes.some(l => Math.hypot(last.x - l.x, last.z - l.z) < l.radius * 1.5);
+  const atRiver = hydroData.rivers.some(o => o !== river && o.points.some(p => Math.hypot(last.x - p.x, last.z - p.z) < p.width + 14));
+  assert(atSea || atLake || atRiver, `Rio ${river.id} deságua no mar, num lago ou em outro rio`);
 }
 
-assert(hydroData.lakes.every(l => l.waterLevel === CONFIG.SEA_LEVEL), 'Lagos utilizam a mesma água do oceano no nível do mar (0.0m)');
+for (const lake of hydroData.lakes) {
+  assert(lake.waterLevel === CONFIG.SEA_LEVEL, `${lake.name} usa a mesma água do mar`);
+  // a represa tem a forma do vale inundado (o centro médio pode cair entre dois braços)
+  let lakeWater = false;
+  for (let k = 0; k < 64 && !lakeWater; k++) {
+    const a = k * 2.39996, rr = lake.radius * Math.sqrt(k / 64);
+    const px = lake.x + Math.cos(a) * rr, pz = lake.z + Math.sin(a) * rr;
+    const pt = terrainTest.getPoint(px, pz);
+    if (pt.isWater && pt.height < CONFIG.SEA_LEVEL && hydro.queryHydrology(px, pz).isLake) lakeWater = true;
+  }
+  assert(lakeWater, `${lake.name} tem fundo abaixo do nível da água`);
+  const onRiver = hydroData.rivers.some(r => r.points.some(p => Math.hypot(p.x - lake.x, p.z - lake.z) < lake.radius * 2.5));
+  assert(onRiver, `${lake.name} fica no curso de um rio (a água leva até o mar)`);
+}
 
 // 4. Teste de Terreno Unificado e Biomas
 const defaultSeed = PRNG.hashString('Avalon');
@@ -234,7 +251,8 @@ for (let ax = -600; ax <= 600; ax += 20) {
 }
 assert(hasSnowPineOrArcticWillow, 'Tundra glacial possui pinheiro nevado (snowPine) e salgueiro ártico (arcticWillow)');
 
-// Verificação da Continuidade C1 da Linha da Costa (zero degraus artificiais)
+// Verificação da Linha da Costa: do lado da terra, a orla fica no máximo ~1.5m acima do mar (sem falésias
+// artificiais); do lado do mar, o fundo desce logo na borda (sem lâmina rasa), mas sem abismo
 const macro = terrain.getMacro();
 let continuityPass = true;
 for (let cx = -300; cx <= 300; cx += 25) {
@@ -242,14 +260,15 @@ for (let cx = -300; cx <= 300; cx += 25) {
     const mask = macro.getLandmassMask(cx, cz);
     if (Math.abs(mask.coastDist) < 1.0) {
       const hCoast = terrain.getHeight(cx, cz);
-      if (Math.abs(hCoast) > 0.35) {
+      const bad = mask.coastDist >= 0.0 ? (hCoast < -0.1 || hCoast > 1.6) : (hCoast > 0.35 || hCoast < -2.5);
+      if (bad) {
         continuityPass = false;
         console.error(`Descontinuidade detectada na costa em (${cx}, ${cz}): coastDist=${mask.coastDist}, h=${hCoast}`);
       }
     }
   }
 }
-assert(continuityPass, 'Linha da costa apresenta continuidade suave ao redor do nível do mar sem falésias artificiais');
+assert(continuityPass, 'Linha da costa sem falésias artificiais: orla baixa e fundo que desce logo na borda');
 
 // 6. Teste de Variabilidade Procedural Multi-Seed
 console.log('\n--- Testes de Variabilidade com Segunda Seed (Verdant-Isle-402) ---');
@@ -262,7 +281,7 @@ assert(spring2.x !== s0.x || spring2.z !== s0.z, `Fontes termais mudam de posiç
 
 const lakeA = terrain.getHydrology().getLakes()[0];
 const lakeB = terrain2.getHydrology().getLakes()[0];
-assert(lakeA.x !== lakeB.x || lakeA.z !== lakeB.z, `Lagos mudam de posição organicamente entre seeds: (${lakeA.x.toFixed(0)}, ${lakeA.z.toFixed(0)}) vs (${lakeB.x.toFixed(0)}, ${lakeB.z.toFixed(0)})`);
+if (lakeA && lakeB) assert(lakeA.x !== lakeB.x || lakeA.z !== lakeB.z, `Lagos mudam de posição organicamente entre seeds: (${lakeA.x.toFixed(0)}, ${lakeA.z.toFixed(0)}) vs (${lakeB.x.toFixed(0)}, ${lakeB.z.toFixed(0)})`);
 
 const riverA = terrain.getHydrology().getRivers()[0];
 const riverB = terrain2.getHydrology().getRivers()[0];

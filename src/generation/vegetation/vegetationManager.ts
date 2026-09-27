@@ -3,6 +3,7 @@ import { PRNG } from '../math/prng.ts';
 import { TerrainPoint, BiomeType } from '../types.ts';
 import { CONFIG } from '../../config.ts';
 import { VegetationTextures } from './vegetationTextures.ts';
+import { GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 import { BotanicalGeometryFactory } from './botanicalGeometryFactory.ts';
 import { VegetationInstancePool } from './instancePool.ts';
 
@@ -1225,7 +1226,27 @@ export class VegetationManager {
         ].join('\n')
       );
     };
-    mat.customProgramCacheKey = () => 'pixel_grass_wind_bb';
+    // Recorte do alfa estável de longe: compensa o alfa que os mipmaps espalham (senão os fios
+    // afinavam e sumiam à distância) e deixa a borda do recorte com ~1 pixel de tela (sem o
+    // chiado de pixels acendendo e apagando ao mover a câmera). De perto fica igual ao recorte seco.
+    const prevCompile = mat.onBeforeCompile;
+    mat.onBeforeCompile = (shader, renderer) => {
+      prevCompile.call(mat, shader, renderer);
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <alphatest_fragment>',
+        [
+          '#ifdef USE_MAP',
+          '  vec2 texPx = vMapUv * vec2(' + GRASS_SPRITE_W.toFixed(1) + ', ' + GRASS_SPRITE_H.toFixed(1) + ');',
+          '  vec2 ddx = dFdx(texPx), ddy = dFdy(texPx);',
+          '  float mipLvl = max(0.0, 0.5 * log2(max(dot(ddx, ddx), dot(ddy, ddy))));',
+          '  diffuseColor.a *= 1.0 + mipLvl * 0.25;',
+          '  diffuseColor.a = (diffuseColor.a - 0.5) / max(fwidth(diffuseColor.a), 0.0001) + 0.5;',
+          '#endif',
+          'if (diffuseColor.a < 0.5) discard;',
+        ].join('\n')
+      );
+    };
+    mat.customProgramCacheKey = () => 'pixel_grass_wind_bb_aa';
     return mat;
   }
 

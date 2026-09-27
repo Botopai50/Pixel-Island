@@ -116,7 +116,7 @@ export class ChunkManager {
     // 0. Chunks já carregados que ficaram perto sobem de LOD de textura/malha
     for (const chunk of this.chunks.values()) {
       const dx = chunk.cx - cx, dz = chunk.cz - cz;
-      chunk.setLOD(this.textureDensityFor(dx, dz), this.segmentsFor(dx, dz));
+      chunk.setLOD(this.textureDensityFor(dx, dz), this.segmentsFor(dx, dz), Math.sqrt(dx * dx + dz * dz));
       chunk.setGrassEnabled(dx * dx + dz * dz <= CONFIG.GRASS_RADIUS_CHUNKS ** 2 && CONFIG.GRASS_RADIUS_CHUNKS > 0, this.vegetationMgr);
     }
 
@@ -183,9 +183,13 @@ export class ChunkManager {
     // Chunks são centrados em (cx * CHUNK_SIZE); o bloco vai da borda do primeiro à do último
     const minX = tx * FAR_TILE * CONFIG.CHUNK_SIZE - CONFIG.CHUNK_SIZE / 2;
     const minZ = tz * FAR_TILE * CONFIG.CHUNK_SIZE - CONFIG.CHUNK_SIZE / 2;
+    const { dx: tdx, dz: tdz } = this.tileDelta(tx, tz, this.currentCenterCx, this.currentCenterCz);
     const tile = new Chunk(tx, tz, this.terrainGen, this.vegetationMgr, this.forge, {
       onSceneChanged: this.bumpSceneVersion,
-      textureDensity: this.textureDensityFor(NEAR_RING + 1, 0),
+      distance: Math.sqrt(tdx * tdx + tdz * tdz),
+      // blocos distantes: meio texel por metro (só aparecem com o zoom bem afastado, a 450m+; com
+      // 1 tx/m a textura de 256m custava tanto quanto a de um chunk de perto)
+      textureDensity: Math.min(0.5, this.textureDensityFor(NEAR_RING + 1, 0)),
       segments: this.segmentsFor(NEAR_RING + 1, 0) * FAR_TILE,
       area: { centerX: minX + size / 2, centerZ: minZ + size / 2, size }
     });
@@ -293,7 +297,8 @@ export class ChunkManager {
         enableVegetation: false,
         onSceneChanged: this.bumpSceneVersion,
         textureDensity: this.textureDensityFor(dx, dz),
-        segments: this.segmentsFor(dx, dz)
+        segments: this.segmentsFor(dx, dz),
+        distance: Math.sqrt(distSq),
       });
 
       chunk.setGrassEnabled(distSq <= CONFIG.GRASS_RADIUS_CHUNKS ** 2 && CONFIG.GRASS_RADIUS_CHUNKS > 0, this.vegetationMgr);

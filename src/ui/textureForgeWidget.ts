@@ -207,6 +207,14 @@ export class TextureForgeWidget {
             </div>
             <span class="forge-hint">Desenha a cena em resolução menor e amplia sem suavizar (visual de diorama pixel-art; também deixa o jogo mais leve)</span>
           </div>
+
+          <div class="forge-row">
+            <div class="forge-label-row">
+              <label for="fg-fxaa">Suavização de bordas (FXAA)</label>
+              <input id="fg-fxaa" type="checkbox" ${CONFIG.FXAA ? 'checked' : ''}>
+            </div>
+            <span class="forge-hint">Suaviza o serrilhado das bordas na imagem final (fica desligado com a pixelização)</span>
+          </div>
         </div>
 
         <!-- Grama 3D -->
@@ -384,6 +392,14 @@ export class TextureForgeWidget {
       });
     }
 
+    const fxaa = this.panel.querySelector('#fg-fxaa') as HTMLInputElement | null;
+    if (fxaa) {
+      fxaa.addEventListener('change', () => {
+        window.dispatchEvent(new CustomEvent('fxaa-change', { detail: fxaa.checked }));
+        this.updateJsonArea();
+      });
+    }
+
     const pixelation = this.panel.querySelector('#fg-pixelation') as HTMLInputElement | null;
     if (pixelation) {
       pixelation.addEventListener('change', () => {
@@ -452,6 +468,7 @@ export class TextureForgeWidget {
           ...DEFAULT_FORGE_PARAMS,
           density: DEFAULT_D,
           pixelation: false,
+          fxaa: true,
           grassBillboard: true,
           playerHeight: 1.75,
         });
@@ -496,6 +513,7 @@ export class TextureForgeWidget {
       tuftPerM2: Math.round(this.state.tuftPerM2),
       tuftSize: Number(this.state.tuftSize.toFixed(2)),
       grassBillboard: CONFIG.GRASS_BILLBOARD,
+      fxaa: CONFIG.FXAA,
       playerHeight: Number((CONFIG.PLAYER_SCALE * 1.75).toFixed(2)),
     };
     return JSON.stringify(exportable, null, 2);
@@ -507,7 +525,7 @@ export class TextureForgeWidget {
     }
   }
 
-  public applyExternalConfig(cfg: Partial<TextureControlsState> & { pixelation?: boolean; playerHeight?: number; grassBillboard?: boolean }): void {
+  public applyExternalConfig(cfg: Partial<TextureControlsState> & { pixelation?: boolean; playerHeight?: number; grassBillboard?: boolean; fxaa?: boolean }): void {
     if (cfg.pscale !== undefined) this.state.pscale = cfg.pscale;
     if (cfg.grass !== undefined) this.state.grass = cfg.grass;
     if (cfg.grassMountain !== undefined) this.state.grassMountain = cfg.grassMountain;
@@ -529,6 +547,9 @@ export class TextureForgeWidget {
     // Opções fora das texturas: aplicadas pelos mesmos eventos que os controles do painel usam
     if (cfg.pixelation !== undefined && cfg.pixelation !== (CONFIG.PIXEL_SIZE > 1)) {
       window.dispatchEvent(new CustomEvent('pixelation-change', { detail: !!cfg.pixelation }));
+    }
+    if (cfg.fxaa !== undefined) {
+      window.dispatchEvent(new CustomEvent('fxaa-change', { detail: !!cfg.fxaa }));
     }
     if (cfg.grassBillboard !== undefined) {
       window.dispatchEvent(new CustomEvent('grass-billboard-change', { detail: !!cfg.grassBillboard }));
@@ -573,6 +594,8 @@ export class TextureForgeWidget {
     if (pixelation) pixelation.checked = CONFIG.PIXEL_SIZE > 1;
     const billboard = this.panel.querySelector('#fg-grass-billboard') as HTMLInputElement | null;
     if (billboard) billboard.checked = CONFIG.GRASS_BILLBOARD;
+    const fxaaBox = this.panel.querySelector('#fg-fxaa') as HTMLInputElement | null;
+    if (fxaaBox) fxaaBox.checked = CONFIG.FXAA;
   }
 
   public togglePanel(): void {

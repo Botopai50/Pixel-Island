@@ -518,11 +518,12 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
     const ix = ((x % W) + W) % W, iy = ((y % H) + H) % H, i = iy * W + ix;
     mat[i] = m; idx[i] = clamp(v, 0, (m === M_ACC ? 2 : RL - 1));
   };
-  // luz vindo de cima (o "topo" da textura, y negativo) e um pouco da esquerda
+  // luz vindo de cima (o "topo" da textura, y negativo) e um pouco da esquerda. Lascas de terra e
+  // de rocha menores (11x9 e 9x8 px): com 18x14 e 14x12 as pedras ficavam grandes nos paredões altos
   const relief = kind === 'terra'
-    ? facetRelief(W, H, sd + 500, { cw: 18, ch: 14, tilt: 0.85, lx: -0.40, ly: -0.80, lz: 0.55, warp: 3, sub: 0.0, up: 0.30 })
+    ? facetRelief(W, H, sd + 500, { cw: 11, ch: 9, tilt: 0.85, lx: -0.40, ly: -0.80, lz: 0.55, warp: 3, sub: 0.0, up: 0.30 })
     : kind === 'bloco'
-    ? facetRelief(W, H, sd + 500, { cw: 14, ch: 12, tilt: 0.75, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.15 })
+    ? facetRelief(W, H, sd + 500, { cw: 9, ch: 8, tilt: 0.75, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.15 })
     : kind === 'seixo'
     ? facetRelief(W, H, sd + 500, { cw: 11, ch: 10, tilt: 0.80, lx: -0.45, ly: -0.70, lz: 0.60, warp: 2, sub: 0.0, up: 0.10 })
     : kind === 'basalto'
@@ -740,6 +741,7 @@ let sMacroCh1: Float32Array;
 let sMacroChL: Float32Array;
 let sMacroWide: Float32Array;
 let sMacroPatch: Float32Array;
+let sWet: Float32Array;
 let sSpecialRock: Float32Array;
 let sCanyon: Float32Array;
 
@@ -755,6 +757,7 @@ let sGridCh1: Float32Array;
 let sGridChL: Float32Array;
 let sGridWide: Float32Array;
 let sGridPatch: Float32Array;
+let sGridWet: Float32Array;
 
 let scratchBioGridCap = 0;
 let sBioGridCat: Uint8Array;
@@ -791,6 +794,7 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
     sMacroChL = new Float32Array(scratchCapacity);
     sMacroWide = new Float32Array(scratchCapacity);
     sMacroPatch = new Float32Array(scratchCapacity);
+    sWet = new Float32Array(scratchCapacity);
     sSpecialRock = new Float32Array(scratchCapacity);
     sCanyon = new Float32Array(scratchCapacity);
   }
@@ -807,6 +811,7 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
     sGridChL = new Float32Array(scratchGridCap);
     sGridWide = new Float32Array(scratchGridCap);
     sGridPatch = new Float32Array(scratchGridCap);
+    sGridWet = new Float32Array(scratchGridCap);
   }
   if (scratchBioGridCap < nBG) {
     scratchBioGridCap = Math.max(nBG, 256);
@@ -829,6 +834,10 @@ function ensureScratch(nT: number, nG: number, nBG: number, W: number) {
   }
 }
 
+// Cada passo pesado de genChunkTexture fica numa função própria `(() => { ... })()`: numa função
+// de ~850 linhas com vários laços em sequência o V8 compilava cada laço sob demanda e desotimizava
+// a cada chamada (~100 desotimizações por dúzia de chunks); separados, cada passo é otimizado uma
+// vez e reaproveitado em todos os chunks.
 export function genChunkTexture(
   P: ForgeParams,
   per: { fbm: (x: number, y: number, oct?: number) => number },
@@ -836,7 +845,14 @@ export function genChunkTexture(
   minWorldX: number,
   minWorldZ: number,
   chunkSize: number,
-  density: number = DEFAULT_D
+  density: number = DEFAULT_D,
+  /**
+   * Alturas dos vértices da malha do chunk (grade grid x grid a cada step metros, a partir de
+   * minWorldX/minWorldZ), quando a malha foi gerada no mesmo job: os tufos de grama assentam nela
+   * sem consultar o relevo de novo (~1100 consultas por chunk) e acompanham a malha de verdade
+   * (inclusive a de 4m dos chunks mais afastados)
+   */
+  mesh?: { heights: Float32Array; grid: number; step: number }
 ): ChunkTextureResult {
   const D = density;
   const CW = Math.round(chunkSize * D);
@@ -847,9 +863,10 @@ export function genChunkTexture(
   const PX = GX0 - M, PY = GY0 - M;
   const nT = W * W;
 
-  // Grade dos campos a cada 1.5m; nas texturas de baixa densidade (chunks distantes) a cada
+  // Grade dos campos a cada 1.5m só nas texturas de perto (6+ tx/m); nas de média distância a cada
   // 2.5m - ela custa o mesmo por chunk em qualquer densidade e lá dominava o tempo de geração
-  const step = Math.max(2, Math.round(D * (D >= 4 ? 1.5 : 2.5)));
+  // e nas mais distantes (<= 2 tx/m, vistas só de longe) a cada 4m
+  const step = Math.max(2, Math.round(D * (D >= 6 ? 1.5 : D > 2 ? 2.5 : 4.0)));
   const GW = Math.ceil(W / step) + 1;
   const nG = GW * GW;
 
@@ -873,10 +890,10 @@ export function genChunkTexture(
   const mat = sMat, idx = sIdx, gl = sGl, bio = sBio, gv = sGv;
   const hT = sHt, slT = sSlT;
   const macroM = sMacroM, macroRk = sMacroRk, macroSn = sMacroSn, macroBig = sMacroBig;
-  const macroCh1 = sMacroCh1, macroChL = sMacroChL, macroWide = sMacroWide, macroPatch = sMacroPatch;
+  const macroCh1 = sMacroCh1, macroChL = sMacroChL, macroWide = sMacroWide, macroPatch = sMacroPatch, wetT = sWet;
 
   const gridH = sGridH, gridSpecialRock = sGridSpecialRock, gridM = sGridM, gridRk = sGridRk;
-  const gridSn = sGridSn, gridBig = sGridBig, gridCh1 = sGridCh1, gridChL = sGridChL, gridWide = sGridWide, gridPatch = sGridPatch;
+  const gridSn = sGridSn, gridBig = sGridBig, gridCh1 = sGridCh1, gridChL = sGridChL, gridWide = sGridWide, gridPatch = sGridPatch, gridWet = sGridWet;
   const specialRock = sSpecialRock, canyonT = sCanyon, gridCanyon = sGridCanyon;
   const bioGridCat = sBioGridCat;
 
@@ -889,65 +906,72 @@ export function genChunkTexture(
   const canyonGen = terrainGen.getCanyonGenerator();
 
   /* ---- passo 0: bioma ecológico numa grade própria, bem mais grossa ---- */
-  for (let gy = 0; gy < bioGW; gy++) {
-    const wy = (bioOriginY + gy * bioStep) / D;
-    const gRow = gy * bioGW;
-    for (let gx = 0; gx < bioGW; gx++) {
-      const wx = (bioOriginX + gx * bioStep) / D;
-      // getPointFast já calcula altura + bioma ecológico REAL numa única passagem - o mesmo
-      // BiomeManager.evaluateBiome() que decide quais árvores a vegetação planta. Usar essa
-      // MESMA fonte de verdade (em vez de um limiar de altura/temperatura próprio e independente)
-      // garante que o chão nunca discorde da vegetação (ex.: pinheiros nevados sobre areia).
-      const gPt = terrainGen.getPointFast(wx, wy);
-      bioGridCat[gRow + gx] = BIOME_TYPE_TO_FORGE[gPt.biome.type] ?? B_TEMP;
+  (() => {
+    for (let gy = 0; gy < bioGW; gy++) {
+      const wy = (bioOriginY + gy * bioStep) / D;
+      const gRow = gy * bioGW;
+      for (let gx = 0; gx < bioGW; gx++) {
+        const wx = (bioOriginX + gx * bioStep) / D;
+        // getPointFast já calcula altura + bioma ecológico REAL numa única passagem - o mesmo
+        // BiomeManager.evaluateBiome() que decide quais árvores a vegetação planta. Usar essa
+        // MESMA fonte de verdade (em vez de um limiar de altura/temperatura próprio e independente)
+        // garante que o chão nunca discorde da vegetação (ex.: pinheiros nevados sobre areia).
+        const gPt = terrainGen.getPointFast(wx, wy);
+        bioGridCat[gRow + gx] = BIOME_TYPE_TO_FORGE[gPt.biome.type] ?? B_TEMP;
+      }
     }
-  }
+  })();
 
   /* ---- passo 1: campos (otimizado via grade bilinear para relevo e ruídos macro) ---- */
-  for (let gy = 0; gy < GW; gy++) {
-    const wy = (PY + gy * step) / D;
-    const gRow = gy * GW;
-    for (let gx = 0; gx < GW; gx++) {
-      const wx = (PX + gx * step) / D;
-      const gh = terrainGen.getHeight(wx, wy);
-      const gIdx = gRow + gx;
-      gridH[gIdx] = gh;
+  (() => {
+    for (let gy = 0; gy < GW; gy++) {
+      const wy = (PY + gy * step) / D;
+      const gRow = gy * GW;
+      for (let gx = 0; gx < GW; gx++) {
+        const wx = (PX + gx * step) / D;
+        const hw = terrainGen.getHeightAndWetness(wx, wy);
+        const gh = hw.height;
+        const gIdx = gRow + gx;
+        gridH[gIdx] = gh;
 
-      // Vulcão/cânion são feições estreitas e dramáticas - a grade grossa do bioma (~24m) pode
-      // simplesmente "pular" por cima delas sem nunca amostrar exatamente em cima (ex.: um
-      // cânion de deserto de uns poucos metros de largura cortando uma região gelada acaba sem
-      // NENHUM ponto de grade dentro dele, e o chão herda o bioma gelado ao redor por engano,
-      // enquanto a vegetação - que usa a posição exata de cada planta - já acerta e planta
-      // cactos). Aqui reamostramos essas duas influências na grade FINA (mesma resolução do
-      // relevo) e usamos como um "empurrão" extra para rocha, independente do bioma ecológico.
-      const vRes = volcanoGen.query(wx, wy);
-      const cRes = canyonGen.query(wx, wy, gh);
-      gridSpecialRock[gIdx] = vRes.influence > 0.18 ? (vRes.influence - 0.18) / 0.82 : 0;
-      gridCanyon[gIdx] = (gh > CONFIG.BEACH_HEIGHT && cRes.influence > 0.45) ? (cRes.influence - 0.45) / 0.55 : 0;
+        // Vulcão/cânion são feições estreitas e dramáticas - a grade grossa do bioma (~24m) pode
+        // simplesmente "pular" por cima delas sem nunca amostrar exatamente em cima (ex.: um
+        // cânion de deserto de uns poucos metros de largura cortando uma região gelada acaba sem
+        // NENHUM ponto de grade dentro dele, e o chão herda o bioma gelado ao redor por engano,
+        // enquanto a vegetação - que usa a posição exata de cada planta - já acerta e planta
+        // cactos). Aqui reamostramos essas duas influências na grade FINA (mesma resolução do
+        // relevo) e usamos como um "empurrão" extra para rocha, independente do bioma ecológico.
+        const vRes = volcanoGen.query(wx, wy);
+        const cRes = canyonGen.query(wx, wy, gh);
+        gridSpecialRock[gIdx] = vRes.influence > 0.18 ? (vRes.influence - 0.18) / 0.82 : 0;
+        gridCanyon[gIdx] = (gh > CONFIG.BEACH_HEIGHT && cRes.influence > 0.45) ? (cRes.influence - 0.45) / 0.55 : 0;
 
-      // Domain warp e máscaras macro
-      const ox = per.fbm(wx * 0.21 + 11.3, wy * 0.21 + 4.1, 2) * warp;
-      const oy = per.fbm(wx * 0.21 + 27.7, wy * 0.21 + 18.9, 2) * warp;
-      const ax = wx + ox, ay = wy + oy;
+        // Domain warp e máscaras macro
+        const ox = per.fbm(wx * 0.21 + 11.3, wy * 0.21 + 4.1, 2) * warp;
+        const oy = per.fbm(wx * 0.21 + 27.7, wy * 0.21 + 18.9, 2) * warp;
+        const ax = wx + ox, ay = wy + oy;
 
-      let m = per.fbm(ax * mf, ay * mf, 3) * 0.5 + 0.5;
-      m += per.fbm(ax * mf * 3.4 + 5.1, ay * mf * 3.4 + 9.7, 2) * 0.14 * (0.35 + P.edge);
-      gridM[gIdx] = m;
+        let m = per.fbm(ax * mf, ay * mf, 3) * 0.5 + 0.5;
+        m += per.fbm(ax * mf * 3.4 + 5.1, ay * mf * 3.4 + 9.7, 2) * 0.14 * (0.35 + P.edge);
+        gridM[gIdx] = m;
 
-      gridRk[gIdx] = per.fbm(wx * 0.17 + 71.2, wy * 0.17 + 33.8, 3) * 0.5 + 0.5;
-      gridSn[gIdx] = per.fbm(wx * 0.26 + 9.4, wy * 0.26 + 3.2, 2) * 0.5 + 0.5;
-      gridBig[gIdx] = per.fbm(wx * 0.33 + 5.5, wy * 0.33 + 2.2, 2);
+        gridRk[gIdx] = per.fbm(wx * 0.17 + 71.2, wy * 0.17 + 33.8, 3) * 0.5 + 0.5;
+        gridSn[gIdx] = per.fbm(wx * 0.26 + 9.4, wy * 0.26 + 3.2, 2) * 0.5 + 0.5;
+        gridBig[gIdx] = per.fbm(wx * 0.33 + 5.5, wy * 0.33 + 2.2, 2);
 
-      // Erosão e modulações na terra
-      const wu = wx + per.fbm(wx * 0.60 + 3.1,  wy * 0.60 + 8.7,  2) * 1.2;
-      const wv = wy + per.fbm(wx * 0.60 + 19.3, wy * 0.60 + 2.9,  2) * 1.2;
-      gridCh1[gIdx] = 1 - Math.abs(per.fbm(wu * 0.80 + 5.0,  wv * 0.80 + 11.0, 3));
-      gridChL[gIdx] = 1 - Math.abs(per.fbm((wu + 0.20) * 0.80 + 5.0, (wv - 0.20) * 0.80 + 11.0, 3));
-      gridWide[gIdx] = per.fbm(wx * 0.72 + 41.3, wy * 0.72 + 7.9, 2);
-      // Manchas grandes de grama x terra do temperado (~15m, com recorte médio de ~4m)
-      gridPatch[gIdx] = per.fbm(wx * 0.065 + 13.7, wy * 0.065 + 71.1, 3) + per.fbm(wx * 0.24 + 3.3, wy * 0.24 + 29.4, 2) * 0.30;
+        // Erosão e modulações na terra
+        const wu = wx + per.fbm(wx * 0.60 + 3.1,  wy * 0.60 + 8.7,  2) * 1.2;
+        const wv = wy + per.fbm(wx * 0.60 + 19.3, wy * 0.60 + 2.9,  2) * 1.2;
+        gridCh1[gIdx] = 1 - Math.abs(per.fbm(wu * 0.80 + 5.0,  wv * 0.80 + 11.0, 3));
+        gridChL[gIdx] = 1 - Math.abs(per.fbm((wu + 0.20) * 0.80 + 5.0, (wv - 0.20) * 0.80 + 11.0, 3));
+        gridWide[gIdx] = per.fbm(wx * 0.72 + 41.3, wy * 0.72 + 7.9, 2);
+        // Manchas grandes de grama x terra do temperado (~15m, com recorte médio de ~4m)
+        gridPatch[gIdx] = per.fbm(wx * 0.065 + 13.7, wy * 0.065 + 71.1, 3) + per.fbm(wx * 0.24 + 3.3, wy * 0.24 + 29.4, 2) * 0.30;
+        // Rios e lagos: fundo e beira em areia (1 = debaixo d'água, cai a 0 ao longo da margem)
+        gridWet[gIdx] = hw.wetness;
+      }
     }
-  }
+  })();
 
   // Pré-computa tabela 1D para eliminar divisões e modulos
   const invStep = 1.0 / step;
@@ -968,277 +992,292 @@ export function genChunkTexture(
   }
 
   // Interpolação bilinear vetorizada dos campos contínuos
-  for (let ly = 0; ly < W; ly++) {
-    const gy = sGy[ly];
-    const ty = sTy[ly];
-    const oty = sOty[ly];
-    const gRow0 = gy * GW;
-    const gRow1 = (gy + 1) * GW;
-    const row = ly * W;
-    for (let lx = 0; lx < W; lx++) {
-      const gx = sGx[lx];
-      const tx = sTx[lx];
-      const otx = sOtx[lx];
-      const i00 = gRow0 + gx;
-      const i01 = gRow1 + gx;
+  (() => {
+    for (let ly = 0; ly < W; ly++) {
+      const gy = sGy[ly];
+      const ty = sTy[ly];
+      const oty = sOty[ly];
+      const gRow0 = gy * GW;
+      const gRow1 = (gy + 1) * GW;
+      const row = ly * W;
+      for (let lx = 0; lx < W; lx++) {
+        const gx = sGx[lx];
+        const tx = sTx[lx];
+        const otx = sOtx[lx];
+        const i00 = gRow0 + gx;
+        const i01 = gRow1 + gx;
 
-      const w00 = otx * oty, w10 = tx * oty, w01 = otx * ty, w11 = tx * ty;
-      const idx = row + lx;
+        const w00 = otx * oty, w10 = tx * oty, w01 = otx * ty, w11 = tx * ty;
+        const idx = row + lx;
 
-      hT[idx] = gridH[i00]*w00 + gridH[i00+1]*w10 + gridH[i01]*w01 + gridH[i01+1]*w11;
-      specialRock[idx] = gridSpecialRock[i00]*w00 + gridSpecialRock[i00+1]*w10 + gridSpecialRock[i01]*w01 + gridSpecialRock[i01+1]*w11;
-      canyonT[idx] = gridCanyon[i00]*w00 + gridCanyon[i00+1]*w10 + gridCanyon[i01]*w01 + gridCanyon[i01+1]*w11;
+        hT[idx] = gridH[i00]*w00 + gridH[i00+1]*w10 + gridH[i01]*w01 + gridH[i01+1]*w11;
+        specialRock[idx] = gridSpecialRock[i00]*w00 + gridSpecialRock[i00+1]*w10 + gridSpecialRock[i01]*w01 + gridSpecialRock[i01+1]*w11;
+        canyonT[idx] = gridCanyon[i00]*w00 + gridCanyon[i00+1]*w10 + gridCanyon[i01]*w01 + gridCanyon[i01+1]*w11;
 
-      // Bioma: mistura os 4 cantos da grade grossa por ÁREA bilinear (não dá pra misturar as
-      // CORES de dois biomas, mas dá pra usar a área como probabilidade de tufos). Em vez de
-      // "o canto de maior peso individual vence" (isso cria um ziguezague de diamantes - artefato
-      // clássico de escolher por argmax bilinear), somamos o peso de TODOS os cantos que
-      // pertencem a cada categoria e sorteamos por pixel com probabilidade proporcional a essa
-      // área - perto da fronteira (~50/50) sai um tufo bem denso e pontilhado, longe dela a
-      // probabilidade do bioma vizinho cai a zero suavemente. Mesmo estilo de dither em cluster()
-      // (blobs arredondados, não ruído fino) já usado no preenchimento de grama/terra abaixo.
-      // Consulta deformada: o pixel "pergunta" o bioma num ponto deslocado por ruído de grande
-      // escala (até ~0.7 célula). Sem isso a fronteira seguia as linhas retas/diagonais da
-      // interpolação dentro de cada célula de 24m e aparecia como cortes retos e triângulos.
-      const wpX = gridPatch[i00]*w00 + gridPatch[i00+1]*w10 + gridPatch[i01]*w01 + gridPatch[i01+1]*w11;
-      const wpY = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11 - 0.5;
-      const wsX = gridBig[i00]*w00 + gridBig[i00+1]*w10 + gridBig[i01]*w01 + gridBig[i01+1]*w11;
-      const wsY = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
-      const qx = (lx + bioOffX + (wpX * 0.9 + wsX * 0.25) * bioStep * 0.75) / bioStep;
-      const qy = (ly + bioOffY + (wpY * 1.8 + wsY * 0.25) * bioStep * 0.75) / bioStep;
-      const bgx = clamp(Math.floor(qx), 0, bioGW - 2), bgy = clamp(Math.floor(qy), 0, bioGW - 2);
-      const btx = clamp(qx - bgx, 0, 1), bty = clamp(qy - bgy, 0, 1);
-      const botx = 1 - btx, boty = 1 - bty;
-      const bRow0 = bgy * bioGW, bRow1 = (bgy + 1) * bioGW;
-      const j00 = bRow0 + bgx, j01 = bRow1 + bgx;
-      const bw00 = botx * boty, bw10 = btx * boty, bw01 = botx * bty; // o 4º canto é o resto
-      const c00 = bioGridCat[j00], c10 = bioGridCat[j00 + 1], c01 = bioGridCat[j01], c11 = bioGridCat[j01 + 1];
+        // Bioma: mistura os 4 cantos da grade grossa por ÁREA bilinear (não dá pra misturar as
+        // CORES de dois biomas, mas dá pra usar a área como probabilidade de tufos). Em vez de
+        // "o canto de maior peso individual vence" (isso cria um ziguezague de diamantes - artefato
+        // clássico de escolher por argmax bilinear), somamos o peso de TODOS os cantos que
+        // pertencem a cada categoria e sorteamos por pixel com probabilidade proporcional a essa
+        // área - perto da fronteira (~50/50) sai um tufo bem denso e pontilhado, longe dela a
+        // probabilidade do bioma vizinho cai a zero suavemente. Mesmo estilo de dither em cluster()
+        // (blobs arredondados, não ruído fino) já usado no preenchimento de grama/terra abaixo.
+        // Consulta deformada: o pixel "pergunta" o bioma num ponto deslocado por ruído de grande
+        // escala (até ~0.7 célula). Sem isso a fronteira seguia as linhas retas/diagonais da
+        // interpolação dentro de cada célula de 24m e aparecia como cortes retos e triângulos.
+        const wpX = gridPatch[i00]*w00 + gridPatch[i00+1]*w10 + gridPatch[i01]*w01 + gridPatch[i01+1]*w11;
+        const wpY = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11 - 0.5;
+        const wsX = gridBig[i00]*w00 + gridBig[i00+1]*w10 + gridBig[i01]*w01 + gridBig[i01+1]*w11;
+        const wsY = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
+        const qx = (lx + bioOffX + (wpX * 0.9 + wsX * 0.25) * bioStep * 0.75) / bioStep;
+        const qy = (ly + bioOffY + (wpY * 1.8 + wsY * 0.25) * bioStep * 0.75) / bioStep;
+        const bgx = clamp(Math.floor(qx), 0, bioGW - 2), bgy = clamp(Math.floor(qy), 0, bioGW - 2);
+        const btx = clamp(qx - bgx, 0, 1), bty = clamp(qy - bgy, 0, 1);
+        const botx = 1 - btx, boty = 1 - bty;
+        const bRow0 = bgy * bioGW, bRow1 = (bgy + 1) * bioGW;
+        const j00 = bRow0 + bgx, j01 = bRow1 + bgx;
+        const bw00 = botx * boty, bw10 = btx * boty, bw01 = botx * bty; // o 4º canto é o resto
+        const c00 = bioGridCat[j00], c10 = bioGridCat[j00 + 1], c01 = bioGridCat[j01], c11 = bioGridCat[j01 + 1];
 
-      let b: number;
-      if (c00 === c10 && c00 === c01 && c00 === c11) {
-        b = c00; // os 4 cantos concordam: interior estável, sem nenhum sorteio necessário
-      } else {
-        // Sorteio proporcional ao peso de cada canto (vale para 2, 3 ou 4 biomas diferentes),
-        // em MANCHAS de alguns metros (ruído suave já interpolado da grade) com a borda só
-        // levemente recortada - no estilo das manchas de grama, não um chuvisco de pixels
-        const tuft = clamp(0.5 + (wsX * 0.9 + wsY * 0.35) * 1.15
-                         + (cluster(PX + lx + 91.0, PY + ly + 47.0, sd + 84) - 0.5) * 0.18, 0, 0.999);
-        b = c11;
-        let acc = bw00;
-        if (tuft < acc) b = c00;
-        else if (tuft < (acc += bw10)) b = c10;
-        else if (tuft < (acc += bw01)) b = c01;
+        let b: number;
+        if (c00 === c10 && c00 === c01 && c00 === c11) {
+          b = c00; // os 4 cantos concordam: interior estável, sem nenhum sorteio necessário
+        } else {
+          // Sorteio proporcional ao peso de cada canto (vale para 2, 3 ou 4 biomas diferentes),
+          // em MANCHAS de alguns metros (ruído suave já interpolado da grade) com a borda só
+          // levemente recortada - no estilo das manchas de grama, não um chuvisco de pixels
+          const tuft = clamp(0.5 + (wsX * 0.9 + wsY * 0.35) * 1.15
+                           + (cluster(PX + lx + 91.0, PY + ly + 47.0, sd + 84) - 0.5) * 0.18, 0, 0.999);
+          b = c11;
+          let acc = bw00;
+          if (tuft < acc) b = c00;
+          else if (tuft < (acc += bw10)) b = c10;
+          else if (tuft < (acc += bw01)) b = c01;
+        }
+
+        // Vulcão/cânion sempre vencem, mesmo se a grade grossa achava que aqui era outra coisa
+        // (ex.: gelo) - essas feições são geológicas, não climáticas, e não podem sumir por
+        // amostragem grossa demais. Dither suave na borda em vez de um corte duro.
+        if (specialRock[idx] > 0.02 || canyonT[idx] > 0.02) {
+          const rockDither = (cluster(PX + lx + 201.0, PY + ly + 77.0, sd + 85) - 0.5) * 0.30;
+          if (canyonT[idx] + rockDither > 0.15) b = B_DESERT;
+          if (specialRock[idx] + rockDither > 0.15) b = B_MOUNT;
+        }
+
+        bio[idx] = b;
+
+        macroM[idx] = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11;
+        macroRk[idx] = gridRk[i00]*w00 + gridRk[i00+1]*w10 + gridRk[i01]*w01 + gridRk[i01+1]*w11;
+        macroSn[idx] = gridSn[i00]*w00 + gridSn[i00+1]*w10 + gridSn[i01]*w01 + gridSn[i01+1]*w11;
+        macroBig[idx] = gridBig[i00]*w00 + gridBig[i00+1]*w10 + gridBig[i01]*w01 + gridBig[i01+1]*w11;
+        macroCh1[idx] = gridCh1[i00]*w00 + gridCh1[i00+1]*w10 + gridCh1[i01]*w01 + gridCh1[i01+1]*w11;
+        macroChL[idx] = gridChL[i00]*w00 + gridChL[i00+1]*w10 + gridChL[i01]*w01 + gridChL[i01+1]*w11;
+        macroWide[idx] = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
+        macroPatch[idx] = gridPatch[i00]*w00 + gridPatch[i00+1]*w10 + gridPatch[i01]*w01 + gridPatch[i01+1]*w11;
+        wetT[idx] = gridWet[i00]*w00 + gridWet[i00+1]*w10 + gridWet[i01]*w01 + gridWet[i01+1]*w11;
       }
-
-      // Vulcão/cânion sempre vencem, mesmo se a grade grossa achava que aqui era outra coisa
-      // (ex.: gelo) - essas feições são geológicas, não climáticas, e não podem sumir por
-      // amostragem grossa demais. Dither suave na borda em vez de um corte duro.
-      if (specialRock[idx] > 0.02 || canyonT[idx] > 0.02) {
-        const rockDither = (cluster(PX + lx + 201.0, PY + ly + 77.0, sd + 85) - 0.5) * 0.30;
-        if (canyonT[idx] + rockDither > 0.15) b = B_DESERT;
-        if (specialRock[idx] + rockDither > 0.15) b = B_MOUNT;
-      }
-
-      bio[idx] = b;
-
-      macroM[idx] = gridM[i00]*w00 + gridM[i00+1]*w10 + gridM[i01]*w01 + gridM[i01+1]*w11;
-      macroRk[idx] = gridRk[i00]*w00 + gridRk[i00+1]*w10 + gridRk[i01]*w01 + gridRk[i01+1]*w11;
-      macroSn[idx] = gridSn[i00]*w00 + gridSn[i00+1]*w10 + gridSn[i01]*w01 + gridSn[i01+1]*w11;
-      macroBig[idx] = gridBig[i00]*w00 + gridBig[i00+1]*w10 + gridBig[i01]*w01 + gridBig[i01+1]*w11;
-      macroCh1[idx] = gridCh1[i00]*w00 + gridCh1[i00+1]*w10 + gridCh1[i01]*w01 + gridCh1[i01+1]*w11;
-      macroChL[idx] = gridChL[i00]*w00 + gridChL[i00+1]*w10 + gridChL[i01]*w01 + gridChL[i01+1]*w11;
-      macroWide[idx] = gridWide[i00]*w00 + gridWide[i00+1]*w10 + gridWide[i01]*w01 + gridWide[i01+1]*w11;
-      macroPatch[idx] = gridPatch[i00]*w00 + gridPatch[i00+1]*w10 + gridPatch[i01]*w01 + gridPatch[i01+1]*w11;
     }
-  }
+  })();
 
   // Derivadas de inclinação analítica em memória (0 chamadas adicionais de ruído)
   const deltaMeters = 1.0 / D;
-  for (let ly = 0; ly < W; ly++) {
-    const lyD = Math.max(0, ly - 1), lyU = Math.min(W - 1, ly + 1);
-    const rowD = lyD * W, rowU = lyU * W, rowCur = ly * W;
-    const dy = (lyU - lyD) * deltaMeters;
-    for (let lx = 0; lx < W; lx++) {
-      const lxL = Math.max(0, lx - 1), lxR = Math.min(W - 1, lx + 1);
-      const hL = hT[rowCur + lxL], hR = hT[rowCur + lxR];
-      const hD = hT[rowD + lx], hU = hT[rowU + lx];
-      const dx = (lxR - lxL) * deltaMeters;
-      slT[rowCur + lx] = Math.sqrt(((hR - hL) / dx) ** 2 + ((hU - hD) / dy) ** 2);
+  (() => {
+    for (let ly = 0; ly < W; ly++) {
+      const lyD = Math.max(0, ly - 1), lyU = Math.min(W - 1, ly + 1);
+      const rowD = lyD * W, rowU = lyU * W, rowCur = ly * W;
+      const dy = (lyU - lyD) * deltaMeters;
+      for (let lx = 0; lx < W; lx++) {
+        const lxL = Math.max(0, lx - 1), lxR = Math.min(W - 1, lx + 1);
+        const hL = hT[rowCur + lxL], hR = hT[rowCur + lxR];
+        const hD = hT[rowD + lx], hU = hT[rowU + lx];
+        const dx = (lxR - lxL) * deltaMeters;
+        slT[rowCur + lx] = Math.sqrt(((hR - hL) / dx) ** 2 + ((hU - hD) / dy) ** 2);
+      }
     }
-  }
+  })();
 
   // Avaliação dos biomas e máscaras de materiais
-  for (let ly = 0; ly < W; ly++) {
-    const row = ly * W;
-    for (let lx = 0; lx < W; lx++) {
-      const i = row + lx;
-      const tx = PX + lx, ty = PY + ly;
+  (() => {
+    for (let ly = 0; ly < W; ly++) {
+      const row = ly * W;
+      for (let lx = 0; lx < W; lx++) {
+        const i = row + lx;
+        const tx = PX + lx, ty = PY + ly;
 
-      const h = hT[i];
-      const sl = slT[i];
-      const hn = clamp(h / 65.0, 0, 1);
+        const h = hT[i];
+        const sl = slT[i];
+        const hn = clamp(h / 65.0, 0, 1);
 
-      // Bioma já resolvido na etapa de grade (mesma fonte de verdade da vegetação) - só lê.
-      const b = bio[i];
-      const BI = BIOMES[b];
+        // Bioma já resolvido na etapa de grade (mesma fonte de verdade da vegetação) - só lê.
+        const b = bio[i];
+        const BI = BIOMES[b];
 
-      // Máscara macro de vegetação: quantidade de grama controlada por slider PRÓPRIO de
-      // cada bioma (temperado/montanha/polar), em vez de um único slider global escalado.
-      // Isso evita que subir a grama do temperado tire a neve da montanha (e vice-versa) —
-      // cada bioma tem seu próprio intervalo de ajuste, independente dos outros.
-      const biomeGrassAmt = b === B_MOUNT ? P.grassMountain
-        : b === B_POLAR ? P.grassPolar
-        : b === B_DESERT ? 0
-        : P.grass;
-      const mBase = b === B_TEMP ? macroPatch[i] * 0.55 + 0.5 : macroM[i];
-      let m = mBase + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + biomeGrassAmt + BI.vegBias;
-      gv[i] = m;
+        // Máscara macro de vegetação: quantidade de grama controlada por slider PRÓPRIO de
+        // cada bioma (temperado/montanha/polar), em vez de um único slider global escalado.
+        // Isso evita que subir a grama do temperado tire a neve da montanha (e vice-versa) —
+        // cada bioma tem seu próprio intervalo de ajuste, independente dos outros.
+        const biomeGrassAmt = b === B_MOUNT ? P.grassMountain
+          : b === B_POLAR ? P.grassPolar
+          : b === B_DESERT ? 0
+          : P.grass;
+        const mBase = b === B_TEMP ? macroPatch[i] * 0.55 + 0.5 : macroM[i];
+        let m = mBase + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + biomeGrassAmt + BI.vegBias;
+        gv[i] = m;
 
-      // Quantização com dither em cluster
-      // Temperado: manchas de grama com contorno limpo (bolhas), sem a borda salpicada
-      const d = m + (cluster(tx, ty, sd) - 0.5) * (b === B_TEMP ? ditA * 0.3 : ditA);
-      gl[i] = d > 0.70 ? 4 : d > 0.61 ? 3 : d > 0.535 ? 2 : d > 0.475 ? 1 : 0;
+        // Quantização com dither em cluster
+        // Temperado: manchas de grama com contorno limpo (bolhas), sem a borda salpicada
+        const d = m + (cluster(tx, ty, sd) - 0.5) * (b === B_TEMP ? ditA * 0.3 : ditA);
+        gl[i] = d > 0.70 ? 4 : d > 0.61 ? 3 : d > 0.535 ? 2 : d > 0.475 ? 1 : 0;
 
-      // Rocha: encosta + ruído
-      let rk = macroRk[i] + clamp(sl - 0.95, 0, 2) * 0.30 + (0.28 - hn) * 0.30 + (cluster(tx + 91, ty + 17, sd + 5) - 0.5) * 0.26;
-      const isRock = rk > (1.10 - P.rock * 0.80 - BI.rockBias);
+        // Rocha: encosta + ruído
+        let rk = macroRk[i] + clamp(sl - 0.95, 0, 2) * 0.30 + (0.28 - hn) * 0.30 + (cluster(tx + 91, ty + 17, sd + 5) - 0.5) * 0.26;
+        const isRock = rk > (1.10 - P.rock * 0.80 - BI.rockBias);
 
-      // Areia na faixa da praia
-      let sn = macroSn[i] + (cluster(tx + 41, ty + 63, sd + 9) - 0.5) * 0.30;
-      const isSand = h < CONFIG.SEA_LEVEL + (1.85 + sn * 1.1) && sl < 1.45;
+        // Areia na faixa da praia
+        let sn = macroSn[i] + (cluster(tx + 41, ty + 63, sd + 9) - 0.5) * 0.30;
+        // limite de altura da areia passado pela mesma subida da orla da hidrologia (a terra baixa sobe
+        // até 1.5m, sumindo até 3m): sem isso a praia elevada virava terra e sobrava só uma faixa de areia
+        const sandLim = 1.85 + sn * 1.1;
+        const sandT = clamp(sandLim / 3.0, 0, 1);
+        const isSand = (h < CONFIG.SEA_LEVEL + sandLim + 1.5 * (1 - sandT * sandT * (3 - 2 * sandT)) && sl < 1.45)
+                    || wetT[i] + (cluster(tx + 17, ty + 29, sd + 11) - 0.5) * 0.30 > 0.42;
 
-      if (isSand) { mat[i] = M_SAND; gl[i] = Math.min(gl[i], 1); }
-      else if (isRock) { mat[i] = M_ROCK; gl[i] = Math.min(gl[i], 2); }
-      else mat[i] = M_DIRT;
+        if (isSand) { mat[i] = M_SAND; gl[i] = Math.min(gl[i], 1); }
+        else if (isRock) { mat[i] = M_ROCK; gl[i] = Math.min(gl[i], 2); }
+        else mat[i] = M_DIRT;
+      }
     }
-  }
+  })();
 
   /* ---- passo 2: base indexada por material ---- */
-  for (let ly = 0; ly < W; ly++) {
-    for (let lx = 0; lx < W; lx++) {
-      const i = ly * W + lx;
-      const tx = PX + lx, ty = PY + ly;
+  (() => {
+    for (let ly = 0; ly < W; ly++) {
+      for (let lx = 0; lx < W; lx++) {
+        const i = ly * W + lx;
+        const tx = PX + lx, ty = PY + ly;
 
-      // Preenchimento base de grama. Vem primeiro: o pixel que vira grama não precisa do padrão
-      // de terra/rocha/areia (antes ele era calculado e depois sobrescrito).
-      const g = gl[i];
-      if (g >= 2) {
-        const hole = cluster(tx + 23, ty + 37, sd + 13);
-        const holeThr = bio[i] === B_TEMP ? -1 : g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
-        if (hole > holeThr) {
-          mat[i] = M_GRASS;
-          const wide = macroWide[i];
-          const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
-          const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
-          const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
-          let v = 3 + off;
-          if (wide > 0.20) v += 1; else if (wide < -0.22) v -= 1;
+        // Preenchimento base de grama. Vem primeiro: o pixel que vira grama não precisa do padrão
+        // de terra/rocha/areia (antes ele era calculado e depois sobrescrito).
+        const g = gl[i];
+        if (g >= 2) {
+          const hole = cluster(tx + 23, ty + 37, sd + 13);
+          const holeThr = bio[i] === B_TEMP ? -1 : g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
+          if (hole > holeThr) {
+            mat[i] = M_GRASS;
+            const wide = macroWide[i];
+            const tone = cluster(tx * 0.35 + 3, ty * 0.35 + 9, sd + 17);
+            const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
+            const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * (P.greens >= 5 ? 2 : 1));
+            let v = 3 + off;
+            if (wide > 0.20) v += 1; else if (wide < -0.22) v -= 1;
+            idx[i] = clamp(v, 0, RL - 1);
+            continue;
+          }
+        }
+
+        const wx = tx / D, wy = ty / D;
+        const big = macroBig[i];
+        const bay = bayer(tx, ty);
+        const cl  = cluster(tx + 7, ty + 11, sd + 21);
+        const BI  = BIOMES[bio[i]];
+
+        if (mat[i] === M_ROCK) {
+          const cell = ROCK_CELL;
+          const c = cobble(tx, ty, cell, sd + 301);
+          let v = cobbleTone(c, bio[i] === B_TEMP ? 3 : 2, 0.71, -0.71);
+          if (big > 0.22) v += 1; else if (big < -0.22) v -= 1;
           idx[i] = clamp(v, 0, RL - 1);
-          continue;
-        }
-      }
+          // Rocha polar polvilhada: montinhos de neve assentados por cima da pedra
+          if (bio[i] === B_POLAR && cluster(tx * 0.5 + 3, ty * 0.5 + 7, sd + 72) * 0.8 + cl * 0.2 > 0.60) {
+            mat[i] = M_DIRT; idx[i] = cl > 0.5 ? 5 : 4;
+          }
 
-      const wx = tx / D, wy = ty / D;
-      const big = macroBig[i];
-      const bay = bayer(tx, ty);
-      const cl  = cluster(tx + 7, ty + 11, sd + 21);
-      const BI  = BIOMES[bio[i]];
+        } else if (mat[i] === M_SAND) {
+          // Praia do diorama: o alto da praia é creme claro e chapado; descendo para a água a areia
+          // escurece em degraus (bege, caramelo, laranja-queimado) numa faixa larga. As trocas de
+          // tom são pontilhadas (pixels soltos do tom vizinho), não linhas limpas.
+          const s1 = macroSn[i];
+          const dep = Math.max((CONFIG.SEA_LEVEL + 1.5 - hT[i]) / 1.9,       // 0 = alto da praia, 1 = linha d'água
+                               wetT[i] * 0.95 - 0.05);                        // beira de rio/lago no alto
+          const stip = (ihash(tx, ty, sd + 901) - 0.5) * 0.09;                  // pontilhado pixel a pixel
+          const e = dep + stip + (cl - 0.5) * 0.06 + (s1 - 0.5) * 0.18;
+          let v = e < 0.50 ? 3 : e < 0.82 ? 2 : e < 0.97 ? 1 : 0;   // faixa laranja junto da água mais estreita
+          if (v === 3 && e < 0.12 && s1 > 0.62) v = 4;                           // manchas mais claras no alto
+          if (v >= 3 && ihash(tx, ty, sd + 902) > 0.992) v = 2;                // grãos soltos no creme
+          idx[i] = clamp(v, 0, RL - 1);
 
-      if (mat[i] === M_ROCK) {
-        const cell = ROCK_CELL;
-        const c = cobble(tx, ty, cell, sd + 301);
-        let v = cobbleTone(c, bio[i] === B_TEMP ? 3 : 2, 0.71, -0.71);
-        if (big > 0.22) v += 1; else if (big < -0.22) v -= 1;
-        idx[i] = clamp(v, 0, RL - 1);
-        // Rocha polar polvilhada: montinhos de neve assentados por cima da pedra
-        if (bio[i] === B_POLAR && cluster(tx * 0.5 + 3, ty * 0.5 + 7, sd + 72) * 0.8 + cl * 0.2 > 0.60) {
-          mat[i] = M_DIRT; idx[i] = cl > 0.5 ? 5 : 4;
-        }
+        } else if (BI.ground === 'cinza') {
+          // Chão vulcânico: cinza marrom com grão fino (pixels claros e escuros soltos), manchas
+          // grandes mais escuras e pedrinhas de basalto
+          let v = 3;
+          const gr = ihash(tx, ty, sd + 941);
+          if (gr > 0.86) v = 4; else if (gr < 0.14) v = 2;
+          if (big < -0.18) v -= 1; else if (big > 0.30) v += 1;
+          idx[i] = clamp(v, 0, RL - 1);
+          if (cluster(tx * 0.6 + 5, ty * 0.6 + 9, sd + 942) > 0.88) { mat[i] = M_ROCK; idx[i] = cl > 0.5 ? 3 : 2; }
 
-      } else if (mat[i] === M_SAND) {
-        // Praia do diorama: o alto da praia é creme claro e chapado; descendo para a água a areia
-        // escurece em degraus (bege, caramelo, laranja-queimado) numa faixa larga. As trocas de
-        // tom são pontilhadas (pixels soltos do tom vizinho), não linhas limpas.
-        const s1 = macroSn[i];
-        const dep = (CONFIG.SEA_LEVEL + 1.5 - hT[i]) / 1.9;               // 0 = alto da praia, 1 = linha d'água
-        const stip = (ihash(tx, ty, sd + 901) - 0.5) * 0.09;                  // pontilhado pixel a pixel
-        const e = dep + stip + (cl - 0.5) * 0.06 + (s1 - 0.5) * 0.18;
-        let v = e < 0.50 ? 3 : e < 0.70 ? 2 : e < 0.97 ? 1 : 0;
-        if (v === 3 && e < 0.12 && s1 > 0.62) v = 4;                           // manchas mais claras no alto
-        if (v >= 3 && ihash(tx, ty, sd + 902) > 0.992) v = 2;                // grãos soltos no creme
-        idx[i] = clamp(v, 0, RL - 1);
+        } else if (BI.ground === 'neve') {
+          const wa = (P.seed % 628) / 100;
+          const rx =  wx * Math.cos(wa) + wy * Math.sin(wa);
+          const ry = -wx * Math.sin(wa) + wy * Math.cos(wa);
+          // Neve do diorama de inverno: quase toda branco puro; as depressões e o pé dos montes
+          // de vento ganham sombra azul-clara com a borda pontilhada (pixels soltos), e só o fundo
+          // das sombras chega no azul médio.
+          const drift = per.fbm(rx * 0.12 + 3.7, ry * 0.45 + 9.1, 2);          // montes de vento largos
+          const e = big * 0.60 + drift * 0.32
+                  + (ihash(tx, ty, sd + 911) - 0.5) * 0.16 + (cl - 0.5) * 0.06;
+          let v = e > -0.10 ? 5 : e > -0.30 ? 4 : e > -0.42 ? 3 : 2;
+          idx[i] = clamp(v, 0, RL - 1);
 
-      } else if (BI.ground === 'cinza') {
-        // Chão vulcânico: cinza marrom com grão fino (pixels claros e escuros soltos), manchas
-        // grandes mais escuras e pedrinhas de basalto
-        let v = 3;
-        const gr = ihash(tx, ty, sd + 941);
-        if (gr > 0.86) v = 4; else if (gr < 0.14) v = 2;
-        if (big < -0.18) v -= 1; else if (big > 0.30) v += 1;
-        idx[i] = clamp(v, 0, RL - 1);
-        if (cluster(tx * 0.6 + 5, ty * 0.6 + 9, sd + 942) > 0.88) { mat[i] = M_ROCK; idx[i] = cl > 0.5 ? 3 : 2; }
+        } else if (BI.ground === 'dunas') {
+          // Areia (rampa de duna), não terra: grandes dunas sombreadas + ondulações finas de vento
+          // perpendiculares a uma direção de vento fixa por seed.
+          mat[i] = M_SAND;
+          const wa = (P.seed % 628) / 100 + 1.3;
+          const rx =  wx * Math.cos(wa) + wy * Math.sin(wa);
+          const ry = -wx * Math.sin(wa) + wy * Math.cos(wa);
+          const dune = per.fbm(rx * 0.06 + 17.3, ry * 0.06 + 3.9, 2);
+          const ripple = Math.sin(rx * 2.4 + per.fbm(rx * 0.30 + 5.1, ry * 0.30 + 9.7, 2) * 3.0);
+          let v = 3;
+          // Dunas chapadas: manchas grandes e faixas de ondulação limpas (sem pontilhado)
+          if (dune > 0.16) v += 1;
+          else if (dune < -0.16) v -= 1;
+          if (ripple > 0.82) v += 1;
+          else if (ripple < -0.86) v -= 1;
+          idx[i] = clamp(v, 0, RL - 1);
 
-      } else if (BI.ground === 'neve') {
-        const wa = (P.seed % 628) / 100;
-        const rx =  wx * Math.cos(wa) + wy * Math.sin(wa);
-        const ry = -wx * Math.sin(wa) + wy * Math.cos(wa);
-        // Neve do diorama de inverno: quase toda branco puro; as depressões e o pé dos montes
-        // de vento ganham sombra azul-clara com a borda pontilhada (pixels soltos), e só o fundo
-        // das sombras chega no azul médio.
-        const drift = per.fbm(rx * 0.12 + 3.7, ry * 0.45 + 9.1, 2);          // montes de vento largos
-        const e = big * 0.60 + drift * 0.32
-                + (ihash(tx, ty, sd + 911) - 0.5) * 0.16 + (cl - 0.5) * 0.06;
-        let v = e > -0.10 ? 5 : e > -0.30 ? 4 : e > -0.42 ? 3 : 2;
-        idx[i] = clamp(v, 0, RL - 1);
+        } else {
+          if (bio[i] === B_TEMP) {
+            // Terra do diorama: ocre liso, variação só em manchas grandes e poucos sulcos marcados
+            let v = 4;
+            if (big + bay * 0.10 > 0.30) v = 5;
+            else if (big + bay * 0.10 < -0.28) v = 3;
+            if (macroCh1[i] + (cluster(tx, ty, sd + 27) - 0.5) * 0.05 > 0.93) v -= 1;
+            idx[i] = v;
+            continue;
+          }
+          // canais de erosão na terra (alimentados por interpolação bilinear ultra-rápida)
+          const ch1 = macroCh1[i];
+          const chL = macroChL[i];
+          const dith = (cluster(tx, ty, sd + 27) - 0.5) * 0.085;
 
-      } else if (BI.ground === 'dunas') {
-        // Areia (rampa de duna), não terra: grandes dunas sombreadas + ondulações finas de vento
-        // perpendiculares a uma direção de vento fixa por seed.
-        mat[i] = M_SAND;
-        const wa = (P.seed % 628) / 100 + 1.3;
-        const rx =  wx * Math.cos(wa) + wy * Math.sin(wa);
-        const ry = -wx * Math.sin(wa) + wy * Math.cos(wa);
-        const dune = per.fbm(rx * 0.06 + 17.3, ry * 0.06 + 3.9, 2);
-        const ripple = Math.sin(rx * 2.4 + per.fbm(rx * 0.30 + 5.1, ry * 0.30 + 9.7, 2) * 3.0);
-        let v = 3;
-        // Dunas chapadas: manchas grandes e faixas de ondulação limpas (sem pontilhado)
-        if (dune > 0.16) v += 1;
-        else if (dune < -0.16) v -= 1;
-        if (ripple > 0.82) v += 1;
-        else if (ripple < -0.86) v -= 1;
-        idx[i] = clamp(v, 0, RL - 1);
-
-      } else {
-        if (bio[i] === B_TEMP) {
-          // Terra do diorama: ocre liso, variação só em manchas grandes e poucos sulcos marcados
           let v = 4;
-          if (big + bay * 0.10 > 0.30) v = 5;
-          else if (big + bay * 0.10 < -0.28) v = 3;
-          if (macroCh1[i] + (cluster(tx, ty, sd + 27) - 0.5) * 0.05 > 0.93) v -= 1;
-          idx[i] = v;
-          continue;
+          if (big + bay * 0.16 >  0.24) v += 1;
+          else if (big + bay * 0.16 < -0.22) v -= 1;
+          const c1 = ch1 + dith;
+          if (c1 > 0.905)      v -= 2;
+          else if (c1 > 0.815) v -= 1;
+          else if (chL > 0.86) v += 1;
+          else {
+            const ch2 = cluster(tx * 2.1 + 31, ty * 2.1 + 17, sd + 51);
+            if (ch2 > 0.94) v -= 1;
+          }
+          idx[i] = clamp(v, 0, RL - 1);
         }
-        // canais de erosão na terra (alimentados por interpolação bilinear ultra-rápida)
-        const ch1 = macroCh1[i];
-        const chL = macroChL[i];
-        const dith = (cluster(tx, ty, sd + 27) - 0.5) * 0.085;
 
-        let v = 4;
-        if (big + bay * 0.16 >  0.24) v += 1;
-        else if (big + bay * 0.16 < -0.22) v -= 1;
-        const c1 = ch1 + dith;
-        if (c1 > 0.905)      v -= 2;
-        else if (c1 > 0.815) v -= 1;
-        else if (chL > 0.86) v += 1;
-        else {
-          const ch2 = cluster(tx * 2.1 + 31, ty * 2.1 + 17, sd + 51);
-          if (ch2 > 0.94) v -= 1;
-        }
-        idx[i] = clamp(v, 0, RL - 1);
       }
-
     }
-  }
+  })();
 
   /* Escrita em coordenada global */
   const put = (TX: number, TY: number, m: number, v: number) => {
@@ -1265,287 +1304,303 @@ export function genChunkTexture(
 
   /* ---- passo 3: detalhes da terra ---- */
   const dstep = Math.max(3, 8 - Math.round(P.dirt * 3));
-  for (let GY = gridStart(PY - dstep, dstep); GY < PY + W + dstep; GY += dstep) {
-    for (let GX = gridStart(PX - dstep, dstep); GX < PX + W + dstep; GX += dstep) {
-      const x = GX + ((ihash(GX, GY, sd + 61) * dstep) | 0);
-      const y = GY + ((ihash(GX, GY, sd + 62) * dstep) | 0);
-      const lx = x - PX, ly = y - PY;
-      if (lx < -8 || ly < -8 || lx >= W + 8 || ly >= W + 8) continue;
-      const i = at(x, y);
-      if (lx >= 0 && ly >= 0 && lx < W && ly < W && (mat[i] === M_GRASS || gl[i] >= 2)) continue;
-      const wx = x / D, wy = y / D;
-      const clump = per.fbm(wx * 0.5 + 31, wy * 0.5 + 17, 2) * 0.5 + 0.5;
-      if (ihash(x, y, sd + 63) > P.dirt * (0.25 + 1.5 * clump) * 0.58) continue;
-      // Chão do diorama limpo: poucos detalhes escuros em qualquer bioma (temperado ainda menos)
-      if (ihash(x, y, sd + 60) > (bio[i] === B_TEMP ? 0.10 : 0.18)) continue;
+  (() => {
+    for (let GY = gridStart(PY - dstep, dstep); GY < PY + W + dstep; GY += dstep) {
+      for (let GX = gridStart(PX - dstep, dstep); GX < PX + W + dstep; GX += dstep) {
+        const x = GX + ((ihash(GX, GY, sd + 61) * dstep) | 0);
+        const y = GY + ((ihash(GX, GY, sd + 62) * dstep) | 0);
+        const lx = x - PX, ly = y - PY;
+        if (lx < -8 || ly < -8 || lx >= W + 8 || ly >= W + 8) continue;
+        const i = at(x, y);
+        if (lx >= 0 && ly >= 0 && lx < W && ly < W && (mat[i] === M_GRASS || gl[i] >= 2)) continue;
+        const wx = x / D, wy = y / D;
+        const clump = per.fbm(wx * 0.5 + 31, wy * 0.5 + 17, 2) * 0.5 + 0.5;
+        if (ihash(x, y, sd + 63) > P.dirt * (0.25 + 1.5 * clump) * 0.58) continue;
+        // Chão do diorama limpo: poucos detalhes escuros em qualquer bioma (temperado ainda menos)
+        if (ihash(x, y, sd + 60) > (bio[i] === B_TEMP ? 0.10 : 0.18)) continue;
 
-      const kind = ihash(x, y, sd + 64);
-      if (kind < 0.40) {
-        const st = PEBBLES[(ihash(x, y, sd + 65) * PEBBLES.length) | 0];
-        stamp(st, x, y, M_ROCK, 2 + (ihash(x, y, sd + 66) > 0.6 ? 1 : 0), ihash(x, y, sd + 67) > 0.5);
-      } else if (kind < 0.70) {
-        let cxp = x, cyp = y;
-        const len = 3 + ((ihash(x, y, sd + 68) * 4) | 0);
-        const dirx = ihash(x, y, sd + 69) > 0.5 ? 1 : -1;
-        for (let k = 0; k < len; k++) {
-          put(cxp, cyp, mat[at(cxp, cyp)] === M_SAND ? M_SAND : M_DIRT, 1);
-          cxp += dirx; if (ihash(cxp, cyp, sd + 70) > 0.55) cyp += ihash(cxp, cyp, sd + 71) > 0.5 ? 1 : -1;
+        const kind = ihash(x, y, sd + 64);
+        if (kind < 0.40) {
+          const st = PEBBLES[(ihash(x, y, sd + 65) * PEBBLES.length) | 0];
+          stamp(st, x, y, M_ROCK, 2 + (ihash(x, y, sd + 66) > 0.6 ? 1 : 0), ihash(x, y, sd + 67) > 0.5);
+        } else if (kind < 0.70) {
+          let cxp = x, cyp = y;
+          const len = 3 + ((ihash(x, y, sd + 68) * 4) | 0);
+          const dirx = ihash(x, y, sd + 69) > 0.5 ? 1 : -1;
+          for (let k = 0; k < len; k++) {
+            put(cxp, cyp, mat[at(cxp, cyp)] === M_SAND ? M_SAND : M_DIRT, 1);
+            cxp += dirx; if (ihash(cxp, cyp, sd + 70) > 0.55) cyp += ihash(cxp, cyp, sd + 71) > 0.5 ? 1 : -1;
+          }
+        } else if (kind < 0.86) {
+          const n = 2 + ((ihash(x, y, sd + 72) * 4) | 0);
+          for (let k = 0; k < n; k++) {
+            const ox = ((ihash(x + k, y, sd + 73) * 5) | 0) - 2, oy = ((ihash(x, y + k, sd + 74) * 4) | 0) - 1;
+            const j = at(x + ox, y + oy);
+            put(x + ox, y + oy, mat[j], idx[j] + (ihash(x + k, y + k, sd + 75) > 0.5 ? 1 : -1));
+          }
+        } else {
+          const w2 = 2 + ((ihash(x, y, sd + 76) * 3) | 0);
+          const streakMat = mat[at(x, y)] === M_SAND ? M_SAND : M_DIRT;
+          for (let k = 0; k < w2; k++) put(x + k, y + (k === 1 ? 1 : 0), streakMat, 1);
         }
-      } else if (kind < 0.86) {
-        const n = 2 + ((ihash(x, y, sd + 72) * 4) | 0);
-        for (let k = 0; k < n; k++) {
-          const ox = ((ihash(x + k, y, sd + 73) * 5) | 0) - 2, oy = ((ihash(x, y + k, sd + 74) * 4) | 0) - 1;
-          const j = at(x + ox, y + oy);
-          put(x + ox, y + oy, mat[j], idx[j] + (ihash(x + k, y + k, sd + 75) > 0.5 ? 1 : -1));
-        }
-      } else {
-        const w2 = 2 + ((ihash(x, y, sd + 76) * 3) | 0);
-        const streakMat = mat[at(x, y)] === M_SAND ? M_SAND : M_DIRT;
-        for (let k = 0; k < w2; k++) put(x + k, y + (k === 1 ? 1 : 0), streakMat, 1);
       }
     }
-  }
+  })();
 
   /* ---- passo 4: vegetação ---- */
   const sp = Math.max(2, P.clusterSize);
 
   // Moitas graúdas
   const bstep = Math.max(9, Math.round(D * 1.5));
-  for (let GY = gridStart(PY - bstep, bstep); GY < PY + W + bstep; GY += bstep) {
-    for (let GX = gridStart(PX - bstep, bstep); GX < PX + W + bstep; GX += bstep) {
-      const x = GX + ((ihash(GX, GY, sd + 201) * bstep) | 0);
-      const y = GY + ((ihash(GX, GY, sd + 202) * bstep) | 0);
-      const c0 = at(x, y);
-      if (x - PX < -10 || y - PY < -10 || x - PX >= W + 10 || y - PY >= W + 10) continue;
-      if (gl[c0] < 3) continue;
-      if (!BIOMES[bio[c0]].bushes) continue;
-      if (ihash(x, y, sd + 203) > 0.42 * P.tuft) continue;
-      const r  = 2.2 + ihash(x, y, sd + 204) * 2.6;
-      const ph2 = ihash(x, y, sd + 205) * 6.283;
-      const R  = Math.ceil(r) + 2;
-      for (let oy = -R; oy <= R; oy++) for (let ox = -R; ox <= R; ox++) {
-        const lx = x + ox - PX, ly = y + oy - PY;
-        if (lx < 0 || ly < 0 || lx >= W || ly >= W) continue;
-        const j = ly * W + lx;
-        if (gl[j] < 2) continue;
-        const a  = Math.atan2(oy, ox);
-        const rr = r * (1 + 0.24 * Math.sin(a * 3 + ph2) + 0.12 * Math.sin(a * 5 - ph2 * 1.6));
-        const d  = Math.sqrt(ox * ox + oy * oy);
-        if (d > rr) continue;
-        const edge = rr - d;
-        let v = 2;
-        if (edge < 1.15 && oy <= 0) v = 4;
-        else if (edge < 1.35) v = 1;
-        else if (oy < -r * 0.3) v = 3;
-        mat[j] = M_GRASS; idx[j] = clamp(v, 0, RL - 1);
-      }
-    }
-  }
-
-  const ptuft = [0.00, 0.30, 0.55, 0.80, 0.97];
-  for (let GY = gridStart(PY - sp, sp); GY < PY + W + sp; GY += sp) {
-    for (let GX = gridStart(PX - sp, sp); GX < PX + W + sp; GX += sp) {
-      const x = GX + ((ihash(GX, GY, sd + 81) * sp) | 0), y = GY + ((ihash(GX, GY, sd + 82) * sp) | 0);
-      if (x - PX < -8 || y - PY < -8 || x - PX >= W + 8 || y - PY >= W + 8) continue;
-      const i = at(x, y);
-
-      const clump = macroBig[i] * 0.5 + 0.5;
-      const lvl = gl[i];
-      let spill = false, ox = 0, oy = 0;
-
-      if (lvl === 0) {
-        const near = 0.475 - gv[i];
-        if (near < 0 || near > 0.13 * P.spill) continue;
-        spill = true;
-        const gxv = gv[at(x + 2, y)] - gv[at(x - 2, y)];
-        const gyv = gv[at(x, y + 2)] - gv[at(x, y - 2)];
-        const len = Math.hypot(gxv, gyv) + 1e-5;
-        const reach = 1 + ihash(x, y, sd + 94) * 3;
-        ox = Math.round(-gxv / len * reach);
-        oy = Math.round(-gyv / len * reach);
-      }
-
-      // Temperado: miolo da grama liso - só os tufos que escorrem pela borda (dão o recorte irregular)
-      if (bio[i] === B_TEMP && !spill) continue;
-      const BI = BIOMES[bio[i]];
-      let p = (spill ? 0.46 * P.spill : ptuft[lvl]) * (0.30 + 1.45 * clump) * P.tuft * BI.vegDens;
-      if (mat[i] === M_ROCK) p *= 0.45;
-      if (mat[i] === M_SAND) p *= 0.30;
-      if (ihash(x, y, sd + 85) > p) continue;
-
-      let want = spill ? (ihash(x, y, sd + 95) > 0.62 ? 2 : 1)
-                       : clamp(Math.round(lvl * 0.9 + (P.clusterSize - 4) * 0.5 + (ihash(x, y, sd + 86) > 0.7 ? 1 : 0)), 1, 4);
-      if (BI.veg === 'alpino')   want = Math.min(want, 2);
-      if (BI.veg === 'conifera') want = clamp(want + 1, 2, 3);
-      const pool = BI.veg === 'conifera' ? CONIF
-                 : (spill && ihash(x, y, sd + 87) > 0.45 ? BLADES : TUFTS);
-      const cands = pool.filter(s => s.c === want);
-      const set = cands.length ? cands : pool;
-      const st = set[(ihash(x, y, sd + 88) * set.length) | 0];
-
-      const tone = cluster(x * 0.6 + 13, y * 0.6 + 5, sd + 18);
-      const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
-      const spread = P.greens >= 5 ? 3 : 2;
-      const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * spread);
-      let base = 3 + off;
-      if (spill) base = clamp(base, 2, RL - 2);
-
-      const sx = x + ox - ((st.w / 2) | 0), sy2 = y + oy - ((st.h / 2) | 0);
-      stamp(st, sx, sy2, M_GRASS, clamp(base, 0, RL - 1), ihash(x, y, sd + 89) > 0.5);
-
-      if (want >= 2) {
-        for (let c = 0; c < st.w; c++) {
-          if (ihash(x + c, y, sd + 90) > 0.55) continue;
-          const lxx = sx + c - PX, lyy = sy2 + st.h - PY;
-          if (lxx < 0 || lyy < 0 || lxx >= W || lyy >= W) continue;
-          const j = lyy * W + lxx;
-          idx[j] = clamp(idx[j] - 1, 0, RL - 1);
+  (() => {
+    for (let GY = gridStart(PY - bstep, bstep); GY < PY + W + bstep; GY += bstep) {
+      for (let GX = gridStart(PX - bstep, bstep); GX < PX + W + bstep; GX += bstep) {
+        const x = GX + ((ihash(GX, GY, sd + 201) * bstep) | 0);
+        const y = GY + ((ihash(GX, GY, sd + 202) * bstep) | 0);
+        const c0 = at(x, y);
+        if (x - PX < -10 || y - PY < -10 || x - PX >= W + 10 || y - PY >= W + 10) continue;
+        if (gl[c0] < 3) continue;
+        if (!BIOMES[bio[c0]].bushes) continue;
+        if (ihash(x, y, sd + 203) > 0.42 * P.tuft) continue;
+        const r  = 2.2 + ihash(x, y, sd + 204) * 2.6;
+        const ph2 = ihash(x, y, sd + 205) * 6.283;
+        const R  = Math.ceil(r) + 2;
+        for (let oy = -R; oy <= R; oy++) for (let ox = -R; ox <= R; ox++) {
+          const lx = x + ox - PX, ly = y + oy - PY;
+          if (lx < 0 || ly < 0 || lx >= W || ly >= W) continue;
+          const j = ly * W + lx;
+          if (gl[j] < 2) continue;
+          const a  = Math.atan2(oy, ox);
+          const rr = r * (1 + 0.24 * Math.sin(a * 3 + ph2) + 0.12 * Math.sin(a * 5 - ph2 * 1.6));
+          const d  = Math.sqrt(ox * ox + oy * oy);
+          if (d > rr) continue;
+          const edge = rr - d;
+          let v = 2;
+          if (edge < 1.15 && oy <= 0) v = 4;
+          else if (edge < 1.35) v = 1;
+          else if (oy < -r * 0.3) v = 3;
+          mat[j] = M_GRASS; idx[j] = clamp(v, 0, RL - 1);
         }
       }
-      if (lvl === 4 && ihash(x, y, sd + 91) > 0.975) put(x, y, M_ACC, (ihash(x, y, sd + 92) * 3) | 0);
     }
-  }
+  })();
+
+  const ptuft = [0.00, 0.30, 0.55, 0.80, 0.97];
+  (() => {
+    for (let GY = gridStart(PY - sp, sp); GY < PY + W + sp; GY += sp) {
+      for (let GX = gridStart(PX - sp, sp); GX < PX + W + sp; GX += sp) {
+        const x = GX + ((ihash(GX, GY, sd + 81) * sp) | 0), y = GY + ((ihash(GX, GY, sd + 82) * sp) | 0);
+        if (x - PX < -8 || y - PY < -8 || x - PX >= W + 8 || y - PY >= W + 8) continue;
+        const i = at(x, y);
+
+        const clump = macroBig[i] * 0.5 + 0.5;
+        const lvl = gl[i];
+        let spill = false, ox = 0, oy = 0;
+
+        if (lvl === 0) {
+          const near = 0.475 - gv[i];
+          if (near < 0 || near > 0.13 * P.spill) continue;
+          spill = true;
+          const gxv = gv[at(x + 2, y)] - gv[at(x - 2, y)];
+          const gyv = gv[at(x, y + 2)] - gv[at(x, y - 2)];
+          const len = Math.hypot(gxv, gyv) + 1e-5;
+          const reach = 1 + ihash(x, y, sd + 94) * 3;
+          ox = Math.round(-gxv / len * reach);
+          oy = Math.round(-gyv / len * reach);
+        }
+
+        // Temperado: miolo da grama liso - só os tufos que escorrem pela borda (dão o recorte irregular)
+        if (bio[i] === B_TEMP && !spill) continue;
+        const BI = BIOMES[bio[i]];
+        let p = (spill ? 0.46 * P.spill : ptuft[lvl]) * (0.30 + 1.45 * clump) * P.tuft * BI.vegDens;
+        if (mat[i] === M_ROCK) p *= 0.45;
+        if (mat[i] === M_SAND) p *= 0.30;
+        if (ihash(x, y, sd + 85) > p) continue;
+
+        let want = spill ? (ihash(x, y, sd + 95) > 0.62 ? 2 : 1)
+                         : clamp(Math.round(lvl * 0.9 + (P.clusterSize - 4) * 0.5 + (ihash(x, y, sd + 86) > 0.7 ? 1 : 0)), 1, 4);
+        if (BI.veg === 'alpino')   want = Math.min(want, 2);
+        if (BI.veg === 'conifera') want = clamp(want + 1, 2, 3);
+        const pool = BI.veg === 'conifera' ? CONIF
+                   : (spill && ihash(x, y, sd + 87) > 0.45 ? BLADES : TUFTS);
+        const cands = pool.filter(s => s.c === want);
+        const set = cands.length ? cands : pool;
+        const st = set[(ihash(x, y, sd + 88) * set.length) | 0];
+
+        const tone = cluster(x * 0.6 + 13, y * 0.6 + 5, sd + 18);
+        const q = Math.min(P.greens - 1, Math.floor(tone * P.greens));
+        const spread = P.greens >= 5 ? 3 : 2;
+        const off = Math.round((q / Math.max(1, P.greens - 1) - 0.5) * spread);
+        let base = 3 + off;
+        if (spill) base = clamp(base, 2, RL - 2);
+
+        const sx = x + ox - ((st.w / 2) | 0), sy2 = y + oy - ((st.h / 2) | 0);
+        stamp(st, sx, sy2, M_GRASS, clamp(base, 0, RL - 1), ihash(x, y, sd + 89) > 0.5);
+
+        if (want >= 2) {
+          for (let c = 0; c < st.w; c++) {
+            if (ihash(x + c, y, sd + 90) > 0.55) continue;
+            const lxx = sx + c - PX, lyy = sy2 + st.h - PY;
+            if (lxx < 0 || lyy < 0 || lxx >= W || lyy >= W) continue;
+            const j = lyy * W + lxx;
+            idx[j] = clamp(idx[j] - 1, 0, RL - 1);
+          }
+        }
+        if (lvl === 4 && ihash(x, y, sd + 91) > 0.975) put(x, y, M_ACC, (ihash(x, y, sd + 92) * 3) | 0);
+      }
+    }
+  })();
 
   let grassDistMap: Uint8Array | null = null; // distância até a borda da grama (passo 4a), usada nos tufos 3D
   /* ---- passo 4a: grama temperada - miolo liso e faixa escura na borda ----
      Distância (Chebyshev, até 4px) de cada pixel de grama até o que não é grama; perto da borda
      a grama escurece em degraus, no miolo fica o verde médio quase sem textura. */
-  {
-    // Mesmo acabamento para a vegetação rasteira de todos os biomas (cada um com sua paleta)
-    const isTempGrass = (j: number) => mat[j] === M_GRASS;
-    const dist = new Uint8Array(W * W);
-    for (let i = 0; i < W * W; i++) dist[i] = isTempGrass(i) ? 6 : 0;
-    // chamfer em dois sentidos (8 vizinhos)
-    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-      const i = ly * W + lx; if (!dist[i]) continue;
-      let d = dist[i];
-      if (lx > 0) d = Math.min(d, dist[i - 1] + 1);
-      if (ly > 0) { d = Math.min(d, dist[i - W] + 1); if (lx > 0) d = Math.min(d, dist[i - W - 1] + 1); if (lx < W - 1) d = Math.min(d, dist[i - W + 1] + 1); }
-      dist[i] = d;
-    }
-    for (let ly = W - 1; ly >= 0; ly--) for (let lx = W - 1; lx >= 0; lx--) {
-      const i = ly * W + lx; if (!dist[i]) continue;
-      let d = dist[i];
-      if (lx < W - 1) d = Math.min(d, dist[i + 1] + 1);
-      if (ly < W - 1) { d = Math.min(d, dist[i + W] + 1); if (lx < W - 1) d = Math.min(d, dist[i + W + 1] + 1); if (lx > 0) d = Math.min(d, dist[i + W - 1] + 1); }
-      dist[i] = d;
-    }
-    grassDistMap = dist;
-    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-      const i = ly * W + lx;
-      if (!isTempGrass(i)) continue;
-      const tx = PX + lx, ty = PY + ly;
-      const d = dist[i];
-      // Largura da faixa escura varia ao longo da borda (1 a 4px), em blocos de ~2px
-      // Largura da faixa escura: quase sempre 1-2px, às vezes 3 (como na referência)
-      const bw = cluster(tx * 0.45 + 7, ty * 0.45 + 3, sd + 530);
-      // 0 em alguns trechos: ali o verde de dentro chega até a beirada
-      const band = bw < 0.22 ? 0 : 1 + (bw > 0.55 ? 1 : 0) + (bw > 0.88 ? 1 : 0);
-      const r = cluster(tx + 13, ty + 57, sd + 520);
-      if (gl[i] < 2) {
-        // Tufinho solto sobre a terra: verde (o contorno escuro fica na terra em volta, passo 4b)
-        idx[i] = ihash(tx, ty, sd + 535) > 0.6 ? 4 : r > 0.4 ? 3 : 2;
-        continue;
+  (() => {
+    {
+      // Mesmo acabamento para a vegetação rasteira de todos os biomas (cada um com sua paleta)
+      const isTempGrass = (j: number) => mat[j] === M_GRASS;
+      const dist = new Uint8Array(W * W);
+      for (let i = 0; i < W * W; i++) dist[i] = isTempGrass(i) ? 6 : 0;
+      // chamfer em dois sentidos (8 vizinhos)
+      for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+        const i = ly * W + lx; if (!dist[i]) continue;
+        let d = dist[i];
+        if (lx > 0) d = Math.min(d, dist[i - 1] + 1);
+        if (ly > 0) { d = Math.min(d, dist[i - W] + 1); if (lx > 0) d = Math.min(d, dist[i - W - 1] + 1); if (lx < W - 1) d = Math.min(d, dist[i - W + 1] + 1); }
+        dist[i] = d;
       }
-      // O verde claro de dentro invade a faixa escura em línguas de 2-3px que chegam até a beirada
-      const inv = cluster(tx * 0.5 + 91, ty * 0.5 + 33, sd + 541) * 0.8 + r * 0.2;
-      const invade = inv > (d === 1 ? 0.54 : 0.44);
-      if (d <= band && invade) {
-        idx[i] = cluster(tx + 5, ty + 71, sd + 542) > 0.62 ? 4 : 3;
-        continue;
+      for (let ly = W - 1; ly >= 0; ly--) for (let lx = W - 1; lx >= 0; lx--) {
+        const i = ly * W + lx; if (!dist[i]) continue;
+        let d = dist[i];
+        if (lx < W - 1) d = Math.min(d, dist[i + 1] + 1);
+        if (ly < W - 1) { d = Math.min(d, dist[i + W] + 1); if (lx < W - 1) d = Math.min(d, dist[i + W + 1] + 1); if (lx > 0) d = Math.min(d, dist[i + W - 1] + 1); }
+        dist[i] = d;
       }
-      if (d <= band) {
-        // Faixa irregular: azul-petróleo escuro, verde escuro e verde-azulado (quase preto só às vezes)
-        if (d === 1) idx[i] = r < 0.28 ? 0 : r < 0.66 ? 1 : 2;
-        else idx[i] = r < 0.14 ? 0 : r < 0.55 ? 1 : 2;
-      } else {
-        // Miolo: verde vivo com manchinhas verde-azuladas, realces amarelados e pontos escuros
-        // Ruído em bloco + um pouco por pixel: grupinhos orgânicos, sem quadrados alinhados
-        const a = cluster(tx + 31, ty + 17, sd + 531) * 0.75 + ihash(tx, ty, sd + 533) * 0.25;
-        const h = cluster(tx + 71, ty + 23, sd + 532) * 0.70 + ihash(tx, ty, sd + 534) * 0.30;
-        let v = 3;
-        if (a < 0.30) v = 2;
-        if (h > 0.76) v = 4;
-        else if (h < 0.10) v = 1;
-        else if (d === band + 1 && h < 0.20) v = 2; // a faixa escura se desfaz para dentro
-        idx[i] = v;
+      grassDistMap = dist;
+      for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+        const i = ly * W + lx;
+        if (!isTempGrass(i)) continue;
+        const tx = PX + lx, ty = PY + ly;
+        const d = dist[i];
+        // Largura da faixa escura varia ao longo da borda (1 a 4px), em blocos de ~2px
+        // Largura da faixa escura: quase sempre 1-2px, às vezes 3 (como na referência)
+        const bw = cluster(tx * 0.45 + 7, ty * 0.45 + 3, sd + 530);
+        // 0 em alguns trechos: ali o verde de dentro chega até a beirada
+        const band = bw < 0.22 ? 0 : 1 + (bw > 0.55 ? 1 : 0) + (bw > 0.88 ? 1 : 0);
+        const r = cluster(tx + 13, ty + 57, sd + 520);
+        if (gl[i] < 2) {
+          // Tufinho solto sobre a terra: verde (o contorno escuro fica na terra em volta, passo 4b)
+          idx[i] = ihash(tx, ty, sd + 535) > 0.6 ? 4 : r > 0.4 ? 3 : 2;
+          continue;
+        }
+        // O verde claro de dentro invade a faixa escura em línguas de 2-3px que chegam até a beirada
+        const inv = cluster(tx * 0.5 + 91, ty * 0.5 + 33, sd + 541) * 0.8 + r * 0.2;
+        const invade = inv > (d === 1 ? 0.54 : 0.44);
+        if (d <= band && invade) {
+          idx[i] = cluster(tx + 5, ty + 71, sd + 542) > 0.62 ? 4 : 3;
+          continue;
+        }
+        if (d <= band) {
+          // Faixa irregular: azul-petróleo escuro, verde escuro e verde-azulado (quase preto só às vezes)
+          if (d === 1) idx[i] = r < 0.28 ? 0 : r < 0.66 ? 1 : 2;
+          else idx[i] = r < 0.14 ? 0 : r < 0.55 ? 1 : 2;
+        } else {
+          // Miolo: verde vivo com manchinhas verde-azuladas, realces amarelados e pontos escuros
+          // Ruído em bloco + um pouco por pixel: grupinhos orgânicos, sem quadrados alinhados
+          const a = cluster(tx + 31, ty + 17, sd + 531) * 0.75 + ihash(tx, ty, sd + 533) * 0.25;
+          const h = cluster(tx + 71, ty + 23, sd + 532) * 0.70 + ihash(tx, ty, sd + 534) * 0.30;
+          let v = 3;
+          if (a < 0.30) v = 2;
+          if (h > 0.76) v = 4;
+          else if (h < 0.10) v = 1;
+          else if (d === band + 1 && h < 0.20) v = 2; // a faixa escura se desfaz para dentro
+          idx[i] = v;
+        }
       }
     }
-  }
+  })();
 
   /* ---- passo 4b: sombra da manta de grama sobre a terra ---- */
-  for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-    const i = ly * W + lx;
-    if (mat[i] === M_GRASS || mat[i] === M_ACC) continue;
-    const up = ly > 0   && mat[(ly - 1) * W + lx] === M_GRASS;
-    const rt = lx < W - 1 && mat[ly * W + lx + 1] === M_GRASS;
-    const ramp = RAMPS[bio[i]][mat[i]];
-    {
-      // Contorno do diorama: a mancha de grama "senta" sobre a terra com uma borda escura -
-      // quase preta logo abaixo dela e marrom-avermelhada nas laterais. Só em volta das manchas
-      // (gl >= 2); tufinhos soltos não ganham anel (viravam losangos escuros espalhados).
-      const patch = (j: number) => mat[j] === M_GRASS && gl[j] >= 2;
-      const pUp = ly > 0 && patch((ly - 1) * W + lx);
-      const pRt = lx < W - 1 && patch(ly * W + lx + 1);
-      const pLf = lx > 0 && patch(ly * W + lx - 1);
-      const pDn = ly < W - 1 && patch((ly + 1) * W + lx);
-      const oc = cluster(PX + lx + 41, PY + ly + 19, sd + 540);
-      // Onde a grama da beirada é verde claro (invasão), o contorno do lado da terra some
-      const bright = (j: number) => mat[j] === M_GRASS && idx[j] >= 3;
-      const upJ = (ly - 1) * W + lx;
-      if (pUp) { if (!bright(upJ) && oc > 0.18) idx[i] = oc < 0.62 ? 0 : 1; continue; }
-      if (pRt || pLf || pDn) {
-        const litSide = (pRt && bright(i + 1)) || (pLf && bright(i - 1)) || (pDn && bright(i + W));
-        if (!litSide && oc > 0.35) idx[i] = Math.min(idx[i], oc < 0.7 ? 1 : 2);
-        continue;
+  (() => {
+    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+      const i = ly * W + lx;
+      if (mat[i] === M_GRASS || mat[i] === M_ACC) continue;
+      const up = ly > 0   && mat[(ly - 1) * W + lx] === M_GRASS;
+      const rt = lx < W - 1 && mat[ly * W + lx + 1] === M_GRASS;
+      const ramp = RAMPS[bio[i]][mat[i]];
+      {
+        // Contorno do diorama: a mancha de grama "senta" sobre a terra com uma borda escura -
+        // quase preta logo abaixo dela e marrom-avermelhada nas laterais. Só em volta das manchas
+        // (gl >= 2); tufinhos soltos não ganham anel (viravam losangos escuros espalhados).
+        const patch = (j: number) => mat[j] === M_GRASS && gl[j] >= 2;
+        const pUp = ly > 0 && patch((ly - 1) * W + lx);
+        const pRt = lx < W - 1 && patch(ly * W + lx + 1);
+        const pLf = lx > 0 && patch(ly * W + lx - 1);
+        const pDn = ly < W - 1 && patch((ly + 1) * W + lx);
+        const oc = cluster(PX + lx + 41, PY + ly + 19, sd + 540);
+        // Onde a grama da beirada é verde claro (invasão), o contorno do lado da terra some
+        const bright = (j: number) => mat[j] === M_GRASS && idx[j] >= 3;
+        const upJ = (ly - 1) * W + lx;
+        if (pUp) { if (!bright(upJ) && oc > 0.18) idx[i] = oc < 0.62 ? 0 : 1; continue; }
+        if (pRt || pLf || pDn) {
+          const litSide = (pRt && bright(i + 1)) || (pLf && bright(i - 1)) || (pDn && bright(i + W));
+          if (!litSide && oc > 0.35) idx[i] = Math.min(idx[i], oc < 0.7 ? 1 : 2);
+          continue;
+        }
+        if (up || rt) continue; // encostado num tufinho solto: sem sombra extra
       }
-      if (up || rt) continue; // encostado num tufinho solto: sem sombra extra
+      if (up || rt) idx[i] = clamp(idx[i] - 2, 0, ramp.length - 1);
+      else if (ly > 1 && mat[(ly - 2) * W + lx] === M_GRASS && cluster(PX + lx, PY + ly, sd + 56) > 0.42)
+        idx[i] = clamp(idx[i] - 1, 0, ramp.length - 1);
     }
-    if (up || rt) idx[i] = clamp(idx[i] - 2, 0, ramp.length - 1);
-    else if (ly > 1 && mat[(ly - 2) * W + lx] === M_GRASS && cluster(PX + lx, PY + ly, sd + 56) > 0.42)
-      idx[i] = clamp(idx[i] - 1, 0, ramp.length - 1);
-  }
+  })();
 
   // (passo 4b2 antigo - borda da grama clareada/escurecida - substituído pelo acabamento do passo 4a)
 
   /* ---- passo 4c: sombra de contato terra -> rocha ---- */
-  for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-    const i = ly * W + lx;
-    if (mat[i] !== M_ROCK) continue;
-    let near = 0;
-    for (let k = 1; k <= 2; k++) {
-      const a = mat[Math.max(0, ly - k) * W + lx];
-      const b = mat[ly * W + Math.min(W - 1, lx + k)];
-      if (a === M_DIRT || a === M_SAND || b === M_DIRT || b === M_SAND) { near = k === 1 ? 2 : 1; break; }
+  (() => {
+    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+      const i = ly * W + lx;
+      if (mat[i] !== M_ROCK) continue;
+      let near = 0;
+      for (let k = 1; k <= 2; k++) {
+        const a = mat[Math.max(0, ly - k) * W + lx];
+        const b = mat[ly * W + Math.min(W - 1, lx + k)];
+        if (a === M_DIRT || a === M_SAND || b === M_DIRT || b === M_SAND) { near = k === 1 ? 2 : 1; break; }
+      }
+      if (!near) continue;
+      if (cluster(PX + lx + 31, PY + ly + 13, sd + 58) < 0.32) near--;
+      if (near > 0) idx[i] = clamp(idx[i] - near, 0, RL - 1);
     }
-    if (!near) continue;
-    if (cluster(PX + lx + 31, PY + ly + 13, sd + 58) < 0.32) near--;
-    if (near > 0) idx[i] = clamp(idx[i] - near, 0, RL - 1);
-  }
-  for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
-    const i = ly * W + lx;
-    if (mat[i] !== M_DIRT && mat[i] !== M_SAND) continue;
-    const a = mat[Math.max(0, ly - 1) * W + lx];
-    const b = mat[ly * W + Math.min(W - 1, lx + 1)];
-    if (a !== M_ROCK && b !== M_ROCK) continue;
-    if (cluster(PX + lx + 17, PY + ly + 43, sd + 59) < 0.28) continue;
-    idx[i] = clamp(idx[i] - 1, 0, RL - 1);
-  }
+  })();
+  (() => {
+    for (let ly = 0; ly < W; ly++) for (let lx = 0; lx < W; lx++) {
+      const i = ly * W + lx;
+      if (mat[i] !== M_DIRT && mat[i] !== M_SAND) continue;
+      const a = mat[Math.max(0, ly - 1) * W + lx];
+      const b = mat[ly * W + Math.min(W - 1, lx + 1)];
+      if (a !== M_ROCK && b !== M_ROCK) continue;
+      if (cluster(PX + lx + 17, PY + ly + 43, sd + 59) < 0.28) continue;
+      idx[i] = clamp(idx[i] - 1, 0, RL - 1);
+    }
+  })();
 
   /* ---- passo 4d: neve encostada na rocha - beirada azul em 2 degraus (a camada de neve
      tem espessura: a borda que desce para a pedra fica na sombra) ---- */
-  for (let ly = 1; ly < W - 1; ly++) for (let lx = 1; lx < W - 1; lx++) {
-    const i = ly * W + lx;
-    if (bio[i] !== B_POLAR || mat[i] !== M_DIRT) continue;
-    let d = 0;
-    for (let k = 1; k <= 2 && !d; k++) {
-      if (mat[i + k * W < W * W ? i + k * W : i] === M_ROCK || mat[i + (lx + k < W ? k : 0)] === M_ROCK ||
-          mat[i - (lx - k >= 0 ? k : 0)] === M_ROCK) d = k;
+  (() => {
+    for (let ly = 1; ly < W - 1; ly++) for (let lx = 1; lx < W - 1; lx++) {
+      const i = ly * W + lx;
+      if (bio[i] !== B_POLAR || mat[i] !== M_DIRT) continue;
+      let d = 0;
+      for (let k = 1; k <= 2 && !d; k++) {
+        if (mat[i + k * W < W * W ? i + k * W : i] === M_ROCK || mat[i + (lx + k < W ? k : 0)] === M_ROCK ||
+            mat[i - (lx - k >= 0 ? k : 0)] === M_ROCK) d = k;
+      }
+      if (!d) continue;
+      const r2 = cluster(PX + lx + 61, PY + ly + 19, sd + 861);
+      idx[i] = d === 1 ? (r2 < 0.35 ? 2 : 3) : (r2 < 0.5 ? 3 : 4);
     }
-    if (!d) continue;
-    const r2 = cluster(PX + lx + 61, PY + ly + 19, sd + 861);
-    idx[i] = d === 1 ? (r2 < 0.35 ? 2 : 3) : (r2 < 0.5 ? 3 : 4);
-  }
+  })();
 
   /* ---- passo 5 & 6: cavidade + encosta escurecem & índices -> RGB, recortando a margem ---- */
   const nC  = CW * CW;
@@ -1553,101 +1608,111 @@ export function genChunkTexture(
   const imgD = new Uint8ClampedArray(nC * 4);
   const RB = Math.max(2, Math.round(D * 0.20));
 
-  for (let cy = 0; cy < CW; cy++) {
-    const ly = cy + M;
-    const row = ly * W;
-    const cRow = cy * CW;
-    for (let cx = 0; cx < CW; cx++) {
-      const lx = cx + M, i = row + lx, o = (cRow + cx) * 4;
+  (() => {
+    for (let cy = 0; cy < CW; cy++) {
+      const ly = cy + M;
+      const row = ly * W;
+      const cRow = cy * CW;
+      for (let cx = 0; cx < CW; cx++) {
+        const lx = cx + M, i = row + lx, o = (cRow + cx) * 4;
 
-      let s = 0, n = 0;
-      for (let k = -RB; k <= RB; k += 2) {
-        const a = clamp(lx + k, 0, W - 1), b = clamp(ly + k, 0, W - 1);
-        s += hT[row + a] + hT[b * W + lx]; n += 2;
+        let s = 0, n = 0;
+        for (let k = -RB; k <= RB; k += 2) {
+          const a = clamp(lx + k, 0, W - 1), b = clamp(ly + k, 0, W - 1);
+          s += hT[row + a] + hT[b * W + lx]; n += 2;
+        }
+        const blurVal = s / n;
+
+        const dth = (cluster(PX + lx + 55, PY + ly + 77, sd + 33) - 0.5) * 0.085;
+        const cav = hT[i] - blurVal + dth;
+        let sh = 0;
+        if (cav < -0.055) sh = 1;
+        if (cav < -0.180) sh = 2;
+        if (slT[i] + (cluster(PX + lx + 3, PY + ly + 91, sd + 34) - 0.5) * 0.55 > 1.45) sh += 1;
+
+        const ramp = RAMPS[bio[i]][mat[i]];
+        const v0 = clamp(idx[i] - sh, 0, ramp.length - 1);
+        const c  = ramp[v0];
+        const cd = ramp[clamp(v0 - 1, 0, ramp.length - 1)];
+        const a  = (mat[i] === M_GRASS || mat[i] === M_ACC) ? 255 : 0;
+        img[o]     = c[0];  img[o + 1] = c[1];  img[o + 2] = c[2];  img[o + 3] = a;
+        imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = bio[i];
       }
-      const blurVal = s / n;
-
-      const dth = (cluster(PX + lx + 55, PY + ly + 77, sd + 33) - 0.5) * 0.085;
-      const cav = hT[i] - blurVal + dth;
-      let sh = 0;
-      if (cav < -0.055) sh = 1;
-      if (cav < -0.180) sh = 2;
-      if (slT[i] + (cluster(PX + lx + 3, PY + ly + 91, sd + 34) - 0.5) * 0.55 > 1.45) sh += 1;
-
-      const ramp = RAMPS[bio[i]][mat[i]];
-      const v0 = clamp(idx[i] - sh, 0, ramp.length - 1);
-      const c  = ramp[v0];
-      const cd = ramp[clamp(v0 - 1, 0, ramp.length - 1)];
-      const a  = (mat[i] === M_GRASS || mat[i] === M_ACC) ? 255 : 0;
-      img[o]     = c[0];  img[o + 1] = c[1];  img[o + 2] = c[2];  img[o + 3] = a;
-      imgD[o]    = cd[0]; imgD[o + 1] = cd[1]; imgD[o + 2] = cd[2]; imgD[o + 3] = bio[i];
     }
-  }
+  })();
   // Tufos de grama 3D, como na referência: concentrados na beirada das manchas (logo depois da
   // faixa escura) e bem espaçados no miolo. A altura vem do relevo interpolado da textura (hT).
   let grass: Float32Array | undefined;
-  if (chunkSize <= 64) {
-    const list: number[] = [];
-    const S = Math.round(chunkSize);
-    const tuftAmount = P.tuftAmount ?? 1, tuftClump = P.tuftClump ?? 0.6, tuftSize = P.tuftSize ?? 1;
-    // Altura e inclinação no triângulo da malha do chunk (PlaneGeometry de 32 subdivisões: vértices
-    // a cada 2m em coordenadas pares do mundo; faces (a,b,d) e (b,c,d) como em chunkGeometry)
-    const MESH = 2;
-    const cornerCache = new Map<number, number>();
-    const hAt = (vx: number, vz: number) => {
-      const key = vx * 100003 + vz;
-      let h = cornerCache.get(key);
-      if (h === undefined) { h = terrainGen.getHeight(vx, vz); cornerCache.set(key, h); }
-      return h;
-    };
-    const meshSurface = (x: number, z: number) => {
-      const x0 = Math.floor(x / MESH) * MESH, z0 = Math.floor(z / MESH) * MESH;
-      const fx = (x - x0) / MESH, fz = (z - z0) / MESH;
-      const ha = hAt(x0, z0), hb = hAt(x0, z0 + MESH), hc = hAt(x0 + MESH, z0 + MESH), hd = hAt(x0 + MESH, z0);
-      if (fx + fz <= 1) {
-        return { h: ha + (hd - ha) * fx + (hb - ha) * fz, gx: (hd - ha) / MESH, gz: (hb - ha) / MESH };
-      }
-      return { h: hc + (hb - hc) * (1 - fx) + (hd - hc) * (1 - fz), gx: (hc - hb) / MESH, gz: (hc - hd) / MESH };
-    };
-    const perCell = clamp(Math.round(P.tuftPerM2 ?? 3), 1, 6);
-    for (let cz = 0; cz < S; cz++) {
-      for (let cx = 0; cx < S; cx++) {
-        const gx = Math.floor(minWorldX) + cx, gz = Math.floor(minWorldZ) + cz;
-        for (let k = 0; k < perCell; k++) {
-        const kx = gx * 5 + k, kz = gz * 5 + k * 3;
-        const jx = ihash(kx, kz, sd + 602), jz = ihash(kx, kz, sd + 603);
-        const lx = M + Math.min(CW - 1, Math.floor((cx + jx) * D));
-        const ly = M + Math.min(CW - 1, Math.floor((cz + jz) * D));
-        const j = ly * W + lx;
-        // Bioma de gelo: tufos nevados espalhados sobre a neve (em menor quantidade)
-        const onSnow = bio[j] === B_POLAR && mat[j] === M_DIRT;
-        if (!onSnow && (mat[j] !== M_GRASS || gl[j] < 2)) continue;
-        // Distância até a borda em metros: beirada = mais tufos, miolo = menos
-        const dm = (grassDistMap ? grassDistMap[j] : 6) / D;
-        let p = (onSnow ? 0.11 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
-        if (bio[j] === B_MOUNT) p *= 0.35;                    // vulcão: capim seco e ralo
-        // Concentração: moitas cheias onde o ruído é alto, vazios onde é baixo
-        if (tuftClump > 0) {
-          const wxc = minWorldX + cx + jx, wzc = minWorldZ + cz + jz;
-          const cn = per.fbm(wxc * 0.32 + 11.7, wzc * 0.32 + 5.3, 2) * 0.5 + 0.5;
-          const f = clamp((cn - 0.42) * 4.0, 0, 2.4);
-          p *= 1 - tuftClump + tuftClump * f;
+  // só nas texturas de 2+ tx/m: a grama 3D aparece nos chunks até o anel 4 (GRASS_RADIUS_CHUNKS),
+  // que têm 2+ tx/m; nos mais distantes (1 tx/m e os blocos) calcular os tufos seria à toa
+  (() => {
+    if (chunkSize <= 64 && D >= 2) {
+      const list: number[] = [];
+      const S = Math.round(chunkSize);
+      const tuftAmount = P.tuftAmount ?? 1, tuftClump = P.tuftClump ?? 0.6, tuftSize = P.tuftSize ?? 1;
+      // Altura e inclinação no triângulo da malha do chunk (PlaneGeometry de 32 subdivisões: vértices
+      // a cada 2m em coordenadas pares do mundo; faces (a,b,d) e (b,c,d) como em chunkGeometry)
+      const MESH = mesh ? mesh.step : 2;
+      const cornerCache = new Map<number, number>();
+      const hAt = (vx: number, vz: number) => {
+        if (mesh) {
+          const ix = Math.round((vx - minWorldX) / MESH), iz = Math.round((vz - minWorldZ) / MESH);
+          if (ix >= 0 && iz >= 0 && ix < mesh.grid && iz < mesh.grid) return mesh.heights[iz * mesh.grid + ix];
         }
-        if (ihash(kx, kz, sd + 601) > p) continue;
-        const wx = minWorldX + cx + jx, wz = minWorldZ + cz + jz;
-        const surf = meshSurface(wx, wz);
-        if (surf.gx * surf.gx + surf.gz * surf.gz > 1.0) continue; // encosta íngreme demais (> 45°)
-        // Altura própria de cada tufo (suave: o formato do tufo - leque, alto, baixo, espiga,
-        // tombado - é escolhido depois, na vegetação): trechos mais altos/baixos + variação individual
-        const tall = per.fbm(wx * 0.16 + 31.7, wz * 0.16 + 8.9, 2) * 0.5 + 0.5;
-        const hy = clamp(0.72 + tall * 0.50 + (ihash(kx, kz, sd + 605) - 0.5) * 0.30, 0.70, 1.35);
-        const wxz = 0.85 + ihash(kx, kz, sd + 606) * 0.30;
-        list.push(wx, surf.h, wz, (0.8 + ihash(kx, kz, sd + 604) * 0.6) * tuftSize, bio[j], surf.gx, surf.gz, hy, wxz);
+        const key = vx * 100003 + vz;
+        let h = cornerCache.get(key);
+        if (h === undefined) { h = terrainGen.getHeight(vx, vz); cornerCache.set(key, h); }
+        return h;
+      };
+      const meshSurface = (x: number, z: number) => {
+        const x0 = Math.floor(x / MESH) * MESH, z0 = Math.floor(z / MESH) * MESH;
+        const fx = (x - x0) / MESH, fz = (z - z0) / MESH;
+        const ha = hAt(x0, z0), hb = hAt(x0, z0 + MESH), hc = hAt(x0 + MESH, z0 + MESH), hd = hAt(x0 + MESH, z0);
+        if (fx + fz <= 1) {
+          return { h: ha + (hd - ha) * fx + (hb - ha) * fz, gx: (hd - ha) / MESH, gz: (hb - ha) / MESH };
+        }
+        return { h: hc + (hb - hc) * (1 - fx) + (hd - hc) * (1 - fz), gx: (hc - hb) / MESH, gz: (hc - hd) / MESH };
+      };
+      const perCell = clamp(Math.round(P.tuftPerM2 ?? 3), 1, 6);
+      for (let cz = 0; cz < S; cz++) {
+        for (let cx = 0; cx < S; cx++) {
+          const gx = Math.floor(minWorldX) + cx, gz = Math.floor(minWorldZ) + cz;
+          for (let k = 0; k < perCell; k++) {
+          const kx = gx * 5 + k, kz = gz * 5 + k * 3;
+          const jx = ihash(kx, kz, sd + 602), jz = ihash(kx, kz, sd + 603);
+          const lx = M + Math.min(CW - 1, Math.floor((cx + jx) * D));
+          const ly = M + Math.min(CW - 1, Math.floor((cz + jz) * D));
+          const j = ly * W + lx;
+          // Bioma de gelo: tufos nevados espalhados sobre a neve (em menor quantidade)
+          const onSnow = bio[j] === B_POLAR && mat[j] === M_DIRT;
+          if (!onSnow && (mat[j] !== M_GRASS || gl[j] < 2)) continue;
+          // Distância até a borda em metros: beirada = mais tufos, miolo = menos
+          const dm = (grassDistMap ? grassDistMap[j] : 6) / D;
+          let p = (onSnow ? 0.11 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
+          if (bio[j] === B_MOUNT) p *= 0.35;                    // vulcão: capim seco e ralo
+          // Concentração: moitas cheias onde o ruído é alto, vazios onde é baixo
+          if (tuftClump > 0) {
+            const wxc = minWorldX + cx + jx, wzc = minWorldZ + cz + jz;
+            const cn = per.fbm(wxc * 0.32 + 11.7, wzc * 0.32 + 5.3, 2) * 0.5 + 0.5;
+            const f = clamp((cn - 0.42) * 4.0, 0, 2.4);
+            p *= 1 - tuftClump + tuftClump * f;
+          }
+          if (ihash(kx, kz, sd + 601) > p) continue;
+          const wx = minWorldX + cx + jx, wz = minWorldZ + cz + jz;
+          const surf = meshSurface(wx, wz);
+          if (surf.gx * surf.gx + surf.gz * surf.gz > 1.0) continue; // encosta íngreme demais (> 45°)
+          // Altura própria de cada tufo (suave: o formato do tufo - leque, alto, baixo, espiga,
+          // tombado - é escolhido depois, na vegetação): trechos mais altos/baixos + variação individual
+          const tall = per.fbm(wx * 0.16 + 31.7, wz * 0.16 + 8.9, 2) * 0.5 + 0.5;
+          const hy = clamp(0.72 + tall * 0.50 + (ihash(kx, kz, sd + 605) - 0.5) * 0.30, 0.70, 1.35);
+          const wxz = 0.85 + ihash(kx, kz, sd + 606) * 0.30;
+          list.push(wx, surf.h, wz, (0.8 + ihash(kx, kz, sd + 604) * 0.6) * tuftSize, bio[j], surf.gx, surf.gz, hy, wxz);
+          }
         }
       }
+      grass = new Float32Array(list);
     }
-    grass = new Float32Array(list);
-  }
+  })();
 
   return { img, imgD, width: CW, height: CW, grass };
 }
@@ -1807,7 +1872,8 @@ export class TerrainTextureForge {
     chunkSize: number,
     density: number,
     priority: number = 0,
-    segments: number = 0
+    segments: number = 0,
+    walls: boolean = true
   ): { promise: Promise<{ textures?: ReturnType<typeof makeChunkTextures>; geometry?: ChunkGeometryData; grass?: Float32Array }>; cancel: () => void } {
     const pool = getTextureWorkerPool();
     const { promise, reqId } = pool.request(
@@ -1818,7 +1884,8 @@ export class TerrainTextureForge {
       chunkSize,
       density,
       priority,
-      segments
+      segments,
+      walls
     );
 
     const wrapped = promise.then((r) => ({

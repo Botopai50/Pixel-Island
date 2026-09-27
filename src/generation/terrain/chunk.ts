@@ -10,9 +10,11 @@ export type ChunkLOD = 'HIGH' | 'MED' | 'LOW';
 // Fundo do mar das áreas totalmente submersas: só precisa existir no depth buffer para a água
 // calcular a profundidade (e escurecer gradualmente). Material único e barato, compartilhado.
 const SEABED_SPACING = 8; // metros entre vértices
-// Chunks com textura final acima de PREVIEW_ABOVE (tx/m) aparecem primeiro numa prévia barata de
-// PREVIEW_DENSITY enquanto a final é gerada (a prévia em 6 tx/m custava quase tanto quanto a final)
-const PREVIEW_ABOVE = 6;
+// Chunks com textura final acima de PREVIEW_ABOVE (tx/m) apareciam primeiro numa prévia barata de
+// PREVIEW_DENSITY enquanto a final era gerada. Desligado: o custo de uma textura é quase todo fixo
+// (grade de campos, bioma, tufos), e a prévia em 3 tx/m custava ~420ms contra ~450ms da final -
+// só dobrava o trabalho dos chunks de perto.
+const PREVIEW_ABOVE = Infinity;
 const PREVIEW_DENSITY = 3;
 const seabedMaterial = new THREE.MeshLambertMaterial({ color: 0x3d5c58 });
 // Identifica as instâncias de vegetação de cada chunk no pool compartilhado (único por instância,
@@ -25,6 +27,8 @@ export interface ChunkOptions {
   onSceneChanged?: () => void;
   textureDensity?: number;
   segments?: number;
+  /** Distância (em chunks) até a câmera: ordena os pedidos aos workers (perto primeiro) */
+  distance?: number;
   /**
    * Área coberta, quando não é o chunk padrão (cx, cz): usado pelos blocos distantes que juntam
    * vários chunks numa malha e numa textura só.
@@ -67,6 +71,8 @@ export class Chunk {
   // A primeira textura pode vir numa prévia mais barata e depois subir até targetDensity.
   private appliedDensity = 0;
   private appliedSegments = 0;
+  /** a malha aplicada tem a medição dos paredões (só é feita nos chunks perto da câmera) */
+  private appliedWalls = false;
   private targetDensity = 0;
   private targetSegments = 0;
 
@@ -98,6 +104,7 @@ export class Chunk {
     }
 
     // Malha e textura são geradas juntas num worker; a malha aparece quando as duas chegam.
+    this.distance = options.distance ?? 0;
     this.targetDensity = options.textureDensity ?? this.forge.density;
     this.targetSegments = options.segments ?? CONFIG.CHUNK_SEGMENTS;
     this.refine();
@@ -108,7 +115,8 @@ export class Chunk {
     }
   }
 
-  /** Teste rápido numa grade com no máx. 32m entre pontos: tudo abaixo de -2.5m? */
+  /** Teste rápido numa grade com no máx. 32m entre pontos: tudo abaixo de -8m? (mais fundo que
+   *  as represas, que chegam a 6m - senão um chunk no meio de uma virava "fundo do mar" chapado) */
   private isAllUnderwater(terrainGen: TerrainGenerator): boolean {
     const n = Math.max(2, Math.ceil(this.size / 32));
     const x0 = this.centerX - this.size / 2;
@@ -116,7 +124,9 @@ export class Chunk {
     const step = this.size / n;
     for (let iz = 0; iz <= n; iz++) {
       for (let ix = 0; ix <= n; ix++) {
-        if (terrainGen.getHeight(x0 + ix * step, z0 + iz * step) >= -2.5) return false;
+        // altura seca basta (rios/lagos não passam de -8m e o mar só abaixa o relevo) e não
+        // depende da hidrologia, que na thread principal chega depois, dos workers
+        if (terrainGen.getDryHeight(x0 + ix * step, z0 + iz * step) >= -8.0) return false;
       }
     }
     return true;
@@ -135,9 +145,13 @@ export class Chunk {
     return !!this.terrainMesh;
   }
 
+  /** Distância (em chunks) até a câmera, para a ordem dos pedidos */
+  public distance = 0;
+
   /** Sobe o LOD desejado (densidade de texels e subdivisões da malha); nunca desce. */
-  public setLOD(density: number, segments: number): void {
+  public setLOD(density: number, segments: number, distance?: number): void {
     if (this.isSubmerged || this.isDestroyed) return;
+    if (distance !== undefined) this.distance = distance;
     this.targetDensity = Math.max(this.targetDensity, density);
     this.targetSegments = Math.max(this.targetSegments, segments);
     this.refine();
@@ -156,15 +170,22 @@ export class Chunk {
     if (density > 0 && !this.terrainMesh && density > PREVIEW_ABOVE) {
       density = PREVIEW_DENSITY;
     }
-    const segments = this.targetSegments > this.appliedSegments ? this.targetSegments : 0;
+    // medição dos paredões (grama que escorre, terra no pé, rocha na metade de baixo) só até 2
+    // chunks da câmera: é o que mais custa na malha e mais longe o detalhe não aparece. Um chunk
+    // que se aproxima refaz a malha com ela.
+    const wantWalls = this.distance <= 2.5;
+    const segments = this.targetSegments > this.appliedSegments || (wantWalls && !this.appliedWalls && this.appliedSegments > 0)
+      ? this.targetSegments : 0;
     if (density === 0 && segments === 0) return;
 
     const size = this.size;
     const originX = this.centerX - size / 2;
     const originZ = this.centerZ - size / 2;
-    // Primeiro pedido (ainda invisível) tem prioridade sobre upgrades de LOD
-    const priority = this.terrainMesh ? 1 : 0;
-    const { promise, cancel } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments);
+    // Primeiro pedido (ainda invisível) antes de qualquer upgrade de LOD; entre eles, o mais perto
+    // da câmera primeiro (os blocos distantes pediam a textura ao serem criados e passavam na
+    // frente dos chunks ao lado da câmera)
+    const priority = (this.terrainMesh ? 1000 : 0) + this.distance;
+    const { promise, cancel } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments, wantWalls);
     this.cancelRequest = cancel;
 
     promise.then(({ textures, geometry, grass }) => {
@@ -183,12 +204,14 @@ export class Chunk {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(geometry.positions, 3));
         geo.setAttribute('normal', new THREE.BufferAttribute(geometry.normals, 3));
+        if (geometry.wall) geo.setAttribute('wallInfo', new THREE.BufferAttribute(geometry.wall, 3));
         geo.setIndex(new THREE.BufferAttribute(geometry.index, 1));
         geo.computeBoundingSphere();
         geo.computeBoundingBox();
         const oldGeo = this.terrainGeo;
         this.terrainGeo = geo;
         this.appliedSegments = geometry.segments;
+        this.appliedWalls = wantWalls;
         if (this.terrainMesh) this.terrainMesh.geometry = geo;
         oldGeo?.dispose();
       }

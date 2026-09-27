@@ -3,6 +3,15 @@ import { TerrainGenerator } from './terrainGenerator.ts';
 export interface ChunkGeometryData {
   positions: Float32Array;
   normals: Float32Array;
+  /**
+   * Por vértice (3 valores): metros abaixo da borda de cima do paredão e metros acima do pé dele,
+   * ambos +1 (0 = sem informação: geometria antiga/sem o atributo; longe de paredões: 99), e a
+   * subida máxima até os vizinhos mais altos (1 - cos do ângulo, como 1 - normal.y). O shader usa os
+   * dois primeiros para a grama que escorre do topo e a terra que sobe pela base, e o terceiro
+   * para decidir parede x chão: suave entre triângulos (sem dentes de serra na quina) e, no pé do
+   * paredão, já enxerga a parede ao lado (sem a grama esticada em triângulos verdes).
+   */
+  wall: Float32Array;
   index: Uint16Array;
   segments: number;
 }
@@ -20,7 +29,9 @@ export function buildChunkGeometry(
   centerX: number,
   centerZ: number,
   size: number,
-  segments: number
+  segments: number,
+  /** medir os paredões (grama que escorre / terra no pé): só nos chunks perto da câmera */
+  walls: boolean = true
 ): ChunkGeometryData {
   const grid = segments + 1;
   const half = size / 2;
@@ -42,6 +53,81 @@ export function buildChunkGeometry(
   const vertCount = grid * grid + skirtVerts;
   const positions = new Float32Array(vertCount * 3);
   const normals = new Float32Array(vertCount * 3);
+  const wall = new Float32Array(vertCount * 3).fill(99);
+
+  // Paredões: vértices íngremes e os vizinhos deles. Para cada um, anda morro acima (e abaixo) pelo
+  // relevo de verdade até a inclinação cair - a altura da borda de cima e do pé do paredão. Usa
+  // getHeight (e não só a grade do chunk) para o resultado não mudar entre chunks e LODs.
+  const steep = new Uint8Array(grid * grid);
+  // só nas malhas de perto (vértices a até 4m): nos blocos distantes a grama/terra da borda dos
+  // paredões nem aparece, e andar pelo relevo a partir de cada vértice íngreme custava caro
+  for (let iz = 0; walls && step <= 4 && iz < grid; iz++) {
+    for (let ix = 0; ix < grid; ix++) {
+      const e = (iz + 1) * ext + (ix + 1);
+      const gx = (heights[e + 1] - heights[e - 1]) / (2 * step), gz = (heights[e + ext] - heights[e - ext]) / (2 * step);
+      if (gx * gx + gz * gz > 0.6 * 0.6) {
+        for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+          const xx = ix + dx, zz = iz + dz;
+          if (xx >= 0 && zz >= 0 && xx < grid && zz < grid) steep[zz * grid + xx] = 1;
+        }
+      }
+    }
+  }
+  // alcance de 20m na horizontal: os paredões (mesas, degraus) sobem quase tudo em ~6m
+  const WSTEP = 2.0, WMAX = 10; // passos de 2m (antes 1.25m, 16 passos): ~40% menos consultas
+  // gradiente de cada vértice (na grade com o anel extra)
+  const gradX = new Float32Array(grid * grid), gradZ = new Float32Array(grid * grid);
+  for (let iz = 0; iz < grid; iz++) {
+    for (let ix = 0; ix < grid; ix++) {
+      const e = (iz + 1) * ext + (ix + 1);
+      gradX[iz * grid + ix] = heights[e + 1] - heights[e - 1];
+      gradZ[iz * grid + ix] = heights[e + ext] - heights[e - ext];
+    }
+  }
+  // anda na direção (dx, dz) enquanto sobe (ou desce) íngreme; tolera até 2 passos planos no
+  // começo (o vértice pode estar no pé ou no topo, a um ou dois metros do começo da parede)
+  const march = (x0: number, z0: number, h0: number, dx: number, dz: number, dir: number): number => {
+    let hEnd = h0, prev = h0, started = false, flat = 0;
+    for (let s = 1; s <= WMAX; s++) {
+      const h = terrainGen.getHeight(x0 + dx * s * WSTEP, z0 + dz * s * WSTEP);
+      if ((h - prev) * dir < 0.45 * WSTEP) {
+        if (started || ++flat > 2) break;
+        prev = h;
+        continue;
+      }
+      started = true;
+      hEnd = h; prev = h;
+    }
+    return hEnd;
+  };
+  for (let iz = 0; iz < grid; iz++) {
+    for (let ix = 0; ix < grid; ix++) {
+      const i = iz * grid + ix;
+      if (!steep[i]) continue;
+      // direção do paredão: a do vizinho mais íngreme (um vértice plano no pé ou no topo tem o
+      // próprio gradiente virado para qualquer lado - para longe da parede, a grama nascia de baixo)
+      // vértice íngreme: a própria direção de subida (a do vizinho pode estar virada ao longo da
+      // parede, e a busca falhava); vértice plano: a do vizinho mais íngreme
+      const selfM = gradX[i] * gradX[i] + gradZ[i] * gradZ[i];
+      const selfSteep = selfM > (0.6 * 2 * step) * (0.6 * 2 * step);
+      let bx = selfSteep ? gradX[i] : 0, bz = selfSteep ? gradZ[i] : 0, bm = selfSteep ? selfM : 0;
+      for (let dz = -1; dz <= 1 && !selfSteep; dz++) for (let dx = -1; dx <= 1; dx++) {
+        const xx = ix + dx, zz = iz + dz;
+        if (xx < 0 || zz < 0 || xx >= grid || zz >= grid) continue;
+        const k = zz * grid + xx, mg = gradX[k] * gradX[k] + gradZ[k] * gradZ[k];
+        if (mg > bm) { bm = mg; bx = gradX[k]; bz = gradZ[k]; }
+      }
+      if (bm < 1e-8) continue;
+      const gl = Math.sqrt(bm), gx = bx / gl, gz = bz / gl;
+      const e = (iz + 1) * ext + (ix + 1);
+      const x0 = centerX - half + ix * step, z0 = centerZ - half + iz * step, h0 = heights[e];
+      const rise = march(x0, z0, h0, gx, gz, 1) - h0;    // até a borda de cima
+      const drop = h0 - march(x0, z0, h0, -gx, -gz, -1);  // até o pé
+      // sem subida: é topo (se há descida grande) ou não está num paredão; idem para o pé
+      wall[i * 3] = rise >= 0.5 ? rise + 1 : drop > 2 ? 1 : 99;
+      wall[i * 3 + 1] = drop >= 0.5 ? drop + 1 : rise > 2 ? 1 : 99;
+    }
+  }
 
   for (let iz = 0; iz < grid; iz++) {
     for (let ix = 0; ix < grid; ix++) {
@@ -57,6 +143,25 @@ export function buildChunkGeometry(
       normals[i * 3] = nx / len;
       normals[i * 3 + 1] = 1 / len;
       normals[i * 3 + 2] = nz / len;
+    }
+  }
+
+  // subida máxima até os vizinhos MAIS ALTOS de cada vértice (a grade tem o anel extra; os cantos
+  // do anel não foram amostrados e ficam de fora). Só a subida: o pé do paredão enxerga a parede
+  // acima dele, mas o topo plano junto da quina (todos os vizinhos mais baixos) continua chão - com
+  // a inclinação para qualquer lado, uma faixa do topo virava parede pintada de verde liso
+  for (let iz = 0; iz < grid; iz++) {
+    for (let ix = 0; ix < grid; ix++) {
+      const e = (iz + 1) * ext + (ix + 1), h0 = heights[e];
+      let g = 0;
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
+        if (!dx && !dz) continue;
+        const ex = ix + 1 + dx, ez = iz + 1 + dz;
+        if ((ex === 0 || ex === ext - 1) && (ez === 0 || ez === ext - 1)) continue;
+        const d = (dx && dz) ? step * Math.SQRT2 : step;
+        g = Math.max(g, (heights[ez * ext + ex] - h0) / d);
+      }
+      wall[(iz * grid + ix) * 3 + 2] = 1 - 1 / Math.sqrt(1 + g * g);
     }
   }
 
@@ -79,6 +184,9 @@ export function buildChunkGeometry(
     normals[dst * 3] = normals[src * 3];
     normals[dst * 3 + 1] = normals[src * 3 + 1];
     normals[dst * 3 + 2] = normals[src * 3 + 2];
+    wall[dst * 3] = wall[src * 3];
+    wall[dst * 3 + 1] = wall[src * 3 + 1];
+    wall[dst * 3 + 2] = wall[src * 3 + 2];
   }
 
   const index = new Uint16Array(segments * segments * 6 + perimeter.length * 12);
@@ -104,5 +212,5 @@ export function buildChunkGeometry(
     index[o++] = t1; index[o++] = b1; index[o++] = b0;
   }
 
-  return { positions, normals, index, segments };
+  return { positions, normals, wall, index, segments };
 }

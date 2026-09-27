@@ -4,8 +4,8 @@
  * O nível inicial vem do hardware (núcleos, memória, GPU, celular) e pode ser forçado pela URL
  * (?quality=low|medium|high). Durante o jogo a mediana do tempo de frame é medida em janelas de
  * ~2s: abaixo de ~40 fps o jogo desce um degrau; com folga constante (60 fps cravados) sobe um.
- * Os degraus começam pelo que menos se nota (resolução interna, que num jogo pixel-art só deixa o
- * pixel maior) e só depois cortam sombras, alcance e vegetação.
+ * Os degraus cortam primeiro sombras, alcance e vegetação; a resolução interna (que deixa a imagem
+ * abaixo da resolução da tela) só cai no nível mais baixo, para 80%.
  */
 
 export interface QualityLevel {
@@ -22,11 +22,11 @@ export interface QualityLevel {
 
 export const QUALITY_LEVELS: QualityLevel[] = [
   { name: 'alta',        renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 6, shadowStep: 0.6, reflectionSize: 512, textureDensityCap: Infinity },
-  { name: 'alta-',       renderScale: 0.85, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 6, shadowStep: 0.6, reflectionSize: 512, textureDensityCap: Infinity },
-  { name: 'média',       renderScale: 0.75, shadowMapSize: 2048, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 5, shadowStep: 1.0, reflectionSize: 512, textureDensityCap: Infinity },
-  { name: 'média-',      renderScale: 0.66, shadowMapSize: 1024, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 5, shadowStep: 1.5, reflectionSize: 384, textureDensityCap: 3 },
-  { name: 'baixa',       renderScale: 0.55, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 4, shadowStep: 2.0, reflectionSize: 256, textureDensityCap: 2.5 },
-  { name: 'muito baixa', renderScale: 0.45, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 3, shadowStep: 3.0, reflectionSize: 256, textureDensityCap: 2 },
+  { name: 'alta-',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, vegetationRadius: 6, shadowStep: 0.8, reflectionSize: 512, textureDensityCap: Infinity },
+  { name: 'média',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 5, shadowStep: 1.0, reflectionSize: 384, textureDensityCap: Infinity },
+  { name: 'média-',      renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 5, shadowStep: 1.5, reflectionSize: 384, textureDensityCap: 3 },
+  { name: 'baixa',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 4, shadowStep: 2.0, reflectionSize: 256, textureDensityCap: 2.5 },
+  { name: 'muito baixa', renderScale: 0.80, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 3, shadowStep: 3.0, reflectionSize: 256, textureDensityCap: 2 },
 ];
 
 /** Nível inicial pelo hardware (índice em QUALITY_LEVELS). */
@@ -71,9 +71,15 @@ export class AdaptiveQuality {
     apply(QUALITY_LEVELS[level], level);
   }
 
-  public frame(dtMs: number): void {
+  public frame(dtMs: number, generating: boolean = false): void {
     const now = performance.now();
     if (now - this.startedAt < 4000) return; // carga inicial do mundo
+    // geração de terreno em andamento (workers ocupando a CPU): a janela não conta
+    if (generating) {
+      this.samples = [];
+      this.windowStart = 0;
+      return;
+    }
     // Aba oculta ou loop pausado/estrangulado pelo navegador (frames de segundos): não é o hardware.
     // Descarta a janela inteira para não confundir uma pausa com um PC fraco.
     if (document.hidden || dtMs > 500) {

@@ -12,6 +12,7 @@ import { createTerrainMaterial } from './shaders/terrainShader.ts';
 import { createWaterMaterial, WATER_PRESETS } from './shaders/waterShader.ts';
 import { createSeamlessCascadedWaterGeometry } from './waterGeometry.ts';
 import { TerrainTextureForge } from './terrain/terrainTextureForge.ts';
+import { getTextureWorkerPool } from './terrain/textureWorkerPool.ts';
 import { WaterBiomeMap } from './hydrology/waterBiomeMap.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
 import { CONFIG } from '../config.ts';
@@ -61,6 +62,14 @@ export class WorldEngine {
 
     const numericSeed = this.seedManager.getNumericSeed();
     this.terrainGen = new TerrainGenerator(numericSeed);
+    // Hidrologia das ilhas: calculada nos workers dos chunks e instalada aqui (calcular na thread
+    // principal travava o jogo por 0.3-1s ao chegar numa ilha nova)
+    this.terrainGen.getHydrology().setDeferMissing(true);
+    // (exposto para depuração/medição, como __WORLD__)
+    (globalThis as any).__POOL__ = getTextureWorkerPool();
+    getTextureWorkerPool().onHydrology = (seed, key, data) => {
+      if (seed === this.terrainGen.getSeed()) this.terrainGen.getHydrology().installIsland(key, data);
+    };
     this.vegetationMgr = new VegetationManager();
 
     this.forge = TerrainTextureForge.getInstance(numericSeed);
@@ -105,9 +114,39 @@ export class WorldEngine {
     this.scene.add(this.waterGroup);
   }
 
+  /** Ilhas cuja hidrologia já foi pedida aos workers (por seed) */
+  private requestedIslands = new Set<string>();
+  private islandsSentToWorkers = new Set<number>();
+
+  /**
+   * Pede com antecedência a hidrologia das ilhas em volta da câmera (3x3 células de ilha - as
+   * que os chunks daqui consultam): um worker calcula e todos recebem, antes dos chunks chegarem.
+   */
+  private prefetchIslands(x: number, z: number): void {
+    const G = CONFIG.ISLAND_GRID_SIZE;
+    const cx = Math.round(x / G), cz = Math.round(z / G);
+    const seed = this.terrainGen.getSeed();
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const k = seed + ':' + (cx + dx) + ':' + (cz + dz);
+        if (this.requestedIslands.has(k)) continue;
+        // só a ilha que os chunks em volta da câmera usam agora é pedida com antecedência; as
+        // outras o pool pede sozinho quando um chunk precisar delas (na ordem dos chunks). Pedir as
+        // 8 vizinhas logo no início ocupava todos os workers por ~1.5s antes dos chunks de perto
+        const near = Math.abs(x - (cx + dx) * G) < 2300 && Math.abs(z - (cz + dz) * G) < 2300;
+        if (!near) continue;
+        this.requestedIslands.add(k);
+        // já calculada aqui (ponto de nascimento) e mandada aos workers: não pede de novo
+        if (this.terrainGen.getHydrology().hasIsland(cx + dx, cz + dz)) continue;
+        getTextureWorkerPool().prefetchIsland(seed, cx + dx, cz + dz, -1);
+      }
+    }
+  }
+
   public updateObserverPosition(x: number, z: number): void {
     this.lastObserverX = x;
     this.lastObserverZ = z;
+    this.prefetchIslands(x, z);
     this.chunkMgr.update(x, z);
     // Move a malha de água com snap na grade de 8m (tamanho exato dos quads centrais).
     // Isso mantém os vértices 100% estáticos no espaço de mundo durante a caminhada,
@@ -152,6 +191,10 @@ export class WorldEngine {
 
     const maxR = 650;
     const stepR = 25;
+    // o ponto de nascimento precisa dos rios de verdade (senão nasce dentro d'água): aqui, no
+    // carregamento, calcular a hidrologia na hora é aceitável
+    const hydro = this.terrainGen.getHydrology();
+    hydro.setDeferMissing(false);
 
     for (let r = 0; r <= maxR; r += stepR) {
       const angleSteps = Math.max(8, Math.floor((r * 2 * Math.PI) / 30));
@@ -183,6 +226,9 @@ export class WorldEngine {
     }
 
     const finalElevation = this.terrainGen.getHeight(bestX, bestZ);
+    hydro.setDeferMissing(true);
+    // as ilhas calculadas aqui vão prontas para os workers
+    getTextureWorkerPool().broadcastIslands(this.terrainGen.getSeed(), hydro.exportIslands(this.islandsSentToWorkers));
     return {
       x: bestX,
       z: bestZ,
@@ -196,6 +242,7 @@ export class WorldEngine {
     }
     const newSeed = this.seedManager.getNumericSeed();
     this.terrainGen.reseed(newSeed);
+    this.islandsSentToWorkers.clear();
     this.waterBiomeMap.invalidate();
     this.geothermalMgr.reseed(newSeed);
     this.lavaFluidMgr.rebuild(this.terrainGen.getVolcanoGenerator());

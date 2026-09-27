@@ -29,6 +29,7 @@ export class TerrainGenerator {
     this.hydrology = new Hydrology(seed, this.macroGeo, this.volcanoGen, this.geothermalGen);
     this.biomeMgr = new BiomeManager(seed);
     this.canyonGen = new CanyonGenerator(seed, this.macroGeo, this.volcanoGen);
+    this.hydrology.setHeightSampler((x, z) => this.getDryHeight(x, z));
   }
 
   public reseed(seed: number): void {
@@ -52,13 +53,43 @@ export class TerrainGenerator {
   }
 
   public getHeight(x: number, z: number): number {
+    const dry = this.getDryHeight(x, z);
+    // Rios e lagos esculpem o relevo por último (leito, margens e o dique natural em volta da
+    // água), sobre o relevo já completo - senão um cânion aplicado depois rebaixava as margens
+    const hydro = this.hydrology.queryHydrology(x, z, dry);
+    return clamp(this.applyHydrology(dry, hydro), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
+  }
+
+  /**
+   * Altura final e a umidade da beira d'água (areia molhada) numa consulta só. A hidrologia precisa
+   * da altura SECA: com a final, a faixa da orla do mar (que depende dela) saía errada.
+   */
+  public getHeightAndWetness(x: number, z: number): { height: number; wetness: number } {
+    const dry = this.getDryHeight(x, z);
+    const hydro = this.hydrology.queryHydrology(x, z, dry);
+    return { height: clamp(this.applyHydrology(dry, hydro), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT), wetness: hydro.wetness };
+  }
+
+  /**
+   * Altura do terreno SEM rios e lagos (relevo + vulcão/cânion/termal). É a superfície que a
+   * hidrologia usa para achar bacias e fazer os rios descerem - consultar a altura final lá
+   * dentro seria circular.
+   */
+  public getDryHeight(x: number, z: number): number {
+    const relief = this.reliefHeight(x, z);
+    if (relief.deepOcean) return relief.h;
+    return this.applySpecialRelief(x, z, relief.h);
+  }
+
+  /** Relevo base: plataforma continental no mar, praia e interior (com os degraus das montanhas). */
+  private reliefHeight(x: number, z: number): { h: number; deepOcean: boolean } {
     const { landFactor, coastDist, spineFactor } = this.macroGeo.getLandmassMask(x, z);
 
     // 1. Mar aberto profundo / fundo abissal do oceano. Só depois de 200m da costa: o landFactor
     // zera já a ~24m, e retornar aqui antes criava um penhasco submarino (de -2m para -40m em
     // poucos metros) - a água passava de rasa a abismo de uma vez.
     if (coastDist <= -200.0) {
-      return this.oceanFloor(x, z);
+      return { h: this.oceanFloor(x, z), deepOcean: true };
     }
 
     const macroRelief = this.macroGeo.getMacroRelief(x, z, spineFactor, landFactor);
@@ -84,13 +115,19 @@ export class TerrainGenerator {
       const beachRamp = coastDist * beachSlope;
       const inlandProg = smoothstep(25.0, 75.0, coastDist);
       const noiseDamp = smoothstep(0.0, 25.0, coastDist);
-      const inlandRelief = (macroRelief + effectiveMeso + effectiveMicro * noiseDamp) * landFactor;
+      const inlandRelief = this.terrace(x, z, (macroRelief + effectiveMeso + effectiveMicro * noiseDamp) * landFactor, macroRelief);
       rawElevation = lerp(beachRamp, Math.max(beachRamp, inlandRelief), inlandProg);
+      rawElevation += this.mesaLift(x, z, coastDist, macroRelief);
     }
+    // Em terra firme (dentro da linha da costa) o relevo não desce abaixo do nível do mar:
+    // depressões rasas perto da costa viravam poças soltas de água do oceano (quase só espuma)
+    if (coastDist > 0.0) rawElevation = Math.max(rawElevation, 0.05);
+    return { h: rawElevation, deepOcean: false };
+  }
 
-    const hydro = this.hydrology.queryHydrology(x, z, rawElevation);
-    rawElevation = this.applyHydrology(rawElevation, hydro, coastDist);
-
+  /** Relevos geológicos especiais aplicados por cima: vulcões, cânions e termalismo. */
+  private applySpecialRelief(x: number, z: number, elevation: number): number {
+    let rawElevation = elevation;
     // 3. Aplicação de Relevos Geológicos Especiais (Vulcões, Cânions, Termalismo)
     const vRes = this.volcanoGen.query(x, z);
     if (vRes.influence > 0.0) {
@@ -116,22 +153,87 @@ export class TerrainGenerator {
   }
 
   /**
-   * Lagos e rios entalhando o relevo. O leito do rio some aos poucos nos primeiros 35m mar
-   * adentro: sem isso ele continuava como uma vala reta e escura pela plataforma rasa.
+   * Mesas (platôs de rocha como os de Breath of the Wild): blocos isolados de topo quase plano e
+   * paredões quase verticais saindo das planícies do interior. Um candidato por célula de 640m
+   * (~40% das células ganham uma mesa), com contorno irregular (ruído no raio), 16-38m de altura
+   * e, em parte delas, um patamar mais baixo em volta do bloco principal. Só no interior plano:
+   * longe da costa e fora das cordilheiras.
    */
-  private applyHydrology(
-    elevation: number,
-    hydro: { lakeOffset: number; riverCarving: number },
-    coastDist: number
-  ): number {
-    const seaFade = coastDist < 0.0 ? smoothstep(-35.0, 0.0, coastDist) : 1.0;
-    const riverCarving = hydro.riverCarving * seaFade;
-    if (hydro.lakeOffset !== 0 && riverCarving > 0) {
-      return Math.min(elevation + hydro.lakeOffset, elevation - riverCarving);
+  private mesaLift(x: number, z: number, coastDist: number, macroRelief: number): number {
+    const env = smoothstep(150.0, 350.0, coastDist) * (1.0 - smoothstep(16.0, 30.0, macroRelief));
+    if (env <= 0.0) return 0.0;
+    const CELL = 640.0;
+    const cx = Math.floor(x / CELL), cz = Math.floor(z / CELL);
+    let lift = 0.0;
+    for (let j = -1; j <= 1; j++) {
+      for (let i = -1; i <= 1; i++) {
+        const gx = cx + i, gz = cz + j;
+        const rnd = (k: number) => {
+          let hsh = Math.imul(gx, 374761393) ^ Math.imul(gz, 668265263) ^ Math.imul(this.seed ^ 0x5bd1e995, k * 2654435761);
+          hsh = Math.imul(hsh ^ (hsh >>> 13), 1274126177);
+          hsh ^= hsh >>> 16;
+          return (hsh >>> 0) / 4294967296;
+        };
+        if (rnd(1) > 0.40) continue;
+        const sx = (gx + 0.2 + 0.6 * rnd(2)) * CELL, sz = (gz + 0.2 + 0.6 * rnd(3)) * CELL;
+        const R = 70.0 + 110.0 * rnd(4);
+        const d = Math.hypot(x - sx, z - sz);
+        if (d > R * 1.45 + 40.0) continue;
+        const H = 16.0 + 22.0 * rnd(5); // até ~38m: mais alto, o topo ganhava neve de altitude
+        // contorno irregular: lobos grandes + recortes menores (baías e promontórios no paredão). O
+        // raio varia só com a DIREÇÃO a partir do centro (ruído lido num círculo): com o ruído pela
+        // posição, trechos no meio do platô ficavam "fora" do contorno e viravam poços fundos
+        const k = rnd(6) * 100.0;
+        const ang = Math.atan2(z - sz, x - sx);
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        const wobble = this.noise.fbm2D(ca * 1.6 + k, sa * 1.6 - k, 3, 0.5, 2.0) * 0.30
+                     + this.noise.noise2D(ca * 7.0 - k, sa * 7.0 + k) * 0.07;
+        const sdf = d - R * (1.0 + wobble); // < 0 dentro do bloco
+        // paredão principal (~6m de transição para 15-36m de altura: quase vertical)
+        const upper = 1.0 - smoothstep(-3.0, 3.0, sdf);
+        // patamar mais baixo em volta (em metade das mesas)
+        const ledgeW = 10.0 + 14.0 * rnd(7);
+        const lower = rnd(8) < 0.5 ? 1.0 - smoothstep(ledgeW - 3.0, ledgeW + 3.0, sdf) : 0.0;
+        const prof = lower > 0.0 ? lower * 0.30 + upper * 0.70 : upper;
+        // topo levemente abaulado, e não uma tábua
+        const dome = 0.06 * smoothstep(0.0, R, -sdf);
+        lift = Math.max(lift, H * (prof + dome * upper));
+      }
     }
-    if (hydro.lakeOffset !== 0) return elevation + hydro.lakeOffset;
-    if (riverCarving > 0) return elevation - riverCarving;
-    return elevation;
+    return lift * env;
+  }
+
+  /**
+   * Encostas em degraus nas montanhas (como os níveis de um diorama): cada degrau é um patamar
+   * quase plano que termina num paredão íngreme, onde aparece a textura de encosta. Só em parte
+   * das regiões montanhosas; a altura do degrau varia (~7.5-12.5m) e a borda dele serpenteia, para os
+   * paredões não virarem curvas de nível perfeitas. Onde a montanha é mais íngreme, o paredão
+   * também fica mais vertical.
+   */
+  private terrace(x: number, z: number, h: number, macroRelief: number): number {
+    const mountain = smoothstep(16.0, 38.0, macroRelief);
+    if (mountain <= 0.0) return h;
+    const region = this.noise.noise2D(x * 0.006 + 31.1, z * 0.006 - 7.7) * 0.5 + 0.5;
+    const amount = mountain * smoothstep(0.30, 0.55, region);
+    if (amount <= 0.0) return h;
+    const stepH = 10.0 + this.noise.noise2D(x * 0.004 - 3.3, z * 0.004 + 9.1) * 2.5;
+    const warp = this.noise.noise2D(x * 0.02 + 5.5, z * 0.02 + 1.7) * stepH * 0.45
+               + this.noise.noise2D(x * 0.07, z * 0.07 + 3.3) * stepH * 0.12;
+    const hw = h + warp;
+    const k = Math.floor(hw / stepH);
+    const t = hw / stepH - k;
+    // t^6: começo do degrau quase plano (patamar), fim subindo de uma vez (paredão)
+    const t3 = t * t * t;
+    const stepped = (k + t3 * t3) * stepH - warp;
+    return lerp(h, stepped, amount * 0.95);
+  }
+
+  /**
+   * Lagos e rios moldando o relevo: a hidrologia devolve quanto a altura sobe ou desce naquele
+   * ponto (leito, margens e o dique natural que segura a água no lado mais baixo do terreno).
+   */
+  private applyHydrology(elevation: number, hydro: { heightOffset: number }): number {
+    return elevation + hydro.heightOffset;
   }
 
   private oceanFloor(x: number, z: number): number {

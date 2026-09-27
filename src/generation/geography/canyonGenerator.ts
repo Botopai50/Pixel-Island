@@ -109,7 +109,7 @@ export class CanyonGenerator {
 
     // Ravinas afluentes estreitas (slot canyons)
     const tributaryNoise = Math.abs(this.noise.fbm2D((x + warpX) * 0.022, (z + warpZ) * 0.022, 3));
-    const isRavineCut = tributaryNoise < 0.12 && zoneInfluence > 0.4;
+    const isRavineCut = tributaryNoise < 0.18 && zoneInfluence > 0.4;
 
     let carveDepth = 0.0;
     let isCanyonFloor = false;
@@ -132,10 +132,13 @@ export class CanyonGenerator {
         isCanyonFloor = true;
       }
     } else if (isRavineCut) {
-      // Ravinas estreitas cortam até 18 metros
-      const rProg = tributaryNoise / 0.12;
-      const maxRavineCarve = Math.min(currentElevation - 5.0, 22.0);
-      carveDepth = (1.0 - rProg) * maxRavineCarve * zoneInfluence;
+      // Ravinas: valetas rasas (até 7m) de encosta suave. Seguem as linhas onde o ruído passa por
+      // zero, que formam laços fechados e trechos curtos: fundas (22m) e estreitas, viravam poços
+      // e fendas de paredão soltos no meio do terreno
+      const rProg = tributaryNoise / 0.18;
+      const maxRavineCarve = Math.min(currentElevation - 5.0, 7.0);
+      const t = 1.0 - rProg;
+      carveDepth = t * t * (3.0 - 2.0 * t) * maxRavineCarve * zoneInfluence;
       isRavine = true;
     }
 

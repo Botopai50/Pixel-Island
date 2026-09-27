@@ -147,6 +147,25 @@ export function createChunkTerrainMaterial(
                   + (vn2(vWPos.xz * 0.8 + 3.1) - 0.5) * 0.9;
     float yl = uRockY + rockVar + dth * 1.6;
     float bel = yl - vWPos.y;
+    // Paredão com a altura conhecida (vWall: metros até a borda de cima e até o pé): rocha da
+    // metade para baixo da PRÓPRIA parede, com a mesma linha recortada. Pela altura absoluta, as
+    // paredes que começam acima de ~10m (mesas, degraus altos) ficavam só de terra.
+    if (vWall.x > 0.5 && vWall.x < 90.0 && vWall.y > 0.5 && vWall.y < 90.0) {
+      float rimW = vWall.x - 1.0, baseW = vWall.y - 1.0, wallH = rimW + baseW;
+      // só paredões altos (12m+): encostas e degraus baixos seguem a regra antiga (terra, rocha só
+      // perto do nível do mar); a faixa de rocha cresce até a metade da parede entre 12m e 20m
+      // e só na face quase vertical (mais de ~60°): uma encosta longa também soma 12m de altura
+      vec3 fN = normalize(cross(dPX, dPY));
+      if (wallH > 12.0 && abs(fN.y) < 0.5) {
+        float f = 0.5 * smoothstep(12.0, 20.0, wallH);
+        // divisa irregular, proporcional à altura da parede: ondas largas (~14m, ±22% da altura),
+        // recortes médios (~4m, ±7%) e dentes pequenos (~1m) - com só ±2m ela saía quase reta
+        float rv = (vn2(vWPos.xz * 0.07 + 13.1) - 0.5) * 0.45 * wallH
+                 + (vn2(vWPos.xz * 0.23 + 5.1) - 0.5) * 0.15 * wallH
+                 + (vn2(vWPos.xz * 0.9 + 2.2) - 0.5) * 1.0;
+        bel = wallH * f - baseW + rv + dth * 1.2;
+      }
+    }
     float rk = step(0.0, bel);
 
     // Sombra de contato ditherizada nas duas faces do vinco
@@ -163,12 +182,23 @@ export function createChunkTerrainMaterial(
     // Transição de encosta: o topo manda nas partes planas, a falésia nas íngremes.
     // Onde a vegetação está marcada no canal alfa (topS.a > 0.5), o limiar sobe:
     // a grama escorre pela quebra da encosta (hang) em dentes pixelados irregulares.
+    // Inclinação: a do normal interpolado ou, onde a malha traz (vWall.z), a inclinação máxima até
+    // os vértices vizinhos, interpolada - suave entre triângulos (a do próprio triângulo deixava a
+    // quina dos paredões em dentes de serra e pontilhava a grama) e que no pé do paredão já enxerga
+    // a parede ao lado (com o normal, a grama esticava pela parede em triângulos verdes)
     float slope = 1.0 - abs(wn.y);
-    float thr = 0.40 + dth * 0.34 + topS.a * (uHang + dth * 0.60);
+    if (vWall.x > 0.5) slope = max(slope, vWall.z);
+    // Limiar estreito e com teto de 0.46 (~57°): com o pontilhado largo (±0.17) e a grama da quina
+    // subindo o limiar até 0.55-1.0, encostas de ~55-60° ficavam com cada pixel escolhendo entre a
+    // parede e a textura do chão esticada ~2x (manchas misturadas, fios verdes)
+    float thr = min(0.46, 0.38 + dth * 0.12 + topS.a * (uHang * 0.4 + dth * 0.12));
     float m = step(thr, slope);
 
     // Borda de vinco escurecida na vegetação que desce a encosta
-    float rim = topS.a * (1.0 - m) * step(thr - 0.10 * (1.0 + dth * 1.4), slope);
+    // (a antiga "borda escura" da grama na quebra da encosta saiu: na quina arredondada das mesas
+    // e degraus ela virava uma linha escura no meio da grama; a grama que escorre pela parede
+    // - mais abaixo - já faz esse papel)
+    float rim = 0.0;
     vec3 topBase = mix(topS.rgb, topDarkS.rgb, rim);
 
     // Detalhamento em micro-pixels nos caminhos, grama e solo sob os pés do jogador
@@ -196,6 +226,65 @@ export function createChunkTerrainMaterial(
     // Pontilhado leve: no estilo diorama as áreas lisas são limpas (o detalhe vem das formas)
     float detailStrength = clamp((uPixelScale - 0.6) * 1.1, 0.0, 1.0) * 0.35;
     vec3 topC = mix(topBase, subPixelCol, detailStrength);
+
+    // Barranco baixo na beira d'água (até ~1.5m): segue a textura do chão (areia/terra da margem),
+    // só um pouco mais escura na face íngreme. A textura de falésia num degrau desse tamanho virava
+    // um recorte de losangos coloridos.
+    // A face lê o chão uns 3m para dentro da terra: no próprio lugar dela a textura é a do fundo
+    // debaixo d'água (escura e manchada).
+    // até 3m: com a margem elevada (até 1.5m) e o vale em volta, os barrancos de lago passam de 1.5m
+    float lowBank = 1.0 - step(3.0 + dth * 0.6, vWPos.y);
+    // (vale também para faces que a grama da quina ainda cobriria - inclinação acima de ~0.3 -
+    // senão a grama do chão esticava pela face do barranco)
+    if (lowBank > 0.0 && (m > 0.0 || slope > 0.3)) {
+      vec2 inland = -normalize(wn.xz + vec2(1e-5));
+      vec2 uvBank = clamp((pixWorld + inland * 3.0 - uOrig) / uSize, 0.0, 1.0);
+      vec4 bankS = textureLod(uTop, uvBank, 0.0);
+      // chão de vegetação acima: a face vira areia (a grama esticada ficava em listras verdes, e a
+      // terra das paredes em listras marrons) - a areia molhada 1m para dentro da margem, ou uma
+      // areia fixa se ali ainda é grama
+      if (bankS.a > 0.4) {
+        vec2 uvNear = clamp((pixWorld + inland * 1.0 - uOrig) / uSize, 0.0, 1.0);
+        bankS = textureLod(uTop, uvNear, 0.0);
+        if (bankS.a > 0.4) bankS.rgb = vec3(0.78, 0.62, 0.42);
+      }
+      topC = bankS.rgb * 0.84;
+    }
+    m *= 1.0 - lowBank;
+
+    // Paredões: grama escorrendo da borda de cima e terra subindo pelo pé. vWall = metros abaixo
+    // da borda e acima do pé (+1; 0 = geometria sem a informação). O comprimento varia por coluna
+    // de pixels ao longo da parede (fios de grama de tamanhos diferentes), com contorno pixelado.
+    if (m > 0.0 && vWall.x > 0.5) {
+      float rimD = vWall.x - 1.0, baseH = vWall.y - 1.0;
+      float col = floor(dot(vWPos.xz, wTan) * totalD);
+      float along = col / totalD;
+      float colR = h21(vec2(floor(col / 2.0), 7.0));
+      float drip = 0.5 + 1.6 * vn2(vec2(along * 0.55, 3.1)) + 1.4 * colR * colR + dth * 0.35;
+      // em paredes baixas (barrancos de 2-3m) a grama e a terra de tamanho fixo cobriam a face toda,
+      // misturadas e esticadas: no máximo ~30% da altura da parede, e nada abaixo de 2.5m
+      float wallHt = (rimD < 90.0 && baseH < 90.0) ? rimD + baseH : 99.0;
+      drip = wallHt < 2.5 ? -1.0 : min(drip, wallHt * 0.3);
+      if (rimD < drip) {
+        // cor da grama do topo, lida um pouco para dentro do platô
+        vec2 inland = -normalize(wn.xz + vec2(1e-5));
+        vec2 uvG = clamp((pixWorld + inland * (2.5 + rimD) - uOrig) / uSize, 0.0, 1.0);
+        // nível 0 da textura: com as derivadas da parede (UV variando muito por pixel) caía num
+        // mipmap borrado e a grama que escorre virava uma faixa verde lisa
+        vec4 g = textureLod(uTop, uvG, 0.0);
+        vec4 gd = textureLod(uTopD, uvG, 0.0);
+        // só onde o topo tem vegetação; a ponta dos fios fica no tom escuro
+        if (g.a > 0.4) wall = rimD > drip - 0.45 ? gd.rgb : g.rgb;
+      }
+      float creep = 0.4 + 1.5 * vn2(vec2(along * 0.4, 11.3)) + 0.8 * h21(vec2(floor(col / 3.0), 19.0)) + dth * 0.35;
+      if (baseH < 90.0 && rimD < 90.0) creep = min(creep, (rimD + baseH) * 0.25);
+      if (baseH < creep) {
+        // terra do barranco subindo pelo pé, com a borda de cima um degrau mais escura
+        vec3 soil = textureGrad(uWallA, uvD, dDirtX, dDirtY).rgb;
+        vec3 soilD = textureGrad(uWallD, uvD, dDirtX, dDirtY).rgb;
+        wall = baseH > creep - 0.35 ? soilD : soil;
+      }
+    }
 
     diffuseColor.rgb = mix(topC, wall, m);
 
@@ -273,9 +362,10 @@ export function createChunkTerrainMaterial(
       uPixelScale: customUniforms.uPixelScale,
     });
 
-    sh.vertexShader = 'varying vec3 vWPos;\nvarying vec3 vWNrm;\n' + sh.vertexShader.replace(
+    sh.vertexShader = 'attribute vec3 wallInfo;\nvarying vec3 vWall;\nvarying vec3 vWPos;\nvarying vec3 vWNrm;\n' + sh.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
+       vWall = wallInfo;
        vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
        vWNrm = normalize((modelMatrix * vec4(normal, 0.0)).xyz);`
     );
@@ -296,7 +386,7 @@ export function createChunkTerrainMaterial(
       uniform float uPixelScale;
     `;
 
-    sh.fragmentShader = 'varying vec3 vWPos;\nvarying vec3 vWNrm;\n' +
+    sh.fragmentShader = 'varying vec3 vWall;\nvarying vec3 vWPos;\nvarying vec3 vWNrm;\n' +
       uniformDecls + '\n' +
       GLSL_NOISE + '\n' +
       sh.fragmentShader
