@@ -1453,7 +1453,7 @@ private:
         binds[0]={0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
         binds[1]={1,sizeof(InstanceGPU),VK_VERTEX_INPUT_RATE_INSTANCE};
 
-        std::array<VkVertexInputAttributeDescription,10> attrs{};
+        std::array<VkVertexInputAttributeDescription,11> attrs{};
         attrs[0]={0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,px)};
         attrs[1]={1,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,nx)};
         attrs[2]={2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,r)};
@@ -1464,6 +1464,7 @@ private:
         attrs[7]={7,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,r)};
         attrs[8]={8,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,wallX)};
         attrs[9]={9,0,VK_FORMAT_R32_SFLOAT,offsetof(Vertex,morph)};
+        attrs[10]={10,0,VK_FORMAT_R32G32_SFLOAT,offsetof(Vertex,u)};
 
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vi.vertexBindingDescriptionCount=2; vi.pVertexBindingDescriptions=binds;
