@@ -260,3 +260,32 @@ function align4(v:number){ return (v + 3) & ~3; }
   o=copyInto(u8,o,wallA);o=copyInto(u8,o,wallB);o=copyInto(u8,o,wallC);o=copyInto(u8,o,wallD);o=copyInto(u8,o,grad);
   return out;
 };
+
+
+(globalThis as any).pixelGetSpawn=function(seedText:string){
+  const terrainGen=worldFor(seedText);
+  const startX=0,startZ=0;
+  let bestX=startX,bestZ=startZ,bestScore=-9999;
+  const maxR=650,stepR=25;
+  const hydro=terrainGen.getHydrology();
+  hydro.setDeferMissing(false);
+  for(let r=0;r<=maxR;r+=stepR){
+    const angleSteps=Math.max(8,Math.floor((r*2*Math.PI)/30));
+    for(let a=0;a<angleSteps;a++){
+      const theta=(a/angleSteps)*Math.PI*2;
+      const testX=startX+Math.cos(theta)*r;
+      const testZ=startZ+Math.sin(theta)*r;
+      const pt=terrainGen.getPoint(testX,testZ);
+      if(!pt.isWater && pt.height>CONFIG.BEACH_HEIGHT+2.0 && pt.slope<0.35){
+        const altScore=50.0-Math.abs(pt.height-18.0);
+        const slopePenalty=pt.slope*40.0;
+        const score=altScore-slopePenalty;
+        if(score>bestScore){bestScore=score;bestX=testX;bestZ=testZ;}
+      }
+    }
+    if(bestScore>35.0)break;
+  }
+  const elevation=terrainGen.getHeight(bestX,bestZ);
+  hydro.setDeferMissing(true);
+  return new Float32Array([bestX,bestZ,elevation]).buffer;
+};
