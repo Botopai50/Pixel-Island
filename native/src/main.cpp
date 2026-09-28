@@ -4222,6 +4222,8 @@ private:
         blitPipeline_=VK_NULL_HANDLE;
         if(waterPipeline_)vkDestroyPipeline(device_,waterPipeline_,nullptr);
         waterPipeline_=VK_NULL_HANDLE;
+        if(skyPipeline_)vkDestroyPipeline(device_,skyPipeline_,nullptr);
+        skyPipeline_=VK_NULL_HANDLE;
 
         if(renderPass_)vkDestroyRenderPass(device_,renderPass_,nullptr);
         renderPass_=VK_NULL_HANDLE;
@@ -4282,9 +4284,11 @@ private:
             if(commandPool_)vkDestroyCommandPool(device_,commandPool_,nullptr);
             cleanupSwapchain();
 
+            if(skyPipelineLayout_)vkDestroyPipelineLayout(device_,skyPipelineLayout_,nullptr);
             if(waterPipelineLayout_)vkDestroyPipelineLayout(device_,waterPipelineLayout_,nullptr);
             if(blitPipelineLayout_)vkDestroyPipelineLayout(device_,blitPipelineLayout_,nullptr);
             if(pipelineLayout_)vkDestroyPipelineLayout(device_,pipelineLayout_,nullptr);
+            if(skyDescriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,skyDescriptorSetLayout_,nullptr);
             if(waterDescriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,waterDescriptorSetLayout_,nullptr);
             if(blitDescriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,blitDescriptorSetLayout_,nullptr);
             if(descriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,descriptorSetLayout_,nullptr);
@@ -4322,6 +4326,7 @@ private:
     VkDescriptorSetLayout descriptorSetLayout_=VK_NULL_HANDLE;
     VkDescriptorSetLayout blitDescriptorSetLayout_=VK_NULL_HANDLE;
     VkDescriptorSetLayout waterDescriptorSetLayout_=VK_NULL_HANDLE;
+    VkDescriptorSetLayout skyDescriptorSetLayout_=VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_=VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_=VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_=VK_NULL_HANDLE;
@@ -4330,6 +4335,8 @@ private:
     VkPipeline blitPipeline_=VK_NULL_HANDLE;
     VkPipelineLayout waterPipelineLayout_=VK_NULL_HANDLE;
     VkPipeline waterPipeline_=VK_NULL_HANDLE;
+    VkPipelineLayout skyPipelineLayout_=VK_NULL_HANDLE;
+    VkPipeline skyPipeline_=VK_NULL_HANDLE;
     VkImage depthImage_=VK_NULL_HANDLE;
     VkDeviceMemory depthMemory_=VK_NULL_HANDLE;
     VkImageView depthView_=VK_NULL_HANDLE;
@@ -4347,6 +4354,10 @@ private:
     TextureGpu impostorAtlasTexture_{};
     VkDescriptorSet impostorDescriptor_=VK_NULL_HANDLE;
     Buffer impostorInfoBuffer_{};
+
+    SkyMeshGpu skyMesh_{};
+    std::array<Buffer,2> skyUniformBuffers_{};
+    std::array<VkDescriptorSet,2> skyDescriptorSets_{VK_NULL_HANDLE,VK_NULL_HANDLE};
 
     WaterMeshGpu waterMesh_{};
     Buffer waterUniformBuffer_{};
