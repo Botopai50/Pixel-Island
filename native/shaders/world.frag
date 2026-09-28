@@ -43,10 +43,10 @@ vec4 sampleTop(bool dark,vec2 localUV){
 }
 
 vec3 sampleWall(int which,vec2 uv){
-    // atlas 512x384: A,B,C,D em colunas de 128x384.
+    // atlas 1024x1024: A,B,C,D em colunas de 256x1024.
     vec2 f=fract(uv);
-    float x=(float(which)*128.0+f.x*127.0+0.5)/512.0;
-    float y=(f.y*383.0+0.5)/384.0;
+    float x=(float(which)*256.0+f.x*255.0+0.5)/1024.0;
+    float y=(f.y*1023.0+0.5)/1024.0;
     return texture(uWallAtlas,vec2(x,y)).rgb;
 }
 
@@ -101,11 +101,11 @@ vec3 terrainColor(){
     float wOct=floor(wAng/0.78539816+0.5+dth*0.7)*0.78539816;
     vec2 wTan=vec2(-sin(wOct),cos(wOct));
     vec2 uvW=vec2(dot(vWorldPos.xz,wTan),vWorldPos.y);
-    uvW*=totalD/128.0;
+    uvW*=totalD/256.0;
 
     float bi=floor(topD.a*255.0+0.5);
-    vec2 uvD=vec2(uvW.x,(fract(uvW.y*0.7)+bi)/3.0);
-    vec2 uvRock=vec2(uvW.x,(fract(uvW.y)+bi)/3.0);
+    vec2 uvD=vec2(uvW.x,(fract(uvW.y*0.7)+bi)/4.0);
+    vec2 uvRock=vec2(uvW.x,(fract(uvW.y)+bi)/4.0);
 
     float rockVar=(vn2(vWorldPos.xz*0.045)-0.5)*9.0
                  +(vn2(vWorldPos.xz*0.21+7.3)-0.5)*3.0
