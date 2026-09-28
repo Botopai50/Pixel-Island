@@ -30,7 +30,7 @@ constexpr int TERRAIN_SEGMENTS = 160;
 constexpr float TERRAIN_SIZE = 2048.0f;
 constexpr float STREAM_STEP = 256.0f;
 constexpr float FOG_FAR = 720.0f;
-constexpr uint32_t MAX_TREE_INSTANCES = 20000;
+constexpr uint32_t MAX_INSTANCES_PER_MESH = 60000;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 constexpr uint32_t WORLD_SEED = 0x5EED1234u;
 constexpr float PI = 3.14159265358979323846f;
@@ -740,6 +740,7 @@ struct PushConstants {
     Mat4 viewProj;
     float cameraFog[4];
     float sunAmbient[4];
+    float environment[4];
 };
 
 class VulkanApp {
@@ -1048,13 +1049,14 @@ private:
         binds[0]={0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
         binds[1]={1,sizeof(InstanceGPU),VK_VERTEX_INPUT_RATE_INSTANCE};
 
-        std::array<VkVertexInputAttributeDescription,6> attrs{};
+        std::array<VkVertexInputAttributeDescription,7> attrs{};
         attrs[0]={0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,px)};
         attrs[1]={1,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,nx)};
         attrs[2]={2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,r)};
         attrs[3]={3,1,VK_FORMAT_R32G32B32_SFLOAT,offsetof(InstanceGPU,x)};
         attrs[4]={4,1,VK_FORMAT_R32_SFLOAT,offsetof(InstanceGPU,scale)};
         attrs[5]={5,1,VK_FORMAT_R32_SFLOAT,offsetof(InstanceGPU,rotation)};
+        attrs[6]={6,1,VK_FORMAT_R32G32B32_SFLOAT,offsetof(InstanceGPU,r)};
 
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vi.vertexBindingDescriptionCount=2; vi.pVertexBindingDescriptions=binds;
@@ -1204,18 +1206,19 @@ private:
 
     void destroyMesh(GpuMesh& m) { destroyBuffer(m.vb); destroyBuffer(m.ib); m.indexCount=0; }
 
+
     void createGpuWorldResources() {
         terrainVB_=createBuffer(sizeof(Vertex)*static_cast<size_t>(TERRAIN_SEGMENTS+1)*(TERRAIN_SEGMENTS+1),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         terrainIB_=createBuffer(sizeof(uint32_t)*static_cast<size_t>(TERRAIN_SEGMENTS)*TERRAIN_SEGMENTS*6,VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
         dummyInstance_=createBuffer(sizeof(InstanceGPU),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        InstanceGPU d{0,0,0,1,0,0,0,0};
+        InstanceGPU d{0,0,0,1,0,1,1,1};
         std::memcpy(dummyInstance_.mapped,&d,sizeof(d));
 
-        for(int i=0;i<3;i++) {
-            treeMeshes_[i]=uploadMesh(buildTreeMesh(i));
-            treeInstances_[i]=createBuffer(sizeof(InstanceGPU)*MAX_TREE_INSTANCES,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-            visible_[i].reserve(MAX_TREE_INSTANCES);
+        for(int i=0;i<MESH_KIND_COUNT;i++) {
+            meshes_[i]=uploadMesh(buildMeshForKind(i));
+            instanceBuffers_[i]=createBuffer(sizeof(InstanceGPU)*MAX_INSTANCES_PER_MESH,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+            visible_[i].reserve(i==GRASS?MAX_INSTANCES_PER_MESH:12000);
         }
     }
 
@@ -1227,39 +1230,81 @@ private:
         std::memcpy(terrainVB_.mapped,w.terrainVertices.data(),vbBytes);
         std::memcpy(terrainIB_.mapped,w.terrainIndices.data(),ibBytes);
         terrainIndexCount_=static_cast<uint32_t>(w.terrainIndices.size());
-        trees_=std::move(w.trees);
+        objects_=std::move(w.objects);
         worldCenterX_=w.centerX; worldCenterZ_=w.centerZ;
         requestedCenterX_=worldCenterX_; requestedCenterZ_=worldCenterZ_;
     }
 
+    Vec3 observerEye() const {
+        const float horizontal=observerSize_*0.72f;
+        return {
+            focus_.x + std::sin(observerYaw_)*horizontal,
+            std::max(terrainHeight(focus_.x,focus_.z)+35.0f, observerSize_*0.62f),
+            focus_.z + std::cos(observerYaw_)*horizontal
+        };
+    }
+
     void updateCamera(float dt) {
-        const float turn=1.65f*dt;
-        if(GetAsyncKeyState(VK_LEFT)&0x8000) yaw_-=turn;
-        if(GetAsyncKeyState(VK_RIGHT)&0x8000) yaw_+=turn;
-        if(GetAsyncKeyState(VK_UP)&0x8000) pitch_+=turn*0.75f;
-        if(GetAsyncKeyState(VK_DOWN)&0x8000) pitch_-=turn*0.75f;
-        pitch_=std::clamp(pitch_,-1.15f,0.65f);
+        const bool tabNow=(GetAsyncKeyState(VK_TAB)&0x8000)!=0;
+        if(tabNow&&!tabDown_) {
+            observerMode_=!observerMode_;
+            if(observerMode_) {
+                focus_={camera_.x,terrainHeight(camera_.x,camera_.z),camera_.z};
+            } else {
+                camera_={focus_.x,terrainHeight(focus_.x,focus_.z)+1.75f,focus_.z};
+                yaw_=observerYaw_+PI;
+                pitch_=-0.05f;
+            }
+        }
+        tabDown_=tabNow;
 
-        Vec3 forward{std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)};
-        Vec3 flat=normalize({forward.x,0,forward.z});
-        Vec3 right=normalize(cross({0,1,0},flat));
-        float speed=(GetAsyncKeyState(VK_SHIFT)&0x8000)?135.0f:55.0f;
-        if(GetAsyncKeyState('W')&0x8000) camera_=camera_+flat*(speed*dt);
-        if(GetAsyncKeyState('S')&0x8000) camera_=camera_-flat*(speed*dt);
-        if(GetAsyncKeyState('D')&0x8000) camera_=camera_+right*(speed*dt);
-        if(GetAsyncKeyState('A')&0x8000) camera_=camera_-right*(speed*dt);
-        if(GetAsyncKeyState(VK_SPACE)&0x8000) camera_.y+=speed*dt;
-        if(GetAsyncKeyState(VK_CONTROL)&0x8000) camera_.y-=speed*dt;
+        // presets rápidos para medir a Intel UHD
+        if(GetAsyncKeyState('1')&0x8000) fogFar_=520.0f;
+        if(GetAsyncKeyState('2')&0x8000) fogFar_=720.0f;
+        if(GetAsyncKeyState('3')&0x8000) fogFar_=980.0f;
 
-        const float ground=terrainHeight(camera_.x,camera_.z)+4.0f;
-        camera_.y=std::max(camera_.y,ground);
+        if(observerMode_) {
+            const float turn=1.30f*dt;
+            if(GetAsyncKeyState(VK_LEFT)&0x8000) observerYaw_-=turn;
+            if(GetAsyncKeyState(VK_RIGHT)&0x8000) observerYaw_+=turn;
+            if(GetAsyncKeyState('Q')&0x8000) observerSize_=std::min(760.0f,observerSize_*(1.0f+1.5f*dt));
+            if(GetAsyncKeyState('E')&0x8000) observerSize_=std::max(38.0f,observerSize_*(1.0f-1.5f*dt));
+
+            Vec3 flat{std::sin(observerYaw_+PI),0,std::cos(observerYaw_+PI)};
+            Vec3 right=normalize(cross({0,1,0},flat));
+            const float speed=(GetAsyncKeyState(VK_SHIFT)&0x8000)?180.0f:75.0f;
+            if(GetAsyncKeyState('W')&0x8000) focus_=focus_+flat*(speed*dt);
+            if(GetAsyncKeyState('S')&0x8000) focus_=focus_-flat*(speed*dt);
+            if(GetAsyncKeyState('D')&0x8000) focus_=focus_+right*(speed*dt);
+            if(GetAsyncKeyState('A')&0x8000) focus_=focus_-right*(speed*dt);
+            focus_.y=terrainHeight(focus_.x,focus_.z);
+            camera_=observerEye();
+        } else {
+            const float turn=1.65f*dt;
+            if(GetAsyncKeyState(VK_LEFT)&0x8000) yaw_-=turn;
+            if(GetAsyncKeyState(VK_RIGHT)&0x8000) yaw_+=turn;
+            if(GetAsyncKeyState(VK_UP)&0x8000) pitch_+=turn*0.75f;
+            if(GetAsyncKeyState(VK_DOWN)&0x8000) pitch_-=turn*0.75f;
+            pitch_=std::clamp(pitch_,-1.05f,0.82f);
+
+            Vec3 forward{std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)};
+            Vec3 flat=normalize({forward.x,0,forward.z});
+            Vec3 right=normalize(cross({0,1,0},flat));
+            const float speed=(GetAsyncKeyState(VK_SHIFT)&0x8000)?42.0f:12.5f;
+            if(GetAsyncKeyState('W')&0x8000) camera_=camera_+flat*(speed*dt);
+            if(GetAsyncKeyState('S')&0x8000) camera_=camera_-flat*(speed*dt);
+            if(GetAsyncKeyState('D')&0x8000) camera_=camera_+right*(speed*dt);
+            if(GetAsyncKeyState('A')&0x8000) camera_=camera_-right*(speed*dt);
+            camera_.y=terrainHeight(camera_.x,camera_.z)+1.75f;
+        }
 
         if(GetAsyncKeyState(VK_ESCAPE)&0x8000) PostMessageW(hwnd_,WM_CLOSE,0,0);
     }
 
     void updateStreaming() {
-        const int cx=static_cast<int>(std::floor(camera_.x/STREAM_STEP))*static_cast<int>(STREAM_STEP);
-        const int cz=static_cast<int>(std::floor(camera_.z/STREAM_STEP))*static_cast<int>(STREAM_STEP);
+        const Vec3 anchor=observerMode_?focus_:camera_;
+        const int cx=static_cast<int>(std::floor(anchor.x/STREAM_STEP))*static_cast<int>(STREAM_STEP);
+        const int cz=static_cast<int>(std::floor(anchor.z/STREAM_STEP))*static_cast<int>(STREAM_STEP);
         if((cx!=requestedCenterX_||cz!=requestedCenterZ_)&&streamer_) {
             requestedCenterX_=cx; requestedCenterZ_=cz;
             streamer_->request(cx,cz);
@@ -1268,38 +1313,83 @@ private:
         if(streamer_&&streamer_->take(ready)) uploadWorld(std::move(ready));
     }
 
-    void updateVisibleTrees() {
-        for(auto& v:visible_) v.clear();
-        Vec3 forward{std::sin(yaw_)*std::cos(pitch_),0,std::cos(yaw_)*std::cos(pitch_)};
-        forward=normalize(forward);
-
-        for(const auto& t:trees_) {
-            const float dx=t.x-camera_.x, dz=t.z-camera_.z;
-            const float d2=dx*dx+dz*dz;
-            if(d2>FOG_FAR*FOG_FAR) continue;
-            const float d=std::sqrt(d2);
-            if(d>90.0f) {
-                Vec3 dir=normalize({dx,0,dz});
-                if(dot(dir,forward)<-0.22f) continue;
-            }
-            int lod=d<105.0f?0:(d<270.0f?1:2);
-            if(visible_[lod].size()>=MAX_TREE_INSTANCES) continue;
-            visible_[lod].push_back({t.x,t.y,t.z,t.scale,t.rotation,0,0,0});
+    float maxDistanceForKind(int kind) const {
+        const float base=observerMode_?std::min(fogFar_*1.05f,1100.0f):fogFar_;
+        switch(kind){
+            case GRASS: return observerMode_?135.0f:72.0f;
+            case FLOWER: return observerMode_?150.0f:85.0f;
+            case SHRUB: return std::min(base,300.0f);
+            case ROCK: return std::min(base,390.0f);
+            case CAVE:
+            case GEYSER:
+            case LANDMARK: return std::min(base,650.0f);
+            case ICE:
+            case CACTUS: return std::min(base,430.0f);
+            default: return base;
         }
-        for(int i=0;i<3;i++) {
+    }
+
+    void updateVisibleObjects() {
+        for(auto& v:visible_) v.clear();
+
+        const Vec3 eye=observerMode_?observerEye():camera_;
+        Vec3 viewDir;
+        if(observerMode_) viewDir=normalize(focus_-eye);
+        else viewDir=normalize({std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)});
+
+        for(const auto& o:objects_) {
+            const float dx=o.x-eye.x,dy=o.y-eye.y,dz=o.z-eye.z;
+            const float d2=dx*dx+dy*dy+dz*dz;
+            const float d=std::sqrt(d2);
+
+            int kind=o.kind;
+            if(kind==TREE_LOD0) {
+                const float maxD=maxDistanceForKind(TREE_LOD0);
+                if(d>maxD) continue;
+                kind=d<105.0f?TREE_LOD0:(d<270.0f?TREE_LOD1:TREE_LOD2);
+            } else {
+                if(d>maxDistanceForKind(kind)) continue;
+            }
+
+            // Frustum aproximado barato. Perto nunca corta; longe remove tudo claramente atrás.
+            if(d>90.0f) {
+                Vec3 dir=normalize({dx,dy,dz});
+                if(dot(dir,viewDir)<-0.30f) continue;
+            }
+
+            if(visible_[kind].size()>=MAX_INSTANCES_PER_MESH) continue;
+            visible_[kind].push_back({o.x,o.y,o.z,o.scale,o.rotation,o.r,o.g,o.b});
+        }
+
+        for(int i=0;i<MESH_KIND_COUNT;i++) {
             if(!visible_[i].empty())
-                std::memcpy(treeInstances_[i].mapped,visible_[i].data(),visible_[i].size()*sizeof(InstanceGPU));
+                std::memcpy(instanceBuffers_[i].mapped,visible_[i].data(),visible_[i].size()*sizeof(InstanceGPU));
         }
     }
 
     PushConstants makePush() {
-        Vec3 dir{std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)};
-        Mat4 view=lookAt(camera_,camera_+dir,{0,1,0});
-        Mat4 proj=perspectiveVulkan(63.0f*PI/180.0f,static_cast<float>(swapExtent_.width)/swapExtent_.height,0.1f,2200.0f);
+        Mat4 view{},proj{};
+        Vec3 eye{};
+        if(observerMode_) {
+            eye=observerEye();
+            const Vec3 target{focus_.x,focus_.y,focus_.z};
+            view=lookAt(eye,target,{0,1,0});
+            const float aspect=static_cast<float>(swapExtent_.width)/swapExtent_.height;
+            const float half=observerSize_*0.5f;
+            proj=orthographicVulkan(-half*aspect,half*aspect,-half,half,0.5f,5000.0f);
+        } else {
+            eye=camera_;
+            const Vec3 dir{std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)};
+            view=lookAt(eye,eye+dir,{0,1,0});
+            proj=perspectiveVulkan(74.0f*PI/180.0f,static_cast<float>(swapExtent_.width)/swapExtent_.height,0.08f,2400.0f);
+        }
+
         PushConstants p{};
         p.viewProj=multiply(proj,view);
-        p.cameraFog[0]=camera_.x;p.cameraFog[1]=camera_.y;p.cameraFog[2]=camera_.z;p.cameraFog[3]=FOG_FAR;
-        p.sunAmbient[0]=0.36f;p.sunAmbient[1]=0.82f;p.sunAmbient[2]=0.43f;p.sunAmbient[3]=0.38f;
+        p.cameraFog[0]=eye.x;p.cameraFog[1]=eye.y;p.cameraFog[2]=eye.z;
+        p.cameraFog[3]=observerMode_?std::max(fogFar_,observerSize_*2.4f):fogFar_;
+        p.sunAmbient[0]=0.36f;p.sunAmbient[1]=0.82f;p.sunAmbient[2]=0.43f;p.sunAmbient[3]=0.34f;
+        p.environment[0]=time_;p.environment[1]=observerMode_?1.0f:0.0f;p.environment[2]=0.0f;p.environment[3]=0.0f;
         return p;
     }
 
@@ -1331,12 +1421,12 @@ private:
         vkCmdBindIndexBuffer(cmd,terrainIB_.buffer,0,VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd,terrainIndexCount_,1,0,0,0);
 
-        for(int i=0;i<3;i++) {
+        for(int i=0;i<MESH_KIND_COUNT;i++) {
             if(visible_[i].empty()) continue;
-            VkBuffer bufs[2]={treeMeshes_[i].vb.buffer,treeInstances_[i].buffer};
+            VkBuffer bufs[2]={meshes_[i].vb.buffer,instanceBuffers_[i].buffer};
             vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
-            vkCmdBindIndexBuffer(cmd,treeMeshes_[i].ib.buffer,0,VK_INDEX_TYPE_UINT32);
-            vkCmdDrawIndexed(cmd,treeMeshes_[i].indexCount,static_cast<uint32_t>(visible_[i].size()),0,0,0);
+            vkCmdBindIndexBuffer(cmd,meshes_[i].ib.buffer,0,VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd,meshes_[i].indexCount,static_cast<uint32_t>(visible_[i].size()),0,0,0);
         }
 
         vkCmdEndRenderPass(cmd);
@@ -1372,14 +1462,19 @@ private:
     }
 
     void updateTitle(double fps,double ms) {
+        size_t visibleTotal=0;
+        int draws=1;
+        for(const auto& v:visible_){visibleTotal+=v.size();if(!v.empty())draws++;}
         std::wostringstream ss;
-        ss<<L"Pixel Island Native | Vulkan | "
+        ss<<L"Pixel Island Native Full | Vulkan | "
           <<deviceProps_.deviceName
           <<L" | "<<static_cast<int>(fps)<<L" FPS"
           <<L" | "<<static_cast<int>(ms*10.0)/10.0<<L" ms"
-          <<L" | Trees "<<trees_.size()
-          <<L" | LOD "<<visible_[0].size()<<L"/"<<visible_[1].size()<<L"/"<<visible_[2].size()
-          <<L" | Draws <= 4";
+          <<L" | "<<(observerMode_?L"OBSERVADOR":L"FPS")
+          <<L" | Objetos "<<objects_.size()<<L"/"<<visibleTotal
+          <<L" | Trees LOD "<<visible_[TREE_LOD0].size()<<L"/"<<visible_[TREE_LOD1].size()<<L"/"<<visible_[TREE_LOD2].size()
+          <<L" | Draws "<<draws
+          <<L" | TAB modo | 1/2/3 qualidade";
         SetWindowTextW(hwnd_,ss.str().c_str());
     }
 
@@ -1407,7 +1502,8 @@ private:
 
             updateCamera(dt);
             updateStreaming();
-            updateVisibleTrees();
+            updateVisibleObjects();
+            time_+=dt;
 
             auto frameStart=clock::now();
             drawFrame();
@@ -1454,7 +1550,7 @@ private:
 
     void cleanup() {
         if(device_!=VK_NULL_HANDLE) {
-            for(int i=0;i<3;i++){destroyMesh(treeMeshes_[i]);destroyBuffer(treeInstances_[i]);}
+            for(int i=0;i<MESH_KIND_COUNT;i++){destroyMesh(meshes_[i]);destroyBuffer(instanceBuffers_[i]);}
             destroyBuffer(dummyInstance_);
             destroyBuffer(terrainVB_);destroyBuffer(terrainIB_);
             for(int i=0;i<MAX_FRAMES_IN_FLIGHT;i++) {
@@ -1506,13 +1602,20 @@ private:
 
     Buffer terrainVB_,terrainIB_,dummyInstance_;
     uint32_t terrainIndexCount_=0;
-    std::array<GpuMesh,3> treeMeshes_{};
-    std::array<Buffer,3> treeInstances_{};
-    std::array<std::vector<InstanceGPU>,3> visible_{};
-    std::vector<TreeSeed> trees_;
+    std::array<GpuMesh,MESH_KIND_COUNT> meshes_{};
+    std::array<Buffer,MESH_KIND_COUNT> instanceBuffers_{};
+    std::array<std::vector<InstanceGPU>,MESH_KIND_COUNT> visible_{};
+    std::vector<ObjectSeed> objects_;
 
-    Vec3 camera_{0,78,-160};
-    float yaw_=0.0f,pitch_=-0.17f;
+    Vec3 camera_{0,terrainHeight(0,-160)+1.75f,-160};
+    Vec3 focus_{0,terrainHeight(0,0),0};
+    float yaw_=0.0f,pitch_=-0.05f;
+    bool observerMode_=true;
+    bool tabDown_=false;
+    float observerYaw_=42.0f*PI/180.0f;
+    float observerSize_=220.0f;
+    float fogFar_=720.0f;
+    float time_=0.0f;
     int worldCenterX_=0,worldCenterZ_=0;
     int requestedCenterX_=0,requestedCenterZ_=0;
     std::unique_ptr<WorldStreamer> streamer_;
