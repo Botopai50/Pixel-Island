@@ -1079,7 +1079,7 @@ private:
             case WM_RBUTTONDOWN:
                 if(app){
                     SetCapture(hwnd);
-                    const int x=GET_X_LPARAM(lp),y=GET_Y_LPARAM(lp);
+                    const int x=static_cast<int>(static_cast<short>(LOWORD(lp))),y=static_cast<int>(static_cast<short>(HIWORD(lp)));
                     app->input_.mouseX=x;app->input_.mouseY=y;
                     if(msg==WM_LBUTTONDOWN)app->input_.leftDown=true;
                     if(msg==WM_MBUTTONDOWN)app->input_.middleDown=true;
@@ -1098,7 +1098,7 @@ private:
                 return 0;
             case WM_MOUSEMOVE:
                 if(app){
-                    const int x=GET_X_LPARAM(lp),y=GET_Y_LPARAM(lp);
+                    const int x=static_cast<int>(static_cast<short>(LOWORD(lp))),y=static_cast<int>(static_cast<short>(HIWORD(lp)));
                     const int dx=x-app->input_.mouseX,dy=y-app->input_.mouseY;
                     app->input_.mouseX=x;app->input_.mouseY=y;
                     if(app->observerMode_){
