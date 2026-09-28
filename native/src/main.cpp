@@ -2556,24 +2556,31 @@ private:
         Mat4 view{},proj{};
         Vec3 eye{};
         float focusDistance=0.0f;
-        if(observerMode_) {
+        const float aspect=static_cast<float>(swapExtent_.width)/swapExtent_.height;
+
+        if(transitionMode_!=0){
+            eye=transitionPos_;
+            view=lookAt(eye,transitionLook_,{0,1,0});
+            proj=perspectiveVulkan(transitionFov_*PI/180.0f,aspect,0.1f,14000.0f);
+            focusDistance=length(eye-transitionLook_);
+        } else if(observerMode_) {
             eye=observerEye();
             const Vec3 target{focus_.x,focus_.y,focus_.z};
             focusDistance=length(eye-target);
             view=lookAt(eye,target,{0,1,0});
-            const float aspect=static_cast<float>(swapExtent_.width)/swapExtent_.height;
             const float half=observerFrustumSize_*0.5f;
-            proj=orthographicVulkan(-half*aspect,half*aspect,-half,half,0.5f,5000.0f);
+            proj=orthographicVulkan(-half*aspect,half*aspect,-half,half,0.5f,3500.0f);
         } else {
             eye={camera_.x,camera_.y+fpsBob_,camera_.z};
             const Vec3 dir{-std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),-std::cos(yaw_)*std::cos(pitch_)};
             view=lookAt(eye,eye+dir,{0,1,0});
-            proj=perspectiveVulkan(75.0f*PI/180.0f,static_cast<float>(swapExtent_.width)/swapExtent_.height,0.2f,14000.0f);
+            proj=perspectiveVulkan(75.0f*PI/180.0f,aspect,0.2f,14000.0f);
         }
 
         // skyAtmosphere.ts + preset "integrada fraca".
-        const float fogNear=observerMode_?std::max(180.0f,focusDistance+120.0f):12.0f;
-        const float fogFar=observerMode_?std::max(1000.0f,focusDistance+700.0f):1400.0f;
+        const bool aerial=(transitionMode_!=0)||observerMode_;
+        const float fogNear=aerial?std::max(180.0f,focusDistance+120.0f):12.0f;
+        const float fogFar=aerial?std::max(1000.0f,focusDistance+700.0f):1400.0f;
 
         PushConstants p{};
         p.viewProj=multiply(proj,view);
