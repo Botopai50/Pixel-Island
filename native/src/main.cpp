@@ -1796,6 +1796,105 @@ private:
 
     void destroyMesh(GpuMesh& m) { destroyBuffer(m.vb); destroyBuffer(m.ib); m.indexCount=0; }
 
+    GpuMesh uploadVertexIndexMesh(const std::vector<Vertex>& vertices,const std::vector<uint32_t>& indices) {
+        GpuMesh g{};
+        if(vertices.empty()||indices.empty())return g;
+        g.vb=createBuffer(sizeof(Vertex)*vertices.size(),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        g.ib=createBuffer(sizeof(uint32_t)*indices.size(),VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        std::memcpy(g.vb.mapped,vertices.data(),sizeof(Vertex)*vertices.size());
+        std::memcpy(g.ib.mapped,indices.data(),sizeof(uint32_t)*indices.size());
+        g.indexCount=static_cast<uint32_t>(indices.size());
+        return g;
+    }
+
+    ExactChunkGpu uploadExactChunk(ExactChunkCpu&& src) {
+        ExactChunkGpu out{};
+        out.cx=src.cx;out.cz=src.cz;out.segments=src.segments;out.density=src.density;
+
+        const size_t nv=src.positions.size()/3u;
+        std::vector<Vertex> vertices(nv);
+        const float centerX=src.cx*64.0f,centerZ=src.cz*64.0f;
+        for(size_t i=0;i<nv;i++){
+            Vertex v{};
+            v.px=src.positions[i*3+0]+centerX;
+            v.py=src.positions[i*3+1];
+            v.pz=src.positions[i*3+2]+centerZ;
+            v.nx=src.normals[i*3+0];v.ny=src.normals[i*3+1];v.nz=src.normals[i*3+2];
+            v.r=v.g=v.b=1.0f;
+            if(src.wall.size()>=i*3+3){
+                v.wallX=src.wall[i*3+0];v.wallY=src.wall[i*3+1];v.wallZ=src.wall[i*3+2];
+            }
+            if(src.morph.size()>i)v.morph=src.morph[i];
+            vertices[i]=v;
+        }
+        std::vector<uint32_t> indices(src.indices.begin(),src.indices.end());
+        out.mesh=uploadVertexIndexMesh(vertices,indices);
+
+        // top e topDark permanecem byte-a-byte como saíram do TerrainTextureForge.
+        // Só são colocados lado a lado numa imagem fixa para usar um descriptor por chunk.
+        std::vector<uint8_t> packed(256u*128u*4u,0);
+        if(src.texW>128u||src.texH>128u)throw std::runtime_error("Textura de chunk excedeu pack nativo.");
+        const size_t rowBytes=static_cast<size_t>(src.texW)*4u;
+        for(uint32_t y=0;y<src.texH;y++){
+            std::memcpy(
+                packed.data()+static_cast<size_t>(y)*256u*4u,
+                src.top.data()+static_cast<size_t>(y)*rowBytes,
+                rowBytes
+            );
+            std::memcpy(
+                packed.data()+(static_cast<size_t>(y)*256u+128u)*4u,
+                src.topDark.data()+static_cast<size_t>(y)*rowBytes,
+                rowBytes
+            );
+        }
+        out.texture=createTextureRgba(packed,256,128);
+        out.descriptor=allocateTerrainDescriptor(out.texture);
+
+        const int grid=src.segments+1;
+        const size_t mainVerts=static_cast<size_t>(grid)*grid;
+        out.heights.resize(mainVerts);
+        for(size_t i=0;i<mainVerts&&i<nv;i++)out.heights[i]=src.positions[i*3+1];
+        return out;
+    }
+
+    HorizonGpu uploadHorizon(HorizonTileCpu&& src,float inner,float outer) {
+        HorizonGpu out{};
+        out.level=src.level;out.tx=src.tx;out.tz=src.tz;out.inner=inner;out.outer=outer;
+        const size_t nv=src.positions.size()/3u;
+        std::vector<Vertex> vertices(nv);
+        const float centerX=src.minX+src.size*0.5f;
+        const float centerZ=src.minZ+src.size*0.5f;
+        for(size_t i=0;i<nv;i++){
+            Vertex v{};
+            v.px=src.positions[i*3+0]+centerX;
+            v.py=src.positions[i*3+1]-src.lower;
+            v.pz=src.positions[i*3+2]+centerZ;
+            v.nx=src.normals[i*3+0];v.ny=src.normals[i*3+1];v.nz=src.normals[i*3+2];
+            v.r=src.colors[i*3+0];v.g=src.colors[i*3+1];v.b=src.colors[i*3+2];
+            v.wallX=v.wallY=99.0f;v.wallZ=0;
+            if(src.morph.size()>i)v.morph=src.morph[i];
+            vertices[i]=v;
+        }
+        std::vector<uint32_t> indices(src.indices.begin(),src.indices.end());
+        out.mesh=uploadVertexIndexMesh(vertices,indices);
+        return out;
+    }
+
+    void destroyExactChunk(ExactChunkGpu& c) {
+        if(c.descriptor&&descriptorPool_)vkFreeDescriptorSets(device_,descriptorPool_,1,&c.descriptor);
+        c.descriptor=VK_NULL_HANDLE;
+        destroyTexture(c.texture);
+        destroyMesh(c.mesh);
+    }
+
+    void destroyHorizon(HorizonGpu& h) {
+        destroyMesh(h.mesh);
+    }
+
+    std::vector<uint8_t> makeEmptyFallbackTexture() {
+        return std::vector<uint8_t>(256u*128u*4u,255u);
+    }
+
 
     void createGpuWorldResources() {
         terrainVB_=createBuffer(sizeof(Vertex)*static_cast<size_t>(TERRAIN_SEGMENTS+1)*(TERRAIN_SEGMENTS+1),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
