@@ -24,6 +24,7 @@ jobs:
       - name: Generate parity shaders from original sources
         run: |
           node native/generate_water_shaders.cjs
+          node native/generate_sky_shaders.cjs
 
       - name: Compile Vulkan shaders
         run: |
@@ -32,6 +33,8 @@ jobs:
           glslangValidator -V --target-env vulkan1.0 native/shaders/world.frag -o native/compiled-shaders/world.frag.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/water.vert -o native/compiled-shaders/water.vert.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/water.frag -o native/compiled-shaders/water.frag.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/sky.vert -o native/compiled-shaders/sky.vert.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/sky.frag -o native/compiled-shaders/sky.frag.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/blit.vert -o native/compiled-shaders/blit.vert.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/blit.frag -o native/compiled-shaders/blit.frag.spv
 
