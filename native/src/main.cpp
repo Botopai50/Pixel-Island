@@ -883,6 +883,39 @@ std::wstring executableDir() {
     return pos==std::wstring::npos ? L"." : p.substr(0,pos);
 }
 
+
+std::mutex gLogMutex;
+std::ofstream gLog;
+
+std::string nowStamp() {
+    using namespace std::chrono;
+    const auto now=system_clock::now();
+    const auto tt=system_clock::to_time_t(now);
+    std::tm tm{};
+    localtime_s(&tm,&tt);
+    char buf[32]{};
+    std::strftime(buf,sizeof(buf),"%H:%M:%S",&tm);
+    return buf;
+}
+
+void initLog() {
+    const std::filesystem::path path=std::filesystem::path(executableDir())/L"PixelIslandNative.log";
+    gLog.open(path,std::ios::out|std::ios::trunc);
+    if(gLog) {
+        gLog<<"["<<nowStamp()<<"] Pixel Island Native iniciado\n";
+        gLog.flush();
+    }
+}
+
+void logLine(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(gLogMutex);
+    if(gLog) {
+        gLog<<"["<<nowStamp()<<"] "<<msg<<"\n";
+        gLog.flush();
+    }
+    OutputDebugStringA((msg+"\n").c_str());
+}
+
 struct QueueFamilies {
     std::optional<uint32_t> graphics;
     std::optional<uint32_t> present;
@@ -919,16 +952,18 @@ struct PushConstants {
 class VulkanApp {
 public:
     void run(HINSTANCE hInstance) {
+        logLine("APP: criando janela");
         createWindow(hInstance);
+        SetWindowTextW(hwnd_,L"Pixel Island Native | Carregando mundo original...");
+        logLine("APP: inicializando Vulkan");
         initVulkan();
+        logLine("APP: criando recursos GPU");
         createGpuWorldResources();
 
         const std::filesystem::path bundle = std::filesystem::path(executableDir()) / L"world.bundle.js";
-        JsWorldRuntime initialWorld(bundle);
-        uploadWorld(generateWorldExact(initialWorld,0,0));
-        focus_={0,heightAt(0,0),0};
-        camera_=observerEye();
+        logLine("APP: iniciando worker do mundo");
         streamer_=std::make_unique<WorldStreamer>(bundle);
+        streamer_->request(0,0);
 
         mainLoop();
         vkDeviceWaitIdle(device_);
@@ -957,6 +992,24 @@ private:
             case WM_CLOSE:
                 DestroyWindow(hwnd);
                 return 0;
+            case WM_PAINT:
+                if(app && !app->worldReady_) {
+                    PAINTSTRUCT ps{};
+                    HDC dc=BeginPaint(hwnd,&ps);
+                    RECT rc{};GetClientRect(hwnd,&rc);
+                    HBRUSH bg=CreateSolidBrush(RGB(24,28,34));
+                    FillRect(dc,&rc,bg);
+                    DeleteObject(bg);
+                    SetBkMode(dc,TRANSPARENT);
+                    SetTextColor(dc,RGB(230,235,240));
+                    RECT titleRc=rc;
+                    DrawTextW(dc,L"Pixel Island Native",-1,&titleRc,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+                    RECT subRc=rc; subRc.top+=52;
+                    DrawTextW(dc,L"Gerando o mundo original... veja PixelIslandNative.log",-1,&subRc,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+                    EndPaint(hwnd,&ps);
+                    return 0;
+                }
+                break;
             case WM_DESTROY:
                 PostQuitMessage(0);
                 return 0;
@@ -971,6 +1024,7 @@ private:
         wc.hInstance=hi;
         wc.lpszClassName=L"PixelIslandNativeVulkan";
         wc.hCursor=LoadCursor(nullptr,IDC_ARROW);
+        wc.hbrBackground=CreateSolidBrush(RGB(24,28,34));
         RegisterClassW(&wc);
 
         RECT r{0,0,static_cast<LONG>(WINDOW_WIDTH),static_cast<LONG>(WINDOW_HEIGHT)};
@@ -2074,6 +2128,7 @@ private:
     Vec3 focus_{0,0,0};
     float yaw_=0.0f,pitch_=-0.05f;
     bool observerMode_=true;
+    bool worldReady_=false;
     bool tabDown_=false;
     float observerYaw_=42.0f*PI/180.0f;
     float observerSize_=220.0f;
@@ -2087,11 +2142,15 @@ private:
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance,HINSTANCE,LPWSTR,int) {
+    initLog();
     try {
+        logLine("APP: inicio");
         VulkanApp app;
         app.run(hInstance);
+        logLine("APP: encerramento normal");
         return 0;
     } catch(const std::exception& e) {
+        logLine(std::string("FATAL: ")+e.what());
         MessageBoxA(nullptr,e.what(),"Pixel Island Native - erro",MB_OK|MB_ICONERROR);
         return 1;
     }
