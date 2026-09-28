@@ -2082,6 +2082,94 @@ private:
         return std::vector<uint8_t>(256u*128u*4u,255u);
     }
 
+    static uint32_t pixelTreeAssetKey(int presetId,int variant){
+        return (static_cast<uint32_t>(presetId)<<16)|static_cast<uint32_t>(variant&0xffff);
+    }
+
+    PixelTreePartGpu uploadPixelTreePart(const PixelTreeCpuPart& src){
+        PixelTreePartGpu out{};
+        out.name=src.name;
+        out.repeatX=src.repeatX;
+        out.repeatY=src.repeatY;
+        out.alphaTest=src.alphaTest;
+        out.flipY=(src.flags&2u)!=0u;
+        out.castShadow=(src.flags&4u)!=0u;
+
+        const size_t nv=src.positions.size()/3u;
+        std::vector<Vertex> vertices(nv);
+        for(size_t i=0;i<nv;i++){
+            Vertex v{};
+            v.px=src.positions[i*3+0];
+            v.py=src.positions[i*3+1];
+            v.pz=src.positions[i*3+2];
+
+            if(src.normals.size()>=i*3+3){
+                v.nx=src.normals[i*3+0];
+                v.ny=src.normals[i*3+1];
+                v.nz=src.normals[i*3+2];
+            }
+            const float cr=src.colors.size()>=i*3+3?src.colors[i*3+0]:1.0f;
+            const float cg=src.colors.size()>=i*3+3?src.colors[i*3+1]:1.0f;
+            const float cb=src.colors.size()>=i*3+3?src.colors[i*3+2]:1.0f;
+            v.r=cr*src.materialR;
+            v.g=cg*src.materialG;
+            v.b=cb*src.materialB;
+
+            if(src.uvs.size()>=i*2+2){
+                v.u=src.uvs[i*2+0];
+                v.v=src.uvs[i*2+1];
+            }
+            vertices[i]=v;
+        }
+
+        out.mesh=uploadVertexIndexMesh(vertices,src.indices);
+        out.texture=createTextureRgba(src.rgba,src.texW,src.texH);
+        out.descriptor=allocateTerrainDescriptor(out.texture);
+        return out;
+    }
+
+    void loadPixelTreeAssets(){
+        PixelTreeCpuLibrary cpu;
+        cpu.load(std::filesystem::path(executableDir())/L"pixel_tree_assets.bin");
+        pixelTreeWorldSeed_=cpu.worldSeed();
+
+        for(int preset=0;preset<static_cast<int>(PIXEL_TREE_PRESETS.size());preset++){
+            const int variants=cpu.variantCount(static_cast<uint16_t>(preset));
+            for(int variant=0;variant<variants;variant++){
+                const auto* src=cpu.find(static_cast<uint16_t>(preset),static_cast<uint16_t>(variant));
+                if(!src)continue;
+
+                PixelTreeAssetGpu gpu{};
+                gpu.presetId=src->presetId;
+                gpu.variant=src->variant;
+                gpu.parts.reserve(src->parts.size());
+                for(const auto& p:src->parts)gpu.parts.push_back(uploadPixelTreePart(p));
+
+                gpu.instanceBuffer=createBuffer(
+                    sizeof(InstanceGPU)*PIXEL_TREE_MAX_INSTANCES,
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                );
+                gpu.visible.reserve(PIXEL_TREE_MAX_INSTANCES);
+                pixelTreeAssets_.emplace(pixelTreeAssetKey(preset,variant),std::move(gpu));
+            }
+        }
+
+        logLine("PIXEL_TREE: "+std::to_string(pixelTreeAssets_.size())+" variantes carregadas");
+    }
+
+    void destroyPixelTreeAssets(){
+        for(auto& [key,a]:pixelTreeAssets_){
+            for(auto& p:a.parts){
+                if(p.descriptor&&descriptorPool_)vkFreeDescriptorSets(device_,descriptorPool_,1,&p.descriptor);
+                p.descriptor=VK_NULL_HANDLE;
+                destroyTexture(p.texture);
+                destroyMesh(p.mesh);
+            }
+            destroyBuffer(a.instanceBuffer);
+        }
+        pixelTreeAssets_.clear();
+    }
+
 
     void createGpuWorldResources() {
         terrainVB_=createBuffer(sizeof(Vertex)*static_cast<size_t>(TERRAIN_SEGMENTS+1)*(TERRAIN_SEGMENTS+1),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -2100,6 +2188,7 @@ private:
         }
 
         createTerrainTextureResources();
+        loadPixelTreeAssets();
     }
 
     void uploadWorld(WorldData&& w) {
