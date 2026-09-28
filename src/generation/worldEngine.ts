@@ -77,6 +77,7 @@ export class WorldEngine {
       if (seed === this.terrainGen.getSeed()) this.terrainGen.getHydrology().installIsland(key, data);
     };
     this.vegetationMgr = new VegetationManager();
+    this.vegetationMgr.setWorldSeed(numericSeed);
 
     this.forge = TerrainTextureForge.getInstance(numericSeed);
     this.terrainMaterial = createTerrainMaterial();
@@ -271,6 +272,7 @@ export class WorldEngine {
     }
     const newSeed = this.seedManager.getNumericSeed();
     this.terrainGen.reseed(newSeed);
+    this.vegetationMgr.setWorldSeed(newSeed);
     this.islandsSentToWorkers.clear();
     this.waterBiomeMap.invalidate();
     this.geothermalMgr.reseed(newSeed);
