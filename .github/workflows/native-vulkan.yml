@@ -1,0 +1,75 @@
+name: Native Vulkan Windows Build
+
+on:
+  push:
+    branches: ["chatgpt/native-vulkan-prototype-20260928"]
+    paths:
+      - "native/**"
+      - ".github/workflows/native-vulkan.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shaders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install glslang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+
+      - name: Compile Vulkan shaders
+        run: |
+          mkdir -p native/compiled-shaders
+          glslangValidator -V --target-env vulkan1.0 native/shaders/world.vert -o native/compiled-shaders/world.vert.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/world.frag -o native/compiled-shaders/world.frag.spv
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-vulkan-shaders
+          path: native/compiled-shaders/*.spv
+
+  windows:
+    needs: shaders
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-vulkan-shaders
+          path: native/runtime-shaders
+
+      - name: Configure Vulkan prototype
+        shell: pwsh
+        run: |
+          cmake -S native -B native/build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+
+      - name: Build Release
+        run: cmake --build native/build --config Release --parallel
+
+      - name: Package runnable Windows build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force native/package/shaders | Out-Null
+          Copy-Item native/build/Release/PixelIslandNative.exe native/package/
+          Copy-Item native/runtime-shaders/*.spv native/package/shaders/
+          Copy-Item native/INICIAR.bat native/package/
+          Copy-Item native/README.md native/package/
+          Compress-Archive -Path native/package/* -DestinationPath Pixel-Island-Native-Vulkan-Windows.zip -Force
+
+      - name: Package source
+        shell: pwsh
+        run: |
+          git archive --format=zip --output=Pixel-Island-Native-Vulkan-Source.zip HEAD native .github/workflows/native-vulkan.yml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixel-island-native-vulkan
+          path: |
+            Pixel-Island-Native-Vulkan-Windows.zip
+            Pixel-Island-Native-Vulkan-Source.zip
+          if-no-files-found: error
