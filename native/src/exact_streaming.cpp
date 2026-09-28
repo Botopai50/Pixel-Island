@@ -139,7 +139,7 @@ ImpostorBlockCpu ExactStreamingWorker::decodeImpostors(const Request& r,const st
 
 void ExactStreamingWorker::run(){
     try{
-        JsWorldRuntime js(scriptPath_);
+        std::unique_ptr<JsWorldRuntime> js;
         for(;;){
             Request r;
             {
@@ -148,17 +148,18 @@ void ExactStreamingWorker::run(){
                 if(stop_)return;
                 r=queue_.top();queue_.pop();
             }
+            if(!js) js=std::make_unique<JsWorldRuntime>(scriptPath_);
 
             ExactStreamResult result;
             result.key=r.key;result.generation=r.generation;
             if(r.kind==Kind::Chunk){
-                auto raw=js.generateExactChunk("Avalon",r.a,r.b,64.0,r.f0,r.c,r.flag);
+                auto raw=js->generateExactChunk("Avalon",r.a,r.b,64.0,r.f0,r.c,r.flag);
                 result.payload=decodeChunk(r,raw);
             }else if(r.kind==Kind::Horizon){
-                auto raw=js.generateHorizonTile("Avalon",r.f0,r.f1,r.f2,static_cast<int>(r.f3));
+                auto raw=js->generateHorizonTile("Avalon",r.f0,r.f1,r.f2,static_cast<int>(r.f3));
                 result.payload=decodeHorizon(r,raw);
             }else{
-                auto raw=js.generateImpostorBlock("Avalon",r.f0,r.f1,r.f2,r.f3,r.f4);
+                auto raw=js->generateImpostorBlock("Avalon",r.f0,r.f1,r.f2,r.f3,r.f4);
                 result.payload=decodeImpostors(r,raw);
             }
 
