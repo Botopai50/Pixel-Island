@@ -403,6 +403,33 @@ struct WaterMeshCpu {
     std::vector<uint32_t> indices;
 };
 
+struct SkyVertex {
+    float x=0,y=0,z=0;
+};
+
+struct SkyMeshCpu {
+    std::vector<SkyVertex> vertices;
+    std::vector<uint32_t> indices;
+};
+
+struct alignas(16) SkyUniformsGpu {
+    Mat4 model{};
+    Mat4 viewProj{};
+    float sunDirTime[4]{};
+    float moonDirStar[4]{};
+    float zenithColor[4]{};
+    float horizonColor[4]{};
+    float groundColor[4]{};
+    float cloudColor[4]{};
+    float cloudShadowColor[4]{};
+    float sunColor[4]{};
+    float coronaColor[4]{};
+    float fogColorMoon[4]{};
+    float coveragePixel[4]{};
+    float windOffsets[4]{};
+    float cameraPos[4]{};
+};
+
 struct alignas(16) WaterUniformsGpu {
     Mat4 model{};
     Mat4 viewProj{};
@@ -1048,6 +1075,43 @@ CpuMesh buildFlowerMesh() {
     addCross(m,0.0f,0.055f,0.52f,{0.18f,0.55f,0.16f});
     addOcta(m,{0,0.55f,0},0.18f,0.11f,{1.0f,0.72f,0.72f});
     return m;
+}
+
+SkyMeshCpu buildOriginalSkySphere(){
+    SkyMeshCpu out;
+    constexpr float radius=1500.0f;
+    constexpr int widthSegments=64;
+    constexpr int heightSegments=48;
+
+    std::vector<std::vector<uint32_t>> grid(heightSegments+1);
+    uint32_t index=0;
+    for(int iy=0;iy<=heightSegments;iy++){
+        grid[iy].reserve(widthSegments+1);
+        const float v=static_cast<float>(iy)/heightSegments;
+        const float theta=v*PI;
+        for(int ix=0;ix<=widthSegments;ix++){
+            const float u=static_cast<float>(ix)/widthSegments;
+            const float phi=u*PI*2.0f;
+            SkyVertex sv{};
+            sv.x=-radius*std::cos(phi)*std::sin(theta);
+            sv.y= radius*std::cos(theta);
+            sv.z= radius*std::sin(phi)*std::sin(theta);
+            out.vertices.push_back(sv);
+            grid[iy].push_back(index++);
+        }
+    }
+
+    for(int iy=0;iy<heightSegments;iy++){
+        for(int ix=0;ix<widthSegments;ix++){
+            const uint32_t a=grid[iy][ix+1];
+            const uint32_t b=grid[iy][ix];
+            const uint32_t cc=grid[iy+1][ix];
+            const uint32_t d=grid[iy+1][ix+1];
+            if(iy!=0) out.indices.insert(out.indices.end(),{a,b,d});
+            if(iy!=heightSegments-1) out.indices.insert(out.indices.end(),{b,cc,d});
+        }
+    }
+    return out;
 }
 
 WaterMeshCpu buildOriginalWaterMesh() {
