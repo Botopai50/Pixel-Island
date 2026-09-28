@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -8,7 +9,7 @@ struct JSValue;
 
 class JsWorldRuntime {
 public:
-    explicit JsWorldRuntime(const std::string& scriptPath);
+    explicit JsWorldRuntime(const std::filesystem::path& scriptPath);
     ~JsWorldRuntime();
 
     JsWorldRuntime(const JsWorldRuntime&) = delete;
