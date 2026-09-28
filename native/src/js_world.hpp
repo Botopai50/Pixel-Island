@@ -40,6 +40,33 @@ public:
         double density
     );
 
+    std::vector<uint8_t> generateExactChunk(
+        const std::string& seed,
+        int cx,
+        int cz,
+        double chunkSize,
+        double density,
+        int segments,
+        bool walls
+    );
+
+    std::vector<uint8_t> generateHorizonTile(
+        const std::string& seed,
+        double minX,
+        double minZ,
+        double size,
+        int segments
+    );
+
+    std::vector<uint8_t> generateImpostorBlock(
+        const std::string& seed,
+        double minX,
+        double minZ,
+        double size,
+        double originX,
+        double originZ
+    );
+
 private:
     std::vector<uint8_t> callByteBuffer(
         const char* functionName,
