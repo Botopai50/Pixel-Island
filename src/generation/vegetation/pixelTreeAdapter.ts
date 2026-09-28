@@ -160,6 +160,7 @@ function finishColorTexture(canvas: HTMLCanvasElement, repeat = false): THREE.Ca
   tex.magFilter = THREE.NearestFilter;
   tex.minFilter = THREE.NearestFilter;
   tex.generateMipmaps = false;
+  tex.premultiplyAlpha = false;
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
   tex.wrapT = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
@@ -196,7 +197,13 @@ function bakeFoliageAlbedo(
     const si = i * 4;
     const tone01 = s.data[si] / 255;
     const clump = s.data[si + 1] / 255;
-    const alpha = s.data[si + 3];
+
+    // O shader original do Pixel_Tree trata a máscara como cutout, não como translucência.
+    // Converte qualquer cobertura válida em alpha 255 e o restante em 0.
+    const alphaThreshold = Math.round(
+      THREE.MathUtils.clamp(Number(getUniform<number>(source, 'uAlphaTest') ?? 0.45), 0.05, 0.95) * 255
+    );
+    const alpha = s.data[si + 3] >= alphaThreshold ? 255 : 0;
 
     const tone = Math.max(0, Math.min(steps - 1, Math.round(tone01 * (steps - 1))));
     // Canvas row 0 = main ramp, row 1 = accent.
@@ -371,8 +378,10 @@ function buildPixelIslandMaterial(
     vertexColors: !!geometry.getAttribute('color'),
     side: foliage || source.side === THREE.DoubleSide ? THREE.DoubleSide : THREE.FrontSide,
     shadowSide: foliage ? THREE.DoubleSide : THREE.FrontSide,
-    alphaTest,
+    alphaTest: alphaTest > 0 ? 0.5 : 0,
+    opacity: 1.0,
     transparent: false,
+    alphaToCoverage: false,
     depthWrite: true,
     depthTest: true,
     fog: true,
