@@ -47,8 +47,11 @@ jobs:
         shell: pwsh
         run: |
           npm install --no-audit --no-fund
+          npm install --no-save --no-audit --no-fund @napi-rs/canvas
           npx esbuild native/world_runtime.ts --bundle --platform=neutral --format=iife --alias:three=./native/three_shim.ts --outfile=native/world.bundle.js
           node -e "require('./native/world.bundle.js'); const fs=require('fs'); fs.writeFileSync('native/forge_globals.bin', Buffer.from(globalThis.pixelGetForgeGlobals('Avalon'))); fs.writeFileSync('native/spawn.bin', Buffer.from(globalThis.pixelGetSpawn('Avalon')));"
+          npx esbuild native/export_pixel_tree_assets.ts --bundle --platform=node --format=cjs --external:@napi-rs/canvas --outfile=native/export_pixel_tree_assets.cjs
+          node native/export_pixel_tree_assets.cjs
 
       - name: Configure Vulkan prototype
         shell: pwsh
@@ -98,6 +101,8 @@ jobs:
           Copy-Item native/world.bundle.js native/package/
           Copy-Item native/forge_globals.bin native/package/
           Copy-Item native/spawn.bin native/package/
+          Copy-Item native/pixel_tree_assets.bin native/package/
+          Copy-Item native/pixel_tree_presets.json native/package/
           Copy-Item native/INICIAR.bat native/package/
           Copy-Item native/README.md native/package/
           Compress-Archive -Path native/package/* -DestinationPath Pixel-Island-Native-Vulkan-Windows.zip -Force
