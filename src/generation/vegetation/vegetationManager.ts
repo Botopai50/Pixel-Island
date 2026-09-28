@@ -469,10 +469,13 @@ export class VegetationManager {
 
   /** Instâncias de todos os chunks, agrupadas por (geometria, material). Adicione `instances.root` à cena. */
   public readonly instances = new VegetationInstancePool();
-  private readonly pixelTrees = new PixelTreeAssetLibrary();
+  private readonly pixelTrees: PixelTreeAssetLibrary;
 
   constructor() {
     VegetationGeometries.init();
+    this.pixelTrees = new PixelTreeAssetLibrary((material, fade) =>
+      setupCartoonMaterial(material, fade)
+    );
 
     const barkTex = VegetationTextures.getBarkTexture();
     const birchTex = VegetationTextures.getBirchBarkTexture();
