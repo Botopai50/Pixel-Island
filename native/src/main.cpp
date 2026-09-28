@@ -1539,6 +1539,32 @@ private:
         ci.bindingCount=static_cast<uint32_t>(bindings.size());
         ci.pBindings=bindings.data();
         check(vkCreateDescriptorSetLayout(device_,&ci,nullptr,&descriptorSetLayout_),"vkCreateDescriptorSetLayout");
+
+        VkDescriptorSetLayoutBinding blitBinding{};
+        blitBinding.binding=0;
+        blitBinding.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        blitBinding.descriptorCount=1;
+        blitBinding.stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo bci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        bci.bindingCount=1;
+        bci.pBindings=&blitBinding;
+        check(vkCreateDescriptorSetLayout(device_,&bci,nullptr,&blitDescriptorSetLayout_),"vkCreateDescriptorSetLayout(blit)");
+
+        std::array<VkDescriptorSetLayoutBinding,4> waterBindings{};
+        for(uint32_t i=0;i<3;i++){
+            waterBindings[i].binding=i;
+            waterBindings[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            waterBindings[i].descriptorCount=1;
+            waterBindings[i].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT|(i==2?VK_SHADER_STAGE_VERTEX_BIT:0);
+        }
+        waterBindings[3].binding=3;
+        waterBindings[3].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        waterBindings[3].descriptorCount=1;
+        waterBindings[3].stageFlags=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo wci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        wci.bindingCount=static_cast<uint32_t>(waterBindings.size());
+        wci.pBindings=waterBindings.data();
+        check(vkCreateDescriptorSetLayout(device_,&wci,nullptr,&waterDescriptorSetLayout_),"vkCreateDescriptorSetLayout(water)");
     }
 
     VkSurfaceFormatKHR chooseFormat(const std::vector<VkSurfaceFormatKHR>& f) {
@@ -1785,6 +1811,84 @@ private:
         ci.pDepthStencilState=&ds; ci.pColorBlendState=&blend; ci.pDynamicState=&dyn;
         ci.layout=pipelineLayout_; ci.renderPass=renderPass_; ci.subpass=0;
         check(vkCreateGraphicsPipelines(device_,VK_NULL_HANDLE,1,&ci,nullptr,&pipeline_),"vkCreateGraphicsPipelines");
+
+        // Fullscreen blit: cena linear -> ACES 1.05 -> swapchain.
+        {
+            VkShaderModule bvs=shaderModule(dir+L"blit.vert.spv");
+            VkShaderModule bfs=shaderModule(dir+L"blit.frag.spv");
+            VkPipelineShaderStageCreateInfo bst[2]{};
+            bst[0]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            bst[0].stage=VK_SHADER_STAGE_VERTEX_BIT;bst[0].module=bvs;bst[0].pName="main";
+            bst[1]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            bst[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT;bst[1].module=bfs;bst[1].pName="main";
+
+            VkPipelineVertexInputStateCreateInfo bvi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+            VkPipelineDepthStencilStateCreateInfo bds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+            bds.depthTestEnable=VK_FALSE;bds.depthWriteEnable=VK_FALSE;
+
+            VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            lci.setLayoutCount=1;lci.pSetLayouts=&blitDescriptorSetLayout_;
+            check(vkCreatePipelineLayout(device_,&lci,nullptr,&blitPipelineLayout_),"vkCreatePipelineLayout(blit)");
+
+            VkGraphicsPipelineCreateInfo pci=ci;
+            pci.pStages=bst;
+            pci.pVertexInputState=&bvi;
+            pci.pDepthStencilState=&bds;
+            pci.layout=blitPipelineLayout_;
+            pci.renderPass=presentRenderPass_;
+            check(vkCreateGraphicsPipelines(device_,VK_NULL_HANDLE,1,&pci,nullptr,&blitPipeline_),"vkCreateGraphicsPipelines(blit)");
+            vkDestroyShaderModule(device_,bfs,nullptr);
+            vkDestroyShaderModule(device_,bvs,nullptr);
+        }
+
+        // WaterShader original convertido automaticamente para Vulkan.
+        {
+            VkShaderModule wvs=shaderModule(dir+L"water.vert.spv");
+            VkShaderModule wfs=shaderModule(dir+L"water.frag.spv");
+            VkPipelineShaderStageCreateInfo wst[2]{};
+            wst[0]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            wst[0].stage=VK_SHADER_STAGE_VERTEX_BIT;wst[0].module=wvs;wst[0].pName="main";
+            wst[1]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            wst[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT;wst[1].module=wfs;wst[1].pName="main";
+
+            VkVertexInputBindingDescription wb{0,sizeof(WaterVertex),VK_VERTEX_INPUT_RATE_VERTEX};
+            std::array<VkVertexInputAttributeDescription,2> wa{};
+            wa[0]={0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(WaterVertex,x)};
+            wa[1]={1,0,VK_FORMAT_R32G32_SFLOAT,offsetof(WaterVertex,u)};
+            VkPipelineVertexInputStateCreateInfo wvi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+            wvi.vertexBindingDescriptionCount=1;wvi.pVertexBindingDescriptions=&wb;
+            wvi.vertexAttributeDescriptionCount=static_cast<uint32_t>(wa.size());wvi.pVertexAttributeDescriptions=wa.data();
+
+            VkPipelineDepthStencilStateCreateInfo wds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+            wds.depthTestEnable=VK_FALSE;wds.depthWriteEnable=VK_FALSE;
+
+            VkPipelineColorBlendAttachmentState watt{};
+            watt.colorWriteMask=VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+            watt.blendEnable=VK_TRUE;
+            watt.srcColorBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA;
+            watt.dstColorBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            watt.colorBlendOp=VK_BLEND_OP_ADD;
+            watt.srcAlphaBlendFactor=VK_BLEND_FACTOR_ONE;
+            watt.dstAlphaBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            watt.alphaBlendOp=VK_BLEND_OP_ADD;
+            VkPipelineColorBlendStateCreateInfo wblend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+            wblend.attachmentCount=1;wblend.pAttachments=&watt;
+
+            VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+            lci.setLayoutCount=1;lci.pSetLayouts=&waterDescriptorSetLayout_;
+            check(vkCreatePipelineLayout(device_,&lci,nullptr,&waterPipelineLayout_),"vkCreatePipelineLayout(water)");
+
+            VkGraphicsPipelineCreateInfo pci=ci;
+            pci.pStages=wst;
+            pci.pVertexInputState=&wvi;
+            pci.pDepthStencilState=&wds;
+            pci.pColorBlendState=&wblend;
+            pci.layout=waterPipelineLayout_;
+            pci.renderPass=presentRenderPass_;
+            check(vkCreateGraphicsPipelines(device_,VK_NULL_HANDLE,1,&pci,nullptr,&waterPipeline_),"vkCreateGraphicsPipelines(water)");
+            vkDestroyShaderModule(device_,wfs,nullptr);
+            vkDestroyShaderModule(device_,wvs,nullptr);
+        }
 
         vkDestroyShaderModule(device_,fs,nullptr);
         vkDestroyShaderModule(device_,vs,nullptr);
@@ -3607,7 +3711,11 @@ private:
             if(commandPool_)vkDestroyCommandPool(device_,commandPool_,nullptr);
             cleanupSwapchain();
 
+            if(waterPipelineLayout_)vkDestroyPipelineLayout(device_,waterPipelineLayout_,nullptr);
+            if(blitPipelineLayout_)vkDestroyPipelineLayout(device_,blitPipelineLayout_,nullptr);
             if(pipelineLayout_)vkDestroyPipelineLayout(device_,pipelineLayout_,nullptr);
+            if(waterDescriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,waterDescriptorSetLayout_,nullptr);
+            if(blitDescriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,blitDescriptorSetLayout_,nullptr);
             if(descriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,descriptorSetLayout_,nullptr);
             vkDestroyDevice(device_,nullptr);
             device_=VK_NULL_HANDLE;
@@ -3641,6 +3749,8 @@ private:
     SceneTargetGpu sceneTarget_{};
     SceneTargetGpu reflectionTarget_{};
     VkDescriptorSetLayout descriptorSetLayout_=VK_NULL_HANDLE;
+    VkDescriptorSetLayout blitDescriptorSetLayout_=VK_NULL_HANDLE;
+    VkDescriptorSetLayout waterDescriptorSetLayout_=VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_=VK_NULL_HANDLE;
     VkDescriptorSet descriptorSet_=VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_=VK_NULL_HANDLE;
