@@ -68,11 +68,15 @@ export class HorizonTerrain {
     uImp: { value: [] as THREE.Vector3[] },
     uCells: { value: new THREE.Vector2(4, 3) },
     uAtlasSize: { value: new THREE.Vector2(512, 384) },
+    uTreeOuter: { value: TREE_OUTER },
   };
   private planX = Infinity;
   private planZ = Infinity;
   private planHole = -1;
   private seed: number;
+  private activeLevels = LEVELS.length;
+  private distanceScale = 1.0;
+  private treeOuter = TREE_OUTER;
 
   constructor(scene: THREE.Scene, gradientMap: THREE.Texture, seed: number) {
     this.seed = seed;
@@ -159,6 +163,22 @@ export class HorizonTerrain {
   }
 
   /**
+   * Reduz o horizonte em hardware fraco. Isso corta tanto draw calls quanto trabalho dos workers.
+   * activeLevels: 1..3. distanceScale encurta o raio de cada anel.
+   */
+  public setQuality(activeLevels: number, distanceScale: number): void {
+    this.activeLevels = THREE.MathUtils.clamp(Math.round(activeLevels), 1, LEVELS.length);
+    this.distanceScale = THREE.MathUtils.clamp(distanceScale, 0.35, 1.0);
+    this.treeOuter = Math.min(TREE_OUTER, LEVELS[0].outer * this.distanceScale);
+    this.treeUniforms.uTreeOuter.value = this.treeOuter;
+    this.planX = Infinity;
+    this.planZ = Infinity;
+    this.planHole = -1;
+
+    // O próximo update remove automaticamente tiles que ficaram fora do novo orçamento.
+  }
+
+  /**
    * Atlas de impostores das árvores (desenhado na thread principal com os modelos originais).
    * info: por tipo (lado S, centro x, centro y) da imagem em metros.
    */
@@ -182,6 +202,7 @@ export class HorizonTerrain {
         'uniform vec2 uCenter;',
         'uniform vec2 uFadeCam;',
         'uniform vec2 uVegFade;',
+        'uniform float uTreeOuter;',
         'varying float vImpDist;',
         'varying float vImpHash;',
         `uniform vec3 uImp[${N}];`,
@@ -215,7 +236,7 @@ export class HorizonTerrain {
           '    vec2 hzW = position.xz + modelMatrix[3].xz;',
           '    vImpDist = distance(hzW, uFadeCam);',
           '    vImpHash = fadeHash(floor(hzW * 4.0));',
-          `    float hzGrow = 1.0 - smoothstep(${(TREE_OUTER - 500).toFixed(1)}, ${TREE_OUTER.toFixed(1)}, distance(hzW, uCenter));`,
+          '    float hzGrow = 1.0 - smoothstep(max(uTreeOuter - 350.0, uTreeOuter * 0.65), uTreeOuter, distance(hzW, uCenter));',
           '    if (vImpDist < uVegFade.x) hzGrow = 0.0;',
           '    float hzS = abs(aTree.w) * hzGrow;',
           '    vec3 hzRight = vec3(-hzTo.y, 0.0, hzTo.x);',
@@ -246,7 +267,10 @@ export class HorizonTerrain {
   public update(x: number, z: number, holeRadius: number): void {
     for (let l = 0; l < LEVELS.length; l++) {
       this.uniforms[l].uCenter.value.set(x, z);
-      this.uniforms[l].uInner.value = l === 0 ? holeRadius : LEVELS[l - 1].outer;
+      this.uniforms[l].uOuter.value = LEVELS[l].outer * this.distanceScale;
+      this.uniforms[l].uInner.value = l === 0 ? holeRadius : LEVELS[l - 1].outer * this.distanceScale;
+      this.uniforms[l].uMorphLower.value =
+        l + 1 < this.activeLevels ? LEVELS[l + 1].lower - LEVELS[l].lower : 0;
     }
     this.treeUniforms.uCenter.value.set(x, z);
 
@@ -254,10 +278,11 @@ export class HorizonTerrain {
     this.planX = x; this.planZ = z; this.planHole = holeRadius;
 
     const wanted = new Set<string>();
-    for (let l = 0; l < LEVELS.length; l++) {
-      const { size, seg, outer } = LEVELS[l];
+    for (let l = 0; l < this.activeLevels; l++) {
+      const { size, seg } = LEVELS[l];
+      const outer = LEVELS[l].outer * this.distanceScale;
       // o nível 0 cobre também a área dos chunks (as árvores simples aparecem além do raio da vegetação)
-      const inner = l === 0 ? 0 : LEVELS[l - 1].outer;
+      const inner = l === 0 ? 0 : LEVELS[l - 1].outer * this.distanceScale;
       const reach = outer + OVERLAP;
       const t0x = Math.floor((x - reach) / size), t1x = Math.floor((x + reach) / size);
       const t0z = Math.floor((z - reach) / size), t1z = Math.floor((z + reach) / size);
@@ -320,7 +345,7 @@ export class HorizonTerrain {
       for (let bx = minX; bx < minX + size; bx += B) {
         const nx = Math.max(bx - x, 0, x - (bx + B)), nz = Math.max(bz - z, 0, z - (bz + B));
         const near = Math.hypot(nx, nz);
-        if (near > TREE_OUTER) continue;
+        if (near > this.treeOuter) continue;
         const { promise, reqId } = getTextureWorkerPool().requestImpostors(this.seed, bx, bz, B, ox, oz, PRIORITY_BASE + 300 + near / 10);
         tile.treeReqs.push(reqId);
         promise.then((r) => {
