@@ -1,4 +1,4 @@
-// exact-parity exporter
+// exact-parity exporter - Pixel_Tree dependency synced
 import fs from 'node:fs';
 import { createCanvas, Image, ImageData } from '@napi-rs/canvas';
 
