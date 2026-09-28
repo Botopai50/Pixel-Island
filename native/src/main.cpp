@@ -2365,6 +2365,21 @@ private:
         }
     }
 
+    WaterMeshGpu uploadWaterMesh(const WaterMeshCpu& m){
+        WaterMeshGpu g{};
+        if(m.vertices.empty()||m.indices.empty())return g;
+        g.vb=createBuffer(sizeof(WaterVertex)*m.vertices.size(),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        g.ib=createBuffer(sizeof(uint32_t)*m.indices.size(),VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        std::memcpy(g.vb.mapped,m.vertices.data(),sizeof(WaterVertex)*m.vertices.size());
+        std::memcpy(g.ib.mapped,m.indices.data(),sizeof(uint32_t)*m.indices.size());
+        g.indexCount=static_cast<uint32_t>(m.indices.size());
+        return g;
+    }
+
+    void destroyWaterMesh(WaterMeshGpu& m){
+        destroyBuffer(m.vb);destroyBuffer(m.ib);m.indexCount=0;
+    }
+
     GpuMesh uploadMesh(const CpuMesh& m) {
         GpuMesh g{};
         g.vb=createBuffer(sizeof(Vertex)*m.vertices.size(),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
@@ -2605,6 +2620,125 @@ private:
     }
 
 
+    void updateBlitDescriptor(){
+        if(!blitDescriptorSet_)return;
+        VkDescriptorImageInfo ii{};
+        ii.sampler=postLinearSampler_;
+        ii.imageView=sceneTarget_.color.view;
+        ii.imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet=blitDescriptorSet_;
+        w.dstBinding=0;
+        w.descriptorCount=1;
+        w.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo=&ii;
+        vkUpdateDescriptorSets(device_,1,&w,0,nullptr);
+    }
+
+    void updateWaterDescriptor(){
+        if(!waterDescriptorSet_)return;
+        VkDescriptorImageInfo images[3]{};
+        images[0].sampler=waterDepthSampler_;
+        images[0].imageView=sceneTarget_.depthView;
+        images[0].imageLayout=VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+        images[1].sampler=postLinearSampler_;
+        images[1].imageView=reflectionTarget_.color.view;
+        images[1].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        images[2].sampler=postLinearSampler_;
+        images[2].imageView=waterBiomeTexture_.view;
+        images[2].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkDescriptorBufferInfo bi{};
+        bi.buffer=waterUniformBuffer_.buffer;
+        bi.offset=0;
+        bi.range=sizeof(WaterUniformsGpu);
+
+        VkWriteDescriptorSet writes[4]{};
+        for(uint32_t i=0;i<3;i++){
+            writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet=waterDescriptorSet_;
+            writes[i].dstBinding=i;
+            writes[i].descriptorCount=1;
+            writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo=&images[i];
+        }
+        writes[3].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[3].dstSet=waterDescriptorSet_;
+        writes[3].dstBinding=3;
+        writes[3].descriptorCount=1;
+        writes[3].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[3].pBufferInfo=&bi;
+        vkUpdateDescriptorSets(device_,4,writes,0,nullptr);
+    }
+
+    void refreshPostDescriptors(){
+        updateBlitDescriptor();
+        updateWaterDescriptor();
+    }
+
+    void createPostProcessResources(){
+        WaterMeshCpu wm=buildOriginalWaterMesh();
+        waterMesh_=uploadWaterMesh(wm);
+        waterUniformBuffer_=createBuffer(sizeof(WaterUniformsGpu),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter=VK_FILTER_LINEAR;
+        sci.minFilter=VK_FILTER_LINEAR;
+        sci.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxAnisotropy=1.0f;
+        check(vkCreateSampler(device_,&sci,nullptr,&postLinearSampler_),"vkCreateSampler(post-linear)");
+
+        VkSamplerCreateInfo dci=sci;
+        dci.magFilter=VK_FILTER_NEAREST;
+        dci.minFilter=VK_FILTER_NEAREST;
+        check(vkCreateSampler(device_,&dci,nullptr,&waterDepthSampler_),"vkCreateSampler(water-depth)");
+
+        std::array<VkDescriptorPoolSize,2> ps{};
+        ps[0].type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ps[0].descriptorCount=8;
+        ps[1].type=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        ps[1].descriptorCount=2;
+        VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pci.maxSets=4;
+        pci.poolSizeCount=static_cast<uint32_t>(ps.size());
+        pci.pPoolSizes=ps.data();
+        check(vkCreateDescriptorPool(device_,&pci,nullptr,&postDescriptorPool_),"vkCreateDescriptorPool(post)");
+
+        VkDescriptorSetAllocateInfo bai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        bai.descriptorPool=postDescriptorPool_;
+        bai.descriptorSetCount=1;
+        bai.pSetLayouts=&blitDescriptorSetLayout_;
+        check(vkAllocateDescriptorSets(device_,&bai,&blitDescriptorSet_),"vkAllocateDescriptorSets(blit)");
+
+        VkDescriptorSetAllocateInfo wai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        wai.descriptorPool=postDescriptorPool_;
+        wai.descriptorSetCount=1;
+        wai.pSetLayouts=&waterDescriptorSetLayout_;
+        check(vkAllocateDescriptorSets(device_,&wai,&waterDescriptorSet_),"vkAllocateDescriptorSets(water)");
+
+        std::vector<uint8_t> defaultBiome={0,0,0,0};
+        waterBiomeTexture_=createTextureRgba(defaultBiome,1,1);
+        waterBiomeReady_=false;
+
+        refreshPostDescriptors();
+    }
+
+    void destroyPostProcessResources(){
+        destroyWaterMesh(waterMesh_);
+        destroyBuffer(waterUniformBuffer_);
+        destroyTexture(waterBiomeTexture_);
+        if(postLinearSampler_)vkDestroySampler(device_,postLinearSampler_,nullptr);
+        if(waterDepthSampler_)vkDestroySampler(device_,waterDepthSampler_,nullptr);
+        postLinearSampler_=waterDepthSampler_=VK_NULL_HANDLE;
+        if(postDescriptorPool_)vkDestroyDescriptorPool(device_,postDescriptorPool_,nullptr);
+        postDescriptorPool_=VK_NULL_HANDLE;
+        blitDescriptorSet_=VK_NULL_HANDLE;
+        waterDescriptorSet_=VK_NULL_HANDLE;
+    }
+
     void createGpuWorldResources() {
         terrainVB_=createBuffer(sizeof(Vertex)*static_cast<size_t>(TERRAIN_SEGMENTS+1)*(TERRAIN_SEGMENTS+1),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         terrainIB_=createBuffer(sizeof(uint32_t)*static_cast<size_t>(TERRAIN_SEGMENTS)*TERRAIN_SEGMENTS*6,VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
@@ -2623,6 +2757,7 @@ private:
 
         createTerrainTextureResources();
         loadPixelTreeAssets();
+        createPostProcessResources();
     }
 
     void uploadWorld(WorldData&& w) {
@@ -3686,6 +3821,7 @@ private:
             for(auto& [k,b]:impostorBlocks_)destroyImpostorBlock(b);
             impostorBlocks_.clear();
 
+            destroyPostProcessResources();
             destroyPixelTreeAssets();
             for(int i=0;i<MESH_KIND_COUNT;i++){destroyMesh(meshes_[i]);destroyBuffer(instanceBuffers_[i]);}
             destroyBuffer(dummyInstance_);
@@ -3776,6 +3912,18 @@ private:
     TextureGpu impostorAtlasTexture_{};
     VkDescriptorSet impostorDescriptor_=VK_NULL_HANDLE;
     Buffer impostorInfoBuffer_{};
+
+    WaterMeshGpu waterMesh_{};
+    Buffer waterUniformBuffer_{};
+    TextureGpu waterBiomeTexture_{};
+    bool waterBiomeReady_=false;
+    float waterBiomeOriginX_=0.0f,waterBiomeOriginZ_=0.0f,waterBiomeSpan_=1536.0f;
+    float waterBiomeCenterX_=1e9f,waterBiomeCenterZ_=1e9f;
+    VkSampler postLinearSampler_=VK_NULL_HANDLE;
+    VkSampler waterDepthSampler_=VK_NULL_HANDLE;
+    VkDescriptorPool postDescriptorPool_=VK_NULL_HANDLE;
+    VkDescriptorSet blitDescriptorSet_=VK_NULL_HANDLE;
+    VkDescriptorSet waterDescriptorSet_=VK_NULL_HANDLE;
     bool terrainTextureInitialized_=false;
     float terrainTextureOriginX_=0.0f;
     float terrainTextureOriginZ_=0.0f;
