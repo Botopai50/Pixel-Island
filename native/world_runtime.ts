@@ -1,6 +1,11 @@
 import { PRNG } from '../src/generation/math/prng.ts';
 import { TerrainGenerator } from '../src/generation/terrain/terrainGenerator.ts';
 import { planChunkVegetation } from '../src/generation/vegetation/vegetationPlanner.ts';
+import {
+  DEFAULT_FORGE_PARAMS,
+  makePerlin,
+  genChunkTexture,
+} from '../src/generation/terrain/terrainTextureForge.ts';
 
 let cachedSeed = '';
 let terrain: TerrainGenerator | null = null;
@@ -87,3 +92,20 @@ const PLAN_KEYS=[
 };
 
 (globalThis as any).pixelSeedHash=(s:string)=>PRNG.hashString(s);
+
+
+// RGBA8 original do Pixel Terrain Forge. O tamanho é round(chunkSize*density)^2 * 4.
+(globalThis as any).pixelGenerateChunkTexture=function(
+  seedText:string,
+  minWorldX:number,
+  minWorldZ:number,
+  chunkSize:number,
+  density:number
+){
+  const world=worldFor(seedText);
+  const seed=PRNG.hashString(seedText);
+  const params={...DEFAULT_FORGE_PARAMS, seed};
+  const per=makePerlin(seed);
+  const res=genChunkTexture(params,per,world,minWorldX,minWorldZ,chunkSize,density);
+  return res.img.buffer;
+};
