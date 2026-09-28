@@ -360,12 +360,6 @@ struct WaterMeshCpu {
     std::vector<uint32_t> indices;
 };
 
-struct WaterMeshGpu {
-    Buffer vb;
-    Buffer ib;
-    uint32_t indexCount=0;
-};
-
 struct alignas(16) WaterUniformsGpu {
     Mat4 model{};
     Mat4 viewProj{};
@@ -1172,6 +1166,12 @@ struct Buffer {
 };
 
 struct GpuMesh {
+    Buffer vb;
+    Buffer ib;
+    uint32_t indexCount=0;
+};
+
+struct WaterMeshGpu {
     Buffer vb;
     Buffer ib;
     uint32_t indexCount=0;
