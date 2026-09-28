@@ -11,6 +11,10 @@ add_executable(PixelIslandNative WIN32
     src/main.cpp
 )
 
+add_executable(PixelIslandParity
+    src/parity.cpp
+)
+
 target_compile_definitions(PixelIslandNative PRIVATE
     VK_USE_PLATFORM_WIN32_KHR
     NOMINMAX
@@ -28,6 +32,9 @@ target_link_libraries(PixelIslandNative PRIVATE
 
 if(MSVC)
     set_property(TARGET PixelIslandNative PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+    set_property(TARGET PixelIslandParity PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     target_compile_options(PixelIslandNative PRIVATE /W4 /O2 /permissive-)
