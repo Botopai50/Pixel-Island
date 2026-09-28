@@ -3843,7 +3843,7 @@ private:
 
         w.resolutionTexel[0]=static_cast<float>(sceneTarget_.width);
         w.resolutionTexel[1]=static_cast<float>(sceneTarget_.height);
-        w.resolutionTexel[2]=8.0f;
+        w.resolutionTexel[2]=1.75f;
         w.resolutionTexel[3]=1.0f;
 
         w.biomeOriginSpanReady[0]=waterBiomeOriginX_;
@@ -3857,6 +3857,68 @@ private:
         w.cameraNearFarActive[3]=0.0f;
 
         std::memcpy(waterUniformBuffer_.mapped,&w,sizeof(w));
+    }
+
+    SkyUniformsGpu makeSkyUniforms(const CameraState& cam) const {
+        SkyUniformsGpu s{};
+        s.model=identity4();
+        s.model.m[12]=cam.eye.x;
+        s.model.m[13]=cam.eye.y;
+        s.model.m[14]=cam.eye.z;
+        s.viewProj=cam.viewProj;
+
+        const Vec3 sun{0.45452f,0.70711f,-0.54168f};
+        Vec3 moon{-sun.x,std::max(0.62f,-sun.y*0.85f+0.35f),-sun.z};
+        moon=normalize(moon);
+
+        s.sunDirTime[0]=sun.x;s.sunDirTime[1]=sun.y;s.sunDirTime[2]=sun.z;s.sunDirTime[3]=time_;
+        s.moonDirStar[0]=moon.x;s.moonDirStar[1]=moon.y;s.moonDirStar[2]=moon.z;s.moonDirStar[3]=0.0f;
+
+        auto put=[&](float dst[4],uint32_t rgb,float a=1.0f){
+            const Vec3 v=linearHex(rgb);
+            dst[0]=v.x;dst[1]=v.y;dst[2]=v.z;dst[3]=a;
+        };
+
+        put(s.zenithColor,0x1a5ec4u);
+        put(s.horizonColor,0x8ec4f5u);
+        put(s.groundColor,0x94b8e0u);
+        put(s.cloudColor,0xffffffu);
+        put(s.cloudShadowColor,0xa0c4eau);
+        put(s.sunColor,0xfffef2u);
+        put(s.coronaColor,0xffe69cu);
+        put(s.fogColorMoon,0x88bce8u,0.0f);
+
+        s.coveragePixel[0]=0.50f;
+        // O preset de integrada fraca usa densidade perto de 1.75 px/m; DEFAULT_D do original é 8.
+        s.coveragePixel[1]=1.75f/8.0f;
+
+        s.windOffsets[0]=std::fmod(time_*0.015f,1000.0f);
+        s.windOffsets[1]=std::fmod(time_*0.007f,1000.0f);
+        s.windOffsets[2]=std::fmod(time_*0.015f*1.12f,1000.0f);
+        s.windOffsets[3]=std::fmod(time_*0.007f*1.12f,1000.0f);
+
+        s.cameraPos[0]=cam.eye.x;s.cameraPos[1]=cam.eye.y;s.cameraPos[2]=cam.eye.z;s.cameraPos[3]=0.0f;
+        return s;
+    }
+
+    void updateSkyUniformBuffers(const CameraState& mainCam,const CameraState& reflectedCam){
+        const SkyUniformsGpu mainSky=makeSkyUniforms(mainCam);
+        const SkyUniformsGpu reflectSky=makeSkyUniforms(reflectedCam);
+        std::memcpy(skyUniformBuffers_[0].mapped,&mainSky,sizeof(mainSky));
+        std::memcpy(skyUniformBuffers_[1].mapped,&reflectSky,sizeof(reflectSky));
+    }
+
+    void drawSky(VkCommandBuffer cmd,size_t descriptorIndex){
+        if(!skyMesh_.indexCount)return;
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,skyPipeline_);
+        vkCmdBindDescriptorSets(
+            cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,skyPipelineLayout_,
+            0,1,&skyDescriptorSets_[descriptorIndex],0,nullptr
+        );
+        VkDeviceSize off=0;
+        vkCmdBindVertexBuffers(cmd,0,1,&skyMesh_.vb.buffer,&off);
+        vkCmdBindIndexBuffer(cmd,skyMesh_.ib.buffer,0,VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd,skyMesh_.indexCount,1,0,0,0);
     }
 
     void setDynamicViewport(VkCommandBuffer cmd,uint32_t width,uint32_t height){
@@ -3983,6 +4045,7 @@ private:
         const CameraState cam=currentCameraState(false);
         const CameraState reflectedCam=currentCameraState(true);
         const PushConstants mainPush=makePush(cam);
+        updateSkyUniformBuffers(cam,reflectedCam);
         const VkClearColorValue skyClear{{0.144f,0.394f,0.823f,1.0f}};
 
         // Passo 1 do original: reflexão planar só em primeira pessoa e em frequência reduzida.
@@ -3990,6 +4053,7 @@ private:
             (!reflectionValid_||(time_-lastReflectionUpdate_)>=0.20f);
         if(shouldReflect){
             beginScenePass(cmd,reflectionTarget_,skyClear);
+            drawSky(cmd,1);
             PushConstants reflectedPush=makePush(reflectedCam);
             drawWorldGeometry(cmd,reflectedPush,true);
             vkCmdEndRenderPass(cmd);
@@ -4004,6 +4068,7 @@ private:
 
         // Passo 2: mundo opaco sem água, com depth amostrável.
         beginScenePass(cmd,sceneTarget_,skyClear);
+        drawSky(cmd,0);
         drawWorldGeometry(cmd,mainPush,false);
         vkCmdEndRenderPass(cmd);
 
