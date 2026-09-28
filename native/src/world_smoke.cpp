@@ -28,9 +28,22 @@ int main(int argc,char** argv){
         if(!std::isfinite(v)) throw std::runtime_error("Vegetation buffer contem NaN/Inf.");
     }
 
+    auto texture=js.generateChunkTexture("Avalon",-32.0,-32.0,64.0,1.0);
+    const size_t expectedTexture=64u*64u*4u;
+    if(texture.size()!=expectedTexture) throw std::runtime_error("Terrain texture buffer size incorreto.");
+    bool hasVariation=false;
+    for(size_t i=4;i<texture.size();i+=4){
+        if(texture[i]!=texture[0] || texture[i+1]!=texture[1] || texture[i+2]!=texture[2]){
+            hasVariation=true;
+            break;
+        }
+    }
+    if(!hasVariation) throw std::runtime_error("Terrain Texture Forge retornou textura uniforme.");
+
     std::cout<<"OK terrainFloats="<<terrain.size()
              <<" height=["<<minH<<","<<maxH<<"]"
              <<" vegetationInstances="<<(vegetation.size()/23u)
+             <<" textureBytes="<<texture.size()
              <<"\n";
     return 0;
 }
