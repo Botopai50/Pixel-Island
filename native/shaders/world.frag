@@ -1,72 +1,163 @@
 #version 450
 
-layout(set = 0, binding = 0) uniform sampler2D uTerrainAtlas;
+layout(set=0,binding=0) uniform sampler2D uChunkTopPack; // top à esquerda, topDark à direita
+layout(set=0,binding=1) uniform sampler2D uWallAtlas;    // A/B/C/D em 4 colunas de 128px
 
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
-    vec4 cameraFog;
-    vec4 sunAmbient;
-    vec4 environment;
-    vec4 terrainAtlas; // originX, originZ, spanWorld, terrainPass
+    vec4 cameraFog;    // xyz camera, w fogNear
+    vec4 sunAmbient;   // xyz sunDir, w ambient
+    vec4 environment;  // x time, y fogFar, z renderMode, w density
+    vec4 terrain;      // chunk origin,size,end OR horizon center,inner,outer
 } pc;
 
-layout(location = 0) in vec3 vColor;
-layout(location = 1) in float vDistance;
-layout(location = 2) in vec3 vWorldPos;
-layout(location = 3) in float vLight;
+layout(location=0) in vec3 vColor;
+layout(location=1) in vec3 vWorldPos;
+layout(location=2) in vec3 vWorldNormal;
+layout(location=3) in vec3 vWall;
+layout(location=4) in float vLight;
+layout(location=5) in float vMode;
+layout(location=0) out vec4 outColor;
 
-layout(location = 0) out vec4 outColor;
-
-vec3 sampleOriginalTerrainTexture() {
-    const float CHUNK = 64.0;
-    const float SLOT = 112.0;
-    const float OUTER = 80.0;
-    const float GRID = 13.0;
-    const float ATLAS = SLOT * GRID;
-
-    vec2 rel = vec2(vWorldPos.x - pc.terrainAtlas.x, vWorldPos.z - pc.terrainAtlas.y);
-    vec2 cell = floor(rel / CHUNK);
-    vec2 local = clamp(fract(rel / CHUNK), vec2(0.0), vec2(0.999999));
-
-    // O centro do atlas é o chunk 6,6. O preset Intel UHD usa 1.75 tx/m
-    // no 3x3 central e 1.25 tx/m no restante.
-    float ring = max(abs(cell.x - 6.0), abs(cell.y - 6.0));
-    float sourcePixels = ring <= 1.0 ? SLOT : OUTER;
-
-    vec2 pixel = cell * SLOT + local * sourcePixels + vec2(0.5);
-    vec2 uv = pixel / ATLAS;
-    return texture(uTerrainAtlas, uv).rgb;
+float h21(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
+float vn2(vec2 p){
+    vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+    return mix(mix(h21(i),h21(i+vec2(1,0)),f.x),
+               mix(h21(i+vec2(0,1)),h21(i+vec2(1,1)),f.x),f.y);
+}
+float clg(vec2 t){
+    return h21(floor(t*0.5))*0.30
+         + h21(floor((t+vec2(1,3))/3.0)+17.0)*0.32
+         + h21(floor((t+vec2(5,2))/5.0)+53.0)*0.22
+         + h21(floor((t+vec2(3,6))/9.0)+91.0)*0.16;
 }
 
-void main() {
-    vec3 color = vColor * vLight;
+float fadeHash(vec2 p){return h21(p+vec2(37.0,17.0));}
 
-    bool water = vColor.b > vColor.r * 1.55 && vColor.b > vColor.g * 0.82 && vWorldPos.y < 3.0;
-    bool lava = vColor.r > 0.70 && vColor.g < 0.38 && vColor.b < 0.14 && vWorldPos.y > 0.0;
+vec4 sampleTop(bool dark,vec2 localUV){
+    float texW=round(64.0*pc.environment.w);
+    // imagem nativa fixa 256x128; pixels válidos ocupam texW x texW.
+    float x=(dark?128.0:0.0)+clamp(localUV.x,0.0,0.999999)*texW+0.5;
+    float y=clamp(localUV.y,0.0,0.999999)*texW+0.5;
+    return texture(uChunkTopPack,vec2(x/256.0,y/128.0));
+}
 
-    if (pc.terrainAtlas.w > 0.5 && !water && !lava) {
-        color = sampleOriginalTerrainTexture() * vLight;
+vec3 sampleWall(int which,vec2 uv){
+    // atlas 512x384: A,B,C,D em colunas de 128x384.
+    vec2 f=fract(uv);
+    float x=(float(which)*128.0+f.x*127.0+0.5)/512.0;
+    float y=(f.y*383.0+0.5)/384.0;
+    return texture(uWallAtlas,vec2(x,y)).rgb;
+}
+
+// Port literal do atmosphericFog.ts.
+float fogAmountAt(vec3 wpos,float fNear,float fFar){
+    float d=length(wpos-pc.cameraFog.xyz);
+    float span=max(fFar-fNear,1.0);
+    float dd=max(d-fNear,0.0);
+    float fd=max(1.0-exp(-dd/(span*0.4)),smoothstep(fNear+span*0.7,fFar,d));
+    float hf=0.55*exp(-max(wpos.y-2.0,0.0)/35.0)
+             *(1.0-exp(-max(d-fNear*0.5,0.0)/800.0));
+    return 1.0-(1.0-fd)*(1.0-hf);
+}
+
+vec3 aerialPerspective(vec3 col,vec3 wpos,vec3 fogCol,float fNear,float fFar){
+    vec3 rel=wpos-pc.cameraFog.xyz;
+    float d=length(rel);
+    float nh=0.55*(1.0-exp(-max(d-fNear,0.0)/260.0));
+    float t=1.0-(1.0-fogAmountAt(wpos,fNear,fFar))*(1.0-nh);
+    vec3 tc=1.0-pow(vec3(1.0-t),vec3(0.85,1.0,1.2));
+    float lum=dot(col,vec3(0.2126,0.7152,0.0722));
+    col=mix(col,vec3(lum),clamp(t*0.7,0.0,1.0));
+    float sunUp=clamp(pc.sunAmbient.y*4.0+0.2,0.0,1.0);
+    float glow=pow(max(dot(rel/max(d,1e-3),normalize(pc.sunAmbient.xyz)),0.0),5.0)*sunUp;
+    // #88bce8 e #fff9ed convertidos para linear.
+    vec3 fogC=vec3(0.2462,0.5029,0.8069);
+    vec3 sunC=vec3(1.0,0.9473,0.8469);
+    vec3 inscat=mix(fogC,sunC,glow*0.45);
+    return mix(col,inscat,tc);
+}
+
+vec3 terrainColor(){
+    vec2 localUV=(vWorldPos.xz-pc.terrain.xy)/pc.terrain.z;
+    vec4 topS=sampleTop(false,localUV);
+    vec4 topD=sampleTop(true,localUV);
+
+    vec3 wn=normalize(vWorldNormal);
+    float totalD=pc.environment.w;
+    vec2 texel=vWorldPos.xz*totalD;
+    float nearK=1.0; // fwidth-based fade preservado abaixo
+    vec2 texFw=fwidth(texel);
+    nearK=1.0-smoothstep(0.6,1.6,max(texFw.x,texFw.y));
+    float dth=(clg(texel)-0.5)*nearK;
+
+    float slope=1.0-abs(wn.y);
+    if(vWall.x>0.5)slope=max(slope,vWall.z);
+    float thr=min(0.46,0.38+dth*0.12+topS.a*(0.20*0.4+dth*0.12));
+    float wallMix=step(thr,slope);
+
+    // projeção de paredão em 8 direções, igual ao terrainShader.ts.
+    float wAng=atan(wn.z,wn.x);
+    float wOct=floor(wAng/0.78539816+0.5+dth*0.7)*0.78539816;
+    vec2 wTan=vec2(-sin(wOct),cos(wOct));
+    vec2 uvW=vec2(dot(vWorldPos.xz,wTan),vWorldPos.y);
+    uvW*=totalD/128.0;
+
+    float bi=floor(topD.a*255.0+0.5);
+    vec2 uvD=vec2(uvW.x,(fract(uvW.y*0.7)+bi)/3.0);
+    vec2 uvRock=vec2(uvW.x,(fract(uvW.y)+bi)/3.0);
+
+    float rockVar=(vn2(vWorldPos.xz*0.045)-0.5)*9.0
+                 +(vn2(vWorldPos.xz*0.21+7.3)-0.5)*3.0
+                 +(vn2(vWorldPos.xz*0.8+3.1)-0.5)*0.9;
+    float yl=9.5+rockVar+dth*1.6;
+    float bel=yl-vWorldPos.y;
+    float rk=step(0.0,bel);
+
+    vec3 rockA=sampleWall(1,uvRock);
+    vec3 rockB=sampleWall(2,uvRock);
+    vec3 dirtA=sampleWall(0,uvD);
+    vec3 dirtD=sampleWall(3,uvD);
+    float contact=1.0-step(2.2/max(totalD,0.01),abs(bel));
+    vec3 rock=mix(rockA,rockB,contact*0.45);
+    vec3 dirt=mix(dirtA,dirtD,contact*0.40);
+    vec3 wall=mix(dirt,rock,rk);
+
+    // Barranco baixo: mantém a cor do chão, como o shader original.
+    float lowBank=1.0-step(3.0+dth*0.6,vWorldPos.y);
+    if(lowBank>0.0 && (wallMix>0.0||slope>0.3)){
+        wall=topS.rgb*0.84;
+        wallMix*=1.0-lowBank;
     }
 
-    if (water) {
-        float waveA = sin(vWorldPos.x * 0.085 + pc.environment.x * 1.45);
-        float waveB = sin(vWorldPos.z * 0.063 - pc.environment.x * 1.12);
-        float wave = (waveA + waveB) * 0.5;
-        color *= 0.90 + wave * 0.055;
-        float sparkle = smoothstep(0.82, 1.0, sin((vWorldPos.x + vWorldPos.z) * 0.19 + pc.environment.x * 2.4));
-        color += vec3(0.04, 0.08, 0.10) * sparkle;
+    vec3 topBase=mix(topS.rgb,topD.rgb,0.08*nearK);
+    return mix(topBase,wall,wallMix);
+}
+
+void main(){
+    float mode=vMode;
+
+    // Mesma faixa de dissolve dos chunks: blocos de 4m fixos no mundo.
+    if(mode>0.5&&mode<1.5){
+        float d=distance(vWorldPos.xz,pc.cameraFog.xz);
+        float chunkEnd=pc.terrain.w;
+        float fade=smoothstep(chunkEnd-110.0,chunkEnd,d);
+        if(fadeHash(floor(vWorldPos.xz/4.0))>1.0-fade)discard;
     }
 
-    if (lava) {
-        float pulse = 0.86 + 0.14 * sin(pc.environment.x * 3.0 + vWorldPos.x * 0.13 + vWorldPos.z * 0.09);
-        color = mix(color * pulse, vec3(1.0, 0.22, 0.025), 0.16);
+    // Distant Horizons: buraco interno e fade externo do horizonTerrain.ts.
+    if(mode>1.5){
+        float d=distance(vWorldPos.xz,pc.cameraFog.xz);
+        float inner=pc.terrain.z,outer=pc.terrain.w;
+        if(d<inner)discard;
+        float fade=smoothstep(outer,outer+250.0,d);
+        if(fadeHash(floor(vWorldPos.xz/2.0))>1.0-fade)discard;
     }
 
-    float fogFar = pc.cameraFog.w;
-    float fog = smoothstep(fogFar * 0.52, fogFar, vDistance);
-    vec3 fogColor = vec3(0.54, 0.70, 0.78);
-    float valleyHaze = clamp((16.0 - vWorldPos.y) / 80.0, 0.0, 0.11);
-    color = mix(color, fogColor, clamp(fog + valleyHaze, 0.0, 1.0));
+    vec3 color;
+    if(mode>0.5&&mode<1.5) color=terrainColor()*vLight;
+    else color=vColor*vLight;
 
-    outColor = vec4(color, 1.0);
+    color=aerialPerspective(color,vWorldPos,vec3(0.2462,0.5029,0.8069),pc.cameraFog.w,pc.environment.y);
+    outColor=vec4(color,1.0);
 }
