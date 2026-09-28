@@ -349,7 +349,7 @@ private:
     double oceanFloor(double x,double z)const{return OCEAN_FLOOR+noise_.fbm2D(x*0.004,z*0.004,3)*8.0;}
     double continentalShelf(double x,double z,double coastDist,double meso)const{
         double od=-coastDist,shallow=-od*0.08,deepProg=smoothstep(15,180,od),deep=lerp(-1.2,OCEAN_FLOOR,deepProg);
-        double near=(meso*0.25)*smoothstep(15,60,od),far=deepProg>0?oceanFloor(x,z)-OCEAN_FLOOR:0,bed=lerp(near,far,deepProg);
+        double nearBed=(meso*0.25)*smoothstep(15,60,od),farBed=deepProg>0?oceanFloor(x,z)-OCEAN_FLOOR:0,bed=lerp(nearBed,farBed,deepProg);
         return lerp(shallow,deep+bed,deepProg);
     }
     uint32_t seed_;SimplexNoise noise_;MacroGeography macro_;VolcanoGenerator volcano_;GeothermalGenerator geo_;CanyonGenerator canyon_;
