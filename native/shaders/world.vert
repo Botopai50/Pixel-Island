@@ -4,10 +4,11 @@ layout(location = 0) in vec3 inPosition;
 layout(location = 1) in vec3 inNormal;
 layout(location = 2) in vec3 inColor;
 
-layout(location = 3) in vec3 instanceOffset;
-layout(location = 4) in float instanceScale;
-layout(location = 5) in float instanceRotation;
-layout(location = 6) in vec3 instanceColor;
+layout(location = 3) in vec4 instanceM0;
+layout(location = 4) in vec4 instanceM1;
+layout(location = 5) in vec4 instanceM2;
+layout(location = 6) in vec4 instanceM3;
+layout(location = 7) in vec4 instanceColor;
 
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
@@ -21,33 +22,18 @@ layout(location = 1) out float vDistance;
 layout(location = 2) out vec3 vWorldPos;
 
 void main() {
-    float c = cos(instanceRotation);
-    float s = sin(instanceRotation);
+    mat4 instanceMatrix = mat4(instanceM0, instanceM1, instanceM2, instanceM3);
+    vec3 worldPos = (instanceMatrix * vec4(inPosition, 1.0)).xyz;
+    vec3 worldNormal = normalize(mat3(instanceMatrix) * inNormal);
 
-    vec3 p = inPosition * instanceScale;
-    vec3 n = inNormal;
-
-    vec3 rp = vec3(
-        p.x * c - p.z * s,
-        p.y,
-        p.x * s + p.z * c
-    );
-
-    vec3 rn = normalize(vec3(
-        n.x * c - n.z * s,
-        n.y,
-        n.x * s + n.z * c
-    ));
-
-    vec3 worldPos = rp + instanceOffset;
     gl_Position = pc.viewProj * vec4(worldPos, 1.0);
 
     vec3 sunDir = normalize(pc.sunAmbient.xyz);
-    float ndl = max(dot(rn, sunDir), 0.0);
+    float ndl = max(dot(worldNormal, sunDir), 0.0);
     float toon = ndl > 0.56 ? 1.0 : (ndl > 0.18 ? 0.72 : 0.46);
     float light = mix(pc.sunAmbient.w, 1.0, toon);
 
-    vColor = inColor * instanceColor * light;
+    vColor = inColor * instanceColor.rgb * light;
     vDistance = distance(worldPos, pc.cameraFog.xyz);
     vWorldPos = worldPos;
 }
