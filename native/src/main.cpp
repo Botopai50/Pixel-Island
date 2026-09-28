@@ -1018,6 +1018,7 @@ public:
         const std::filesystem::path bundle=std::filesystem::path(executableDir())/L"world.bundle.js";
         logLine("APP: iniciando streaming exato de chunks/horizon");
         exactStreamer_=std::make_unique<ExactStreamingWorker>(bundle);
+        horizonStreamer_=std::make_unique<ExactStreamingWorker>(bundle);
         planExactStreaming(0.0f,0.0f,true);
 
         mainLoop();
@@ -1025,6 +1026,7 @@ public:
     }
 
     ~VulkanApp() {
+        horizonStreamer_.reset();
         exactStreamer_.reset();
         streamer_.reset();
         if(device_!=VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
@@ -2025,20 +2027,149 @@ private:
         if(GetAsyncKeyState(VK_ESCAPE)&0x8000) PostMessageW(hwnd_,WM_CLOSE,0,0);
     }
 
+    static std::string chunkKey(int cx,int cz) {
+        return std::to_string(cx)+":"+std::to_string(cz);
+    }
+    static std::string horizonKey(int level,int tx,int tz) {
+        return std::to_string(level)+":"+std::to_string(tx)+":"+std::to_string(tz);
+    }
+
+    int activeViewRadius() const { return observerMode_?6:5; }
+
+    void planExactStreaming(float x,float z,bool force=false) {
+        if(!exactStreamer_||!horizonStreamer_)return;
+        const int cx=static_cast<int>(std::floor((x+32.0f)/64.0f));
+        const int cz=static_cast<int>(std::floor((z+32.0f)/64.0f));
+        if(force||cx!=exactCenterCx_||cz!=exactCenterCz_){
+            exactCenterCx_=cx;exactCenterCz_=cz;streamGeneration_++;
+            const int r=activeViewRadius();
+            const int viewSq=r*r+1;
+            for(int dz=-r;dz<=r;dz++){
+                for(int dx=-r;dx<=r;dx++){
+                    const int d2=dx*dx+dz*dz;
+                    if(d2>viewSq)continue;
+                    const int ccx=cx+dx,ccz=cz+dz;
+                    const int ring=std::max(std::abs(dx),std::abs(dz));
+                    const float density=ring<=1?1.75f:1.25f;
+                    const int segments=ring<=4?16:8;
+                    const bool walls=(64.0f/segments)<=4.0f;
+                    auto it=exactChunks_.find(chunkKey(ccx,ccz));
+                    if(it!=exactChunks_.end()&&it->second.segments==segments&&std::abs(it->second.density-density)<0.001f)continue;
+                    exactStreamer_->requestChunk(ccx,ccz,density,segments,walls,static_cast<double>(d2),streamGeneration_);
+                }
+            }
+
+            // Retenção igual à ideia do ChunkManager: margem de dois chunks para não regenerar
+            // a cada pequena travessia de borda.
+            const int keep=r+2,keepSq=keep*keep;
+            bool removed=false;
+            for(auto it=exactChunks_.begin();it!=exactChunks_.end();){
+                const int dx=it->second.cx-cx,dz=it->second.cz-cz;
+                if(dx*dx+dz*dz>keepSq){
+                    if(!removed){vkDeviceWaitIdle(device_);removed=true;}
+                    destroyExactChunk(it->second);
+                    it=exactChunks_.erase(it);
+                }else ++it;
+            }
+        }
+
+        // Distant Horizons original, nível 0. O preset "integrada fraca" mantém 1 nível a 55%.
+        if(force||std::hypot(x-lastHorizonPlanX_,z-lastHorizonPlanZ_)>=200.0f){
+            lastHorizonPlanX_=x;lastHorizonPlanZ_=z;
+            constexpr float size=1024.0f;
+            constexpr int seg=64;
+            constexpr float outer=3000.0f*0.55f;
+            constexpr float overlap=250.0f;
+            constexpr float lower=0.8f;
+            const float reach=outer+overlap;
+
+            std::unordered_set<std::string> wanted;
+            const int t0x=static_cast<int>(std::floor((x-reach)/size));
+            const int t1x=static_cast<int>(std::floor((x+reach)/size));
+            const int t0z=static_cast<int>(std::floor((z-reach)/size));
+            const int t1z=static_cast<int>(std::floor((z+reach)/size));
+            for(int tx=t0x;tx<=t1x;tx++){
+                for(int tz=t0z;tz<=t1z;tz++){
+                    const float minX=tx*size,minZ=tz*size;
+                    const float nx=std::max({minX-x,0.0f,x-(minX+size)});
+                    const float nz=std::max({minZ-z,0.0f,z-(minZ+size)});
+                    const float nearD=std::hypot(nx,nz);
+                    if(nearD>reach)continue;
+                    const std::string key=horizonKey(0,tx,tz);
+                    wanted.insert(key);
+                    if(!horizonTiles_.contains(key))
+                        horizonStreamer_->requestHorizon(0,tx,tz,minX,minZ,size,seg,lower,nearD,streamGeneration_);
+                }
+            }
+            wantedHorizon_=std::move(wanted);
+
+            bool removed=false;
+            for(auto it=horizonTiles_.begin();it!=horizonTiles_.end();){
+                if(!wantedHorizon_.contains(it->first)){
+                    if(!removed){vkDeviceWaitIdle(device_);removed=true;}
+                    destroyHorizon(it->second);
+                    it=horizonTiles_.erase(it);
+                }else ++it;
+            }
+        }
+    }
+
+    void processExactStreaming() {
+        if(!exactStreamer_||!horizonStreamer_)return;
+        std::string err;
+        if(exactStreamer_->takeError(err))throw std::runtime_error("Chunk worker: "+err);
+        if(horizonStreamer_->takeError(err))throw std::runtime_error("Horizon worker: "+err);
+
+        // No máximo um upload pesado de chunk por quadro para não criar hitch.
+        ExactStreamResult r;
+        if(exactStreamer_->take(r)){
+            if(auto* cpu=std::get_if<ExactChunkCpu>(&r.payload)){
+                const int dx=cpu->cx-exactCenterCx_,dz=cpu->cz-exactCenterCz_;
+                const int keep=activeViewRadius()+2;
+                if(dx*dx+dz*dz<=keep*keep){
+                    const std::string key=chunkKey(cpu->cx,cpu->cz);
+                    auto fresh=uploadExactChunk(std::move(*cpu));
+                    auto it=exactChunks_.find(key);
+                    if(it!=exactChunks_.end()){
+                        vkDeviceWaitIdle(device_);
+                        destroyExactChunk(it->second);
+                        it->second=std::move(fresh);
+                    }else exactChunks_.emplace(key,std::move(fresh));
+
+                    if(!worldReady_&&exactChunks_.contains(chunkKey(0,0))){
+                        worldReady_=true;
+                        focus_={0,heightAt(0,0),0};
+                        camera_=observerEye();
+                        logLine("APP: chunk central pronto; streaming continua em background");
+                    }
+                }
+            }
+        }
+
+        // Horizonte tem worker separado e recebe um upload por quadro.
+        ExactStreamResult hr;
+        if(horizonStreamer_->take(hr)){
+            if(auto* cpu=std::get_if<HorizonTileCpu>(&hr.payload)){
+                const std::string key=horizonKey(cpu->level,cpu->tx,cpu->tz);
+                if(wantedHorizon_.contains(key)){
+                    const float chunkEnd=std::max(160.0f,(activeViewRadius()-0.8f)*64.0f);
+                    const float hole=chunkEnd-120.0f;
+                    auto fresh=uploadHorizon(std::move(*cpu),hole,3000.0f*0.55f);
+                    auto it=horizonTiles_.find(key);
+                    if(it!=horizonTiles_.end()){
+                        vkDeviceWaitIdle(device_);
+                        destroyHorizon(it->second);
+                        it->second=std::move(fresh);
+                    }else horizonTiles_.emplace(key,std::move(fresh));
+                }
+            }
+        }
+    }
+
     void updateStreaming() {
         const Vec3 anchor=observerMode_?focus_:camera_;
-        // Mesmo arredondamento do ChunkManager original:
-        // floor((world + CHUNK_SIZE/2) / CHUNK_SIZE)
-        const int chunkX=static_cast<int>(std::floor((anchor.x+STREAM_STEP*0.5f)/STREAM_STEP));
-        const int chunkZ=static_cast<int>(std::floor((anchor.z+STREAM_STEP*0.5f)/STREAM_STEP));
-        const int cx=chunkX*static_cast<int>(STREAM_STEP);
-        const int cz=chunkZ*static_cast<int>(STREAM_STEP);
-        if((cx!=requestedCenterX_||cz!=requestedCenterZ_)&&streamer_) {
-            requestedCenterX_=cx; requestedCenterZ_=cz;
-            streamer_->request(cx,cz);
-        }
-        WorldData ready;
-        if(streamer_&&streamer_->take(ready)) uploadWorld(std::move(ready));
+        planExactStreaming(anchor.x,anchor.z,false);
+        processExactStreaming();
     }
 
     float maxDistanceForKind(int kind) const {
@@ -2393,6 +2524,7 @@ private:
     int requestedCenterX_=0,requestedCenterZ_=0;
     std::unique_ptr<WorldStreamer> streamer_; // legado, não usado pelo pipeline exato
     std::unique_ptr<ExactStreamingWorker> exactStreamer_;
+    std::unique_ptr<ExactStreamingWorker> horizonStreamer_;
     std::unordered_map<std::string,ExactChunkGpu> exactChunks_;
     std::unordered_map<std::string,HorizonGpu> horizonTiles_;
     std::unordered_set<std::string> wantedHorizon_;
