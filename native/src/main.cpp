@@ -529,6 +529,66 @@ int nativeKindForPlanType(int type) {
     return ROCK;
 }
 
+static const std::array<const char*,30> PIXEL_TREE_PRESETS = {
+    "hyrule_oak","korok_ancient","hyrule_oak_sapling","hebra_pine","hebra_pine_sapling",
+    "akkala_birch","akkala_birch_sapling","faron_palm","faron_palm_sapling",
+    "savanna_acacia","savanna_acacia_sapling","maple_red","maple_orange","maple_yellow",
+    "swamp_mangrove","swamp_mangrove_sapling","hebra_pine_snowy","arctic_willow",
+    "dry_withered","gerudo_cactus","gerudo_cactus_sapling","hyrule_shrub","berry_shrub",
+    "hollow_log","rooted_log","tree_stump","fallen_log","fern_plant","wildflower_patch","reed_clump"
+};
+
+int nearestMaplePreset(float r,float g,float b){
+    struct C{float r,g,b;int id;};
+    const C c[3]={
+        {0xd4/255.0f,0x40/255.0f,0x22/255.0f,11},
+        {0xe8/255.0f,0x7a/255.0f,0x1a/255.0f,12},
+        {0xe8/255.0f,0xb8/255.0f,0x24/255.0f,13}
+    };
+    int best=11;float bestD=1e9f;
+    for(const auto& x:c){
+        const float dr=r-x.r,dg=g-x.g,db=b-x.b;
+        const float d=dr*dr+dg*dg+db*db;
+        if(d<bestD){bestD=d;best=x.id;}
+    }
+    return best;
+}
+
+int pixelPresetForPlanType(int type,float r,float g,float b){
+    switch(type){
+        case 0:return 0;   // hyrule_oak
+        case 1:return 1;   // korok_ancient
+        case 2:return 2;
+        case 3:return 3;
+        case 4:return 4;
+        case 5:
+        case 6:return 5;   // birch + twin birch
+        case 7:return 6;
+        case 8:return 7;
+        case 9:return 8;
+        case 10:return 9;
+        case 11:return 10;
+        case 12:return nearestMaplePreset(r,g,b);
+        case 13:return 14;
+        case 14:return 15;
+        case 15:return 16;
+        case 16:return 17;
+        case 17:return 18;
+        case 18:return 19;
+        case 19:return 20;
+        case 20:return 21;
+        case 21:return 22;
+        case 27:return 23;
+        case 28:return 24;
+        case 29:return 25;
+        case 30:return 26;
+        case 31:return 27;
+        case 32:return 28;
+        case 33:return 29;
+        default:return -1; // rocks ficam no sistema leve original do Pixel-Island
+    }
+}
+
 void logLine(const std::string& text);
 
 WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
