@@ -173,8 +173,9 @@ void main(){
         if(fadeHash(floor(vWorldPos.xz/4.0))>1.0-fade)discard;
     }
 
-    // Distant Horizons: buraco interno e fade externo do horizonTerrain.ts.
-    if(mode>1.5){
+    // Distant Horizons: esta regra pertence SOMENTE ao terreno do horizonte (mode 2).
+    // Pixel_Tree (3) e impostores (4) têm fades próprios.
+    if(mode>1.5&&mode<2.5){
         float d=distance(vWorldPos.xz,pc.cameraFog.xz);
         float inner=pc.terrain.z,outer=pc.terrain.w;
         if(d<inner)discard;
