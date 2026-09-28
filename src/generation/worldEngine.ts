@@ -358,6 +358,7 @@ export class WorldEngine {
     }
 
     this.waterMaterial.uniforms.uLightDir.value.copy(sunDirection).normalize();
+    this.vegetationMgr.syncPixelTreeLighting(sunDirection, sunColor, ambientColor);
 
     this.lavaFluidMgr.syncLighting(sunDirection, sunColor, fogColor);
     this.inlandWaterMgr.syncLighting(sunDirection, sunColor, fogColor);
