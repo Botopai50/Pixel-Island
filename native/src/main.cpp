@@ -1184,6 +1184,15 @@ struct TextureGpu {
     uint32_t width=0,height=0;
 };
 
+struct SceneTargetGpu {
+    TextureGpu color;
+    VkImage depth=VK_NULL_HANDLE;
+    VkDeviceMemory depthMemory=VK_NULL_HANDLE;
+    VkImageView depthView=VK_NULL_HANDLE;
+    VkFramebuffer framebuffer=VK_NULL_HANDLE;
+    uint32_t width=0,height=0;
+};
+
 struct ExactChunkGpu {
     int cx=0,cz=0,segments=0;
     float density=1.0f;
