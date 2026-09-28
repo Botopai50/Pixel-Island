@@ -1718,8 +1718,12 @@ private:
 
     void updateStreaming() {
         const Vec3 anchor=observerMode_?focus_:camera_;
-        const int cx=static_cast<int>(std::floor(anchor.x/STREAM_STEP))*static_cast<int>(STREAM_STEP);
-        const int cz=static_cast<int>(std::floor(anchor.z/STREAM_STEP))*static_cast<int>(STREAM_STEP);
+        // Mesmo arredondamento do ChunkManager original:
+        // floor((world + CHUNK_SIZE/2) / CHUNK_SIZE)
+        const int chunkX=static_cast<int>(std::floor((anchor.x+STREAM_STEP*0.5f)/STREAM_STEP));
+        const int chunkZ=static_cast<int>(std::floor((anchor.z+STREAM_STEP*0.5f)/STREAM_STEP));
+        const int cx=chunkX*static_cast<int>(STREAM_STEP);
+        const int cz=chunkZ*static_cast<int>(STREAM_STEP);
         if((cx!=requestedCenterX_||cz!=requestedCenterZ_)&&streamer_) {
             requestedCenterX_=cx; requestedCenterZ_=cz;
             streamer_->request(cx,cz);
