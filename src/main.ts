@@ -78,6 +78,10 @@ class App {
   private reflectionClipPlane: THREE.Plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private reflectionClipPlanes: THREE.Plane[] = [this.reflectionClipPlane];
   private noClipPlanes: THREE.Plane[] = [];
+  private reflectionIntervalMs: number = 1000 / 60;
+  private lastReflectionUpdate: number = -Infinity;
+  private readonly _reflectDir = new THREE.Vector3();
+  private readonly _reflectLookTarget = new THREE.Vector3();
   private lastRipplePos: THREE.Vector3 | null = null;
   private shadowsNeedUpdate: boolean = true;
   private lastShadowSceneVersion: number = -1;
@@ -369,6 +373,7 @@ class App {
     this.waterRenderTarget.setSize(buf.x, buf.y);
     this.resizeFxaa(buf.x, buf.y);
     this.reflectionRenderTarget.setSize(level.reflectionSize, level.reflectionSize);
+    this.reflectionIntervalMs = 1000 / Math.max(1, level.reflectionFps);
     this.atmosphere.getShadowClipmap().setMapSize(level.shadowMapSize);
     CONFIG.MAX_VIEW_RADIUS_CHUNKS = level.maxViewRadius;
     CONFIG.VIEW_RADIUS_CHUNKS = level.baseViewRadius;
@@ -484,13 +489,16 @@ class App {
     const seaLevel = 0.0;
 
     // 3. Renderização Multi-Pass para o Pixel Water Shader
-    // No Modo 1ª Pessoa: Renderiza a reflexão a cada frame para sincronia total com o movimento do jogador (elimina 100% de flicadas e stutter ao andar)
-    const shouldRenderReflection = isFirstPerson;
+    // A reflexão planar é um segundo render completo da cena. Em presets médios/baixos ela roda
+    // em frequência menor e reutiliza a textura entre atualizações, reduzindo bastante o custo GPU.
+    const shouldRenderReflection =
+      isFirstPerson && (now - this.lastReflectionUpdate >= this.reflectionIntervalMs);
 
     if (shouldRenderReflection) {
-      const camDir = new THREE.Vector3();
-      activeCamera.getWorldDirection(camDir);
-      const lookTarget = activeCamera.position.clone().add(camDir.multiplyScalar(100.0));
+      activeCamera.getWorldDirection(this._reflectDir);
+      const lookTarget = this._reflectLookTarget
+        .copy(activeCamera.position)
+        .addScaledVector(this._reflectDir, 100.0);
 
       const persp = activeCamera as THREE.PerspectiveCamera;
       const rPersp = this.reflectionCameraPerspective;
@@ -526,6 +534,7 @@ class App {
       );
       this.reflectTextureMatrix.multiply(rPersp.projectionMatrix);
       this.reflectTextureMatrix.multiply(rPersp.matrixWorldInverse);
+      this.lastReflectionUpdate = now;
     }
 
     // Estabilidade da pixelização (modo P, câmera aérea): a câmera anda só em passos inteiros de um
