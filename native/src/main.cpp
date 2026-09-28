@@ -92,6 +92,18 @@ Mat4 perspectiveVulkan(float fovY, float aspect, float zNear, float zFar) {
     return r;
 }
 
+Mat4 orthographicVulkan(float left, float right, float bottom, float top, float zNear, float zFar) {
+    Mat4 r{};
+    r.m[0] = 2.0f / (right - left);
+    r.m[5] = -2.0f / (top - bottom);
+    r.m[10] = 1.0f / (zNear - zFar);
+    r.m[12] = -(right + left) / (right - left);
+    r.m[13] = -(top + bottom) / (top - bottom);
+    r.m[14] = zNear / (zNear - zFar);
+    r.m[15] = 1.0f;
+    return r;
+}
+
 uint32_t hash32(uint32_t x) {
     x ^= x >> 16;
     x *= 0x7feb352du;
@@ -144,35 +156,152 @@ float fbm(float x, float z, uint32_t seed, int octaves=5) {
     return sum / std::max(norm, 1e-6f);
 }
 
-float terrainHeight(float x, float z) {
-    const float large = fbm(x*0.00115f, z*0.00115f, WORLD_SEED, 5) * 2.0f - 1.0f;
-    const float ridgeN = fbm((x+1900.0f)*0.0023f, (z-900.0f)*0.0023f, WORLD_SEED ^ 0xA341316Cu, 4);
-    const float ridge = 1.0f - std::abs(ridgeN*2.0f - 1.0f);
-    const float detail = fbm(x*0.008f, z*0.008f, WORLD_SEED ^ 0xC8013EA4u, 3) * 2.0f - 1.0f;
-    return 14.0f + large*72.0f + std::pow(ridge, 3.0f)*26.0f + detail*8.0f;
+
+struct WorldSample {
+    float height = 0.0f;
+    Vec3 color{0.2f,0.6f,0.25f};
+    float moisture = 0.5f;
+    float temperature = 0.5f;
+    float river = 0.0f;
+    float volcano = 0.0f;
+    bool water = false;
+    bool beach = false;
+    bool snow = false;
+    bool desert = false;
+    bool swamp = false;
+};
+
+float clamp01(float v) { return std::clamp(v, 0.0f, 1.0f); }
+
+float smoothstepf(float a, float b, float x) {
+    float t = clamp01((x-a)/(b-a));
+    return t*t*(3.0f-2.0f*t);
 }
 
-Vec3 terrainNormal(float x, float z) {
-    constexpr float e = 3.0f;
-    const float hl = terrainHeight(x-e,z);
-    const float hr = terrainHeight(x+e,z);
-    const float hd = terrainHeight(x,z-e);
-    const float hu = terrainHeight(x,z+e);
-    return normalize({hl-hr, 2.0f*e, hd-hu});
+Vec3 islandCenter(int gx, int gz) {
+    if (gx == 0 && gz == 0) return {0,0,0};
+    uint32_t s = hashCell(gx,gz,WORLD_SEED ^ 0xD1B54A35u);
+    const float jx = (rand01(s)-0.5f)*520.0f;
+    const float jz = (rand01(s)-0.5f)*520.0f;
+    return {gx*3200.0f+jx,0,gz*3200.0f+jz};
 }
 
-Vec3 terrainColor(float h, const Vec3& n, float x, float z) {
-    const float fleck = fbm(x*0.02f, z*0.02f, WORLD_SEED ^ 0xB5297A4Du, 2);
-    if (h < -2.0f) return {0.20f,0.43f,0.46f};
-    if (h < 4.0f) return {0.67f,0.62f,0.40f};
-    if (h > 112.0f) return {0.83f,0.88f,0.90f};
-    if (n.y < 0.72f || h > 82.0f) {
-        const float v = 0.38f + fleck*0.17f;
-        return {v*0.88f, v*0.95f, v};
+float riverStrength(float x, float z, const Vec3& center) {
+    const float lz = z-center.z;
+    const float warp = std::sin(lz*0.0041f + 0.9f) * 135.0f
+                     + (fbm(lz*0.0014f, 17.0f, WORLD_SEED ^ 0x77112233u, 3)-0.5f)*190.0f;
+    const float channelX = center.x - 160.0f + warp;
+    const float dist = std::abs(x-channelX);
+    float r = 1.0f - smoothstepf(5.5f,18.0f,dist);
+    const float longitudinal = 1.0f - smoothstepf(780.0f,1250.0f,std::abs(lz));
+    return r * longitudinal;
+}
+
+WorldSample sampleWorld(float x, float z) {
+    const int gx = static_cast<int>(std::round(x/3200.0f));
+    const int gz = static_cast<int>(std::round(z/3200.0f));
+    const Vec3 center = islandCenter(gx,gz);
+
+    uint32_t cellSeed = hashCell(gx,gz,WORLD_SEED);
+    const float rx = 1260.0f + rand01(cellSeed)*300.0f;
+    const float rz = 1180.0f + rand01(cellSeed)*360.0f;
+    const float lx = x-center.x;
+    const float lz = z-center.z;
+    const float radial = std::sqrt((lx*lx)/(rx*rx)+(lz*lz)/(rz*rz));
+
+    const float coastNoise = (fbm(x*0.00155f,z*0.00155f,WORLD_SEED ^ 0x93A7u,4)-0.5f)*0.21f;
+    const float land = 1.0f - smoothstepf(0.76f+coastNoise,1.06f+coastNoise,radial);
+
+    const float continental = fbm(x*0.00072f,z*0.00072f,WORLD_SEED ^ 0x1255AA33u,5)*2.0f-1.0f;
+    const float hills = fbm((x+900.0f)*0.0021f,(z-500.0f)*0.0021f,WORLD_SEED ^ 0xA341316Cu,5);
+    const float ridge = 1.0f-std::abs(hills*2.0f-1.0f);
+    const float detail = fbm(x*0.009f,z*0.009f,WORLD_SEED ^ 0xC8013EA4u,3)*2.0f-1.0f;
+
+    float raw = -38.0f + land*(49.0f + continental*31.0f + std::pow(ridge,3.2f)*50.0f + detail*7.5f);
+
+    // Cânions suaves, concentrados no interior mais alto.
+    const float canyonField = std::abs(std::sin((x+z*0.38f)*0.0031f + fbm(x*0.001f,z*0.001f,WORLD_SEED^0xCC77u,3)*4.0f));
+    if (land > 0.68f && raw > 34.0f && canyonField < 0.075f) {
+        raw -= (0.075f-canyonField)*330.0f;
     }
-    const float bright = 0.74f + fleck*0.28f;
-    return {0.22f*bright, 0.64f*bright, 0.27f*bright};
+
+    // Vulcão determinístico no quadrante nordeste da ilha principal.
+    const Vec3 volcanoCenter{center.x+470.0f,0,center.z+360.0f};
+    const float vdx=x-volcanoCenter.x, vdz=z-volcanoCenter.z;
+    const float vd=std::sqrt(vdx*vdx+vdz*vdz);
+    float volcano=0.0f;
+    if(vd<470.0f && land>0.45f) {
+        volcano=1.0f-smoothstepf(120.0f,470.0f,vd);
+        const float cone=(1.0f-vd/470.0f)*118.0f;
+        raw += std::max(0.0f,cone);
+        if(vd<92.0f) {
+            raw -= (1.0f-vd/92.0f)*62.0f;
+        }
+    }
+
+    // Rio principal e lago interior. O relevo é rebaixado, mas a superfície visual fica na água.
+    const float river=riverStrength(x,z,center);
+    if(river>0.01f && land>0.36f) {
+        raw = std::min(raw, 1.15f + (1.0f-river)*2.1f);
+    }
+    const float lakeD=std::hypot(lx+330.0f,lz-220.0f);
+    const float lake=1.0f-smoothstepf(95.0f,165.0f,lakeD);
+    if(lake>0.01f && land>0.5f) raw=std::min(raw,0.85f+(1.0f-lake)*2.4f);
+
+    WorldSample s{};
+    s.moisture=clamp01(
+        fbm((x+3100.0f)*0.00085f,(z-1800.0f)*0.00085f,WORLD_SEED^0x55AA11CCu,4)*0.78f
+        + river*0.40f + lake*0.50f
+    );
+    s.temperature=clamp01(
+        0.72f - std::max(raw,0.0f)/210.0f
+        + (fbm(x*0.0005f,z*0.0005f,WORLD_SEED^0x9911u,3)-0.5f)*0.26f
+    );
+    s.river=std::max(river,lake);
+    s.volcano=volcano;
+    s.water = raw <= 0.0f || s.river > 0.42f;
+    s.beach = !s.water && raw < 4.2f;
+    s.snow = raw > 103.0f || (raw>84.0f && s.temperature<0.34f);
+    s.desert = !s.snow && s.moisture < 0.29f && s.temperature > 0.52f;
+    s.swamp = !s.desert && !s.snow && s.moisture > 0.77f && raw < 18.0f;
+
+    // Superfície visível: oceano, rios e lagos ficam planos. Mantém o renderer barato.
+    s.height = s.water ? (raw<=0.0f ? 0.0f : 1.0f) : raw;
+
+    const float fleck=fbm(x*0.024f,z*0.024f,WORLD_SEED^0xB5297A4Du,2);
+    if(s.water) {
+        const float shallow=clamp01((raw+12.0f)/16.0f);
+        s.color={0.10f+shallow*0.08f,0.38f+shallow*0.16f,0.49f+shallow*0.12f};
+    } else if(vd<78.0f && volcano>0.0f) {
+        s.color={0.95f,0.18f+fleck*0.12f,0.025f};
+    } else if(s.beach) {
+        s.color={0.72f+fleck*0.08f,0.65f+fleck*0.06f,0.39f};
+    } else if(s.snow) {
+        s.color={0.79f+fleck*0.12f,0.86f+fleck*0.10f,0.90f+fleck*0.08f};
+    } else if(s.desert) {
+        s.color={0.61f+fleck*0.12f,0.48f+fleck*0.09f,0.24f};
+    } else if(s.swamp) {
+        s.color={0.16f,0.38f+fleck*0.10f,0.20f};
+    } else if(raw>76.0f) {
+        const float v=0.36f+fleck*0.18f;
+        s.color={v*0.90f,v*0.96f,v};
+    } else {
+        const float lush=0.78f+fleck*0.28f;
+        s.color={0.19f*lush,0.58f*lush,0.23f*lush};
+    }
+    return s;
 }
+
+float terrainHeight(float x,float z){ return sampleWorld(x,z).height; }
+
+Vec3 terrainNormal(float x,float z){
+    constexpr float e=3.0f;
+    const float hl=terrainHeight(x-e,z),hr=terrainHeight(x+e,z);
+    const float hd=terrainHeight(x,z-e),hu=terrainHeight(x,z+e);
+    return normalize({hl-hr,2.0f*e,hd-hu});
+}
+
+Vec3 terrainColor(float, const Vec3&, float x,float z){ return sampleWorld(x,z).color; }
 
 struct Vertex {
     float px,py,pz;
@@ -183,75 +312,144 @@ struct Vertex {
 struct InstanceGPU {
     float x,y,z,scale;
     float rotation;
-    float pad0,pad1,pad2;
+    float r,g,b;
 };
 
-struct TreeSeed {
-    float x,y,z,scale,rotation;
+enum MeshKind : int {
+    TREE_LOD0=0,
+    TREE_LOD1,
+    TREE_LOD2,
+    ROCK,
+    SHRUB,
+    GRASS,
+    ICE,
+    CAVE,
+    GEYSER,
+    LANDMARK,
+    CACTUS,
+    FLOWER,
+    MESH_KIND_COUNT
+};
+
+struct ObjectSeed {
+    float x=0,y=0,z=0,scale=1,rotation=0;
+    float r=1,g=1,b=1;
+    int kind=TREE_LOD0; // árvores armazenam kind TREE_LOD0 e escolhem LOD em runtime
 };
 
 struct WorldData {
     std::vector<Vertex> terrainVertices;
     std::vector<uint32_t> terrainIndices;
-    std::vector<TreeSeed> trees;
-    int centerX = 0;
-    int centerZ = 0;
+    std::vector<ObjectSeed> objects;
+    int centerX=0;
+    int centerZ=0;
 };
 
-WorldData generateWorld(int centerX, int centerZ) {
+void pushObject(WorldData& w,int kind,float x,float y,float z,float scale,float rotation,Vec3 tint){
+    w.objects.push_back({x,y,z,scale,rotation,tint.x,tint.y,tint.z,kind});
+}
+
+WorldData generateWorld(int centerX,int centerZ){
     WorldData w;
-    w.centerX = centerX;
-    w.centerZ = centerZ;
-    const int side = TERRAIN_SEGMENTS + 1;
+    w.centerX=centerX;w.centerZ=centerZ;
+    const int side=TERRAIN_SEGMENTS+1;
     w.terrainVertices.resize(static_cast<size_t>(side)*side);
     w.terrainIndices.reserve(static_cast<size_t>(TERRAIN_SEGMENTS)*TERRAIN_SEGMENTS*6);
 
-    for (int z=0; z<side; ++z) {
-        for (int x=0; x<side; ++x) {
-            const float fx = static_cast<float>(centerX) - TERRAIN_SIZE*0.5f + TERRAIN_SIZE*(static_cast<float>(x)/TERRAIN_SEGMENTS);
-            const float fz = static_cast<float>(centerZ) - TERRAIN_SIZE*0.5f + TERRAIN_SIZE*(static_cast<float>(z)/TERRAIN_SEGMENTS);
-            const float h = terrainHeight(fx,fz);
-            const Vec3 n = terrainNormal(fx,fz);
-            const Vec3 c = terrainColor(h,n,fx,fz);
-            w.terrainVertices[static_cast<size_t>(z)*side+x] = {fx,h,fz,n.x,n.y,n.z,c.x,c.y,c.z};
+    for(int z=0;z<side;++z){
+        for(int x=0;x<side;++x){
+            const float fx=static_cast<float>(centerX)-TERRAIN_SIZE*0.5f+TERRAIN_SIZE*(static_cast<float>(x)/TERRAIN_SEGMENTS);
+            const float fz=static_cast<float>(centerZ)-TERRAIN_SIZE*0.5f+TERRAIN_SIZE*(static_cast<float>(z)/TERRAIN_SEGMENTS);
+            const auto sample=sampleWorld(fx,fz);
+            const Vec3 n=terrainNormal(fx,fz);
+            const Vec3 col=sample.color;
+            w.terrainVertices[static_cast<size_t>(z)*side+x]={fx,sample.height,fz,n.x,n.y,n.z,col.x,col.y,col.z};
         }
     }
 
-    for (int z=0; z<TERRAIN_SEGMENTS; ++z) {
-        for (int x=0; x<TERRAIN_SEGMENTS; ++x) {
-            const uint32_t i0 = static_cast<uint32_t>(z*side+x);
-            const uint32_t i1 = i0+1;
-            const uint32_t i2 = i0+static_cast<uint32_t>(side);
-            const uint32_t i3 = i2+1;
-            w.terrainIndices.insert(w.terrainIndices.end(), {i0,i2,i1, i1,i2,i3});
+    for(int z=0;z<TERRAIN_SEGMENTS;++z){
+        for(int x=0;x<TERRAIN_SEGMENTS;++x){
+            const uint32_t i0=static_cast<uint32_t>(z*side+x);
+            const uint32_t i1=i0+1,i2=i0+static_cast<uint32_t>(side),i3=i2+1;
+            w.terrainIndices.insert(w.terrainIndices.end(),{i0,i2,i1,i1,i2,i3});
         }
     }
 
-    constexpr float cell = 40.0f;
-    const int minX = static_cast<int>(std::floor((centerX - TERRAIN_SIZE*0.5f)/cell));
-    const int maxX = static_cast<int>(std::ceil ((centerX + TERRAIN_SIZE*0.5f)/cell));
-    const int minZ = static_cast<int>(std::floor((centerZ - TERRAIN_SIZE*0.5f)/cell));
-    const int maxZ = static_cast<int>(std::ceil ((centerZ + TERRAIN_SIZE*0.5f)/cell));
-    w.trees.reserve(10000);
+    // Vegetação e props em células determinísticas. Geração toda fora do render loop.
+    constexpr float cell=28.0f;
+    const int minX=static_cast<int>(std::floor((centerX-TERRAIN_SIZE*0.5f)/cell));
+    const int maxX=static_cast<int>(std::ceil ((centerX+TERRAIN_SIZE*0.5f)/cell));
+    const int minZ=static_cast<int>(std::floor((centerZ-TERRAIN_SIZE*0.5f)/cell));
+    const int maxZ=static_cast<int>(std::ceil ((centerZ+TERRAIN_SIZE*0.5f)/cell));
+    w.objects.reserve(24000);
 
-    for (int cz=minZ; cz<=maxZ; ++cz) {
-        for (int cx=minX; cx<=maxX; ++cx) {
-            uint32_t rng = hashCell(cx,cz,WORLD_SEED ^ 0x68E31DA4u);
-            const int count = 1 + static_cast<int>(rand01(rng)*5.0f);
-            for (int k=0;k<count;k++) {
-                const float wx = (cx + rand01(rng))*cell;
-                const float wz = (cz + rand01(rng))*cell;
-                const float h = terrainHeight(wx,wz);
-                const Vec3 n = terrainNormal(wx,wz);
-                if (h < 5.0f || h > 91.0f || n.y < 0.80f) continue;
-                if (rand01(rng) < 0.10f) continue;
-                TreeSeed t{};
-                t.x=wx; t.y=h; t.z=wz;
-                t.scale=0.90f + rand01(rng)*1.60f;
-                t.rotation=rand01(rng)*PI*2.0f;
-                w.trees.push_back(t);
+    for(int cz=minZ;cz<=maxZ;++cz){
+        for(int cx=minX;cx<=maxX;++cx){
+            uint32_t rng=hashCell(cx,cz,WORLD_SEED^0x68E31DA4u);
+            const float wx=(cx+0.12f+rand01(rng)*0.76f)*cell;
+            const float wz=(cz+0.12f+rand01(rng)*0.76f)*cell;
+            const auto s=sampleWorld(wx,wz);
+            const Vec3 n=terrainNormal(wx,wz);
+            if(s.water||s.beach||n.y<0.76f) continue;
+
+            const float rot=rand01(rng)*PI*2.0f;
+            const float pick=rand01(rng);
+
+            if(s.snow){
+                if(pick<0.48f) pushObject(w,TREE_LOD0,wx,s.height,wz,0.9f+rand01(rng)*1.25f,rot,{0.63f,0.74f,0.68f});
+                else if(pick<0.68f) pushObject(w,ICE,wx,s.height,wz,0.7f+rand01(rng)*1.7f,rot,{0.66f,0.88f,1.0f});
+                else pushObject(w,ROCK,wx,s.height,wz,0.65f+rand01(rng)*1.7f,rot,{0.72f,0.78f,0.79f});
+            } else if(s.desert){
+                if(pick<0.35f) pushObject(w,CACTUS,wx,s.height,wz,0.7f+rand01(rng)*1.3f,rot,{0.48f,0.68f,0.26f});
+                else if(pick<0.72f) pushObject(w,ROCK,wx,s.height,wz,0.55f+rand01(rng)*1.6f,rot,{0.58f,0.44f,0.28f});
+            } else if(s.swamp){
+                if(pick<0.58f) pushObject(w,TREE_LOD0,wx,s.height,wz,1.0f+rand01(rng)*1.35f,rot,{0.42f,0.62f,0.32f});
+                else if(pick<0.82f) pushObject(w,SHRUB,wx,s.height,wz,0.8f+rand01(rng)*1.3f,rot,{0.40f,0.68f,0.32f});
+            } else {
+                const float autumn=fbm(wx*0.0011f,wz*0.0011f,WORLD_SEED^0xAA7711u,3);
+                Vec3 treeTint = autumn>0.72f ? Vec3{0.88f,0.45f,0.12f} :
+                                (s.moisture>0.63f ? Vec3{0.80f,1.0f,0.78f} : Vec3{0.92f,0.94f,0.82f});
+                if(pick<0.48f) pushObject(w,TREE_LOD0,wx,s.height,wz,0.8f+rand01(rng)*1.7f,rot,treeTint);
+                else if(pick<0.63f) pushObject(w,SHRUB,wx,s.height,wz,0.65f+rand01(rng)*1.1f,rot,{0.75f,0.95f,0.70f});
+                else if(pick<0.77f) pushObject(w,ROCK,wx,s.height,wz,0.55f+rand01(rng)*1.55f,rot,{0.76f,0.78f,0.72f});
+                else if(pick<0.88f) pushObject(w,FLOWER,wx,s.height,wz,0.75f+rand01(rng)*0.8f,rot,{1.0f,0.75f+rand01(rng)*0.2f,0.68f});
             }
+
+            // Grama: múltiplos tufos, mas só será enviada à GPU quando estiver perto.
+            if(!s.desert && !s.snow && rand01(rng)<0.72f){
+                const int blades=2+static_cast<int>(rand01(rng)*5.0f);
+                for(int g=0;g<blades;++g){
+                    float gx=wx+(rand01(rng)-0.5f)*12.0f;
+                    float gz=wz+(rand01(rng)-0.5f)*12.0f;
+                    auto gs=sampleWorld(gx,gz);
+                    if(!gs.water) pushObject(w,GRASS,gx,gs.height,gz,0.7f+rand01(rng)*0.9f,rand01(rng)*PI,{0.72f,0.92f,0.66f});
+                }
+            }
+
+            // Cavernas nas encostas mais íngremes.
+            if(n.y<0.84f && rand01(rng)<0.028f)
+                pushObject(w,CAVE,wx,s.height,wz,1.4f+rand01(rng)*1.2f,rot,{0.36f,0.34f,0.31f});
+
+            // Geotermia ao redor do vulcão.
+            if(s.volcano>0.10f && s.volcano<0.72f && rand01(rng)<0.075f)
+                pushObject(w,GEYSER,wx,s.height,wz,0.8f+rand01(rng)*1.5f,rot,{0.72f,0.90f,0.88f});
         }
+    }
+
+    // Landmarks raros em grade larga: monólitos / círculos de pedra representados por um prop instanciado.
+    constexpr float landmarkCell=230.0f;
+    const int lminX=static_cast<int>(std::floor((centerX-TERRAIN_SIZE*0.5f)/landmarkCell));
+    const int lmaxX=static_cast<int>(std::ceil ((centerX+TERRAIN_SIZE*0.5f)/landmarkCell));
+    const int lminZ=static_cast<int>(std::floor((centerZ-TERRAIN_SIZE*0.5f)/landmarkCell));
+    const int lmaxZ=static_cast<int>(std::ceil ((centerZ+TERRAIN_SIZE*0.5f)/landmarkCell));
+    for(int cz=lminZ;cz<=lmaxZ;++cz)for(int cx=lminX;cx<=lmaxX;++cx){
+        uint32_t r=hashCell(cx,cz,WORLD_SEED^0xF00D1234u);
+        if(rand01(r)>0.18f)continue;
+        float x=(cx+0.5f+(rand01(r)-0.5f)*0.45f)*landmarkCell;
+        float z=(cz+0.5f+(rand01(r)-0.5f)*0.45f)*landmarkCell;
+        auto s=sampleWorld(x,z); Vec3 n=terrainNormal(x,z);
+        if(s.water||s.beach||n.y<0.84f)continue;
+        pushObject(w,LANDMARK,x,s.height,z,1.0f+rand01(r)*1.6f,rand01(r)*PI*2.0f,{0.70f,0.70f,0.64f});
     }
 
     return w;
