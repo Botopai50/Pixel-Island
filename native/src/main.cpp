@@ -489,6 +489,8 @@ int nativeKindForPlanType(int type) {
     return ROCK;
 }
 
+void logLine(const std::string& text);
+
 WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
     logLine("WORLD: inicio center="+std::to_string(centerX)+","+std::to_string(centerZ));
     WorldData w;
