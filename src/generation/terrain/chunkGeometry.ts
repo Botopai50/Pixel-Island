@@ -1,3 +1,4 @@
+import { makeHorizonL0Sampler } from './horizonGeometry.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 
 export interface ChunkGeometryData {
@@ -12,6 +13,11 @@ export interface ChunkGeometryData {
    * paredão, já enxerga a parede ao lado (sem a grama esticada em triângulos verdes).
    */
   wall: Float32Array;
+  /**
+   * Por vértice: quanto subir/descer para cair na superfície do horizonte (nível 0). O shader
+   * aplica no fim do raio dos chunks, antes de eles sumirem com pontilhado (geomorphing).
+   */
+  morph: Float32Array;
   index: Uint16Array;
   segments: number;
 }
@@ -212,5 +218,13 @@ export function buildChunkGeometry(
     index[o++] = t1; index[o++] = b1; index[o++] = b0;
   }
 
-  return { positions, normals, wall, index, segments };
+  // alvo do morph: a malha do horizonte no mesmo ponto (a saia acompanha a borda)
+  const hz = makeHorizonL0Sampler(terrainGen);
+  const morph = new Float32Array(vertCount);
+  for (let i = 0; i < grid * grid; i++) {
+    morph[i] = hz(centerX + positions[i * 3], centerZ + positions[i * 3 + 2]) - positions[i * 3 + 1];
+  }
+  for (let k = 0; k < perimeter.length; k++) morph[skirtBase + k] = morph[perimeter[k]];
+
+  return { positions, normals, wall, morph, index, segments };
 }

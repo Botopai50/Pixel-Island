@@ -31,7 +31,8 @@ export class FirstPersonController {
 
   constructor() {
     const aspect = window.innerWidth / window.innerHeight;
-    this.camera = new THREE.PerspectiveCamera(75, aspect, 0.1 * CONFIG.PLAYER_SCALE, 2500);
+    // alcance de 14km: o terreno do horizonte vai até ~12km
+    this.camera = new THREE.PerspectiveCamera(75, aspect, 0.2 * CONFIG.PLAYER_SCALE, 14000);
     this.camera.rotation.order = 'YXZ';
 
     this.setupMouseListeners();
@@ -95,7 +96,7 @@ export class FirstPersonController {
     this.sprintSpeed = 13.0 * scale;
     this.eyeHeight = 1.75 * scale;
     this.position.y = feetY + this.eyeHeight;
-    this.camera.near = 0.1 * scale;
+    this.camera.near = 0.2 * scale; // 0.2 (não 0.1): com o alcance de 14km, mais precisão de profundidade
     this.camera.updateProjectionMatrix();
   }
 

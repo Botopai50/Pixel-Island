@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ShadowClipmap } from './shadowClipmap.ts';
 import { CartoonSkybox } from './skybox.ts';
+import { AERIAL } from './atmosphericFog.ts';
 
 export interface TimePreset {
   name: string;
@@ -180,9 +181,11 @@ export class SkyAtmosphere {
    * ponto focado, então com o início fixo em 200m tudo na tela (até o chão logo abaixo) ficava
    * ~30% lavado de azul-claro. Aqui ela começa um pouco depois do ponto focado.
    */
-  public setFocusDistance(focusDistance: number): void {
-    this.fogNear = Math.max(200, focusDistance + 150);
-    this.fogFar = Math.max(2400, focusDistance + 2200);
+  public setFocusDistance(focusDistance: number, firstPerson: boolean = false): void {
+    // Em primeira pessoa a paisagem vai até o horizonte (~12km): a névoa (atmosphericFog.ts)
+    // começa logo, cresce com a distância e fecha antes do fim do horizonte
+    this.fogNear = firstPerson ? 20 : Math.max(200, focusDistance + 150);
+    this.fogFar = firstPerson ? 11000 : Math.max(2400, focusDistance + 2200);
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.near = this.fogNear;
       this.scene.fog.far = this.fogFar;
@@ -199,6 +202,12 @@ export class SkyAtmosphere {
 
   public update(delta: number, cameraPosition: THREE.Vector3): void {
     this.skybox.update(delta, cameraPosition);
+    // névoa da cena com a mesma cor (e a mesma transição) do horizonte do céu
+    if (this.scene.fog) this.scene.fog.color.copy(this.skybox.getCurrentFogColor());
+    // luz do ar (perspectiva atmosférica): direção do sol e a cor do brilho em volta dele
+    const sd = this.currentSunDir, sc = this.skybox.getCurrentCoronaColor();
+    Object.assign(AERIAL.uFogSunDir.value, { x: sd.x, y: sd.y, z: sd.z });
+    Object.assign(AERIAL.uFogSunColor.value, { x: sc.r, y: sc.g, z: sc.b });
   }
 
   public getSunDirection(): THREE.Vector3 {

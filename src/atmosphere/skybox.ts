@@ -80,6 +80,15 @@ export class CartoonSkybox {
       varying vec3 vWorldPosition;
       varying vec3 vRayDir;
 
+      // Anti-cintilação: quantas células da grade juntar (por eixo, em potência de 2) para cada
+      // "pixel" do céu ter no mínimo ~2 pixels da tela. Perto do horizonte (e do zênite, no
+      // azimute) a projeção comprime a grade e as células ficavam menores que um pixel: viravam
+      // hachuras e moiré que tremiam ao girar a câmera. Precisa ser chamada fora dos ifs (fwidth).
+      vec2 aaCell(vec2 t) {
+        vec2 fw = fwidth(t);
+        return min(exp2(max(vec2(0.0), ceil(log2(max(fw * 2.0, vec2(1e-6)))))), vec2(64.0));
+      }
+
       // Matriz de Bayer 4x4 clássica para dithering de pixel art 16-bit
       float bayer4x4(vec2 p) {
         vec2 f = floor(mod(p, 4.0));
@@ -155,11 +164,26 @@ export class CartoonSkybox {
         float azNorm = (az / 3.14159265359) * 0.5 + 0.5;
 
         vec2 snesGrid = vec2(1920.0, 960.0) * uPixelScale;
-        vec2 snesTexel = floor(vec2(azNorm, height * 0.5 + 0.5) * snesGrid);
+        vec2 snesT = vec2(azNorm, height * 0.5 + 0.5) * snesGrid;
+        vec2 snesS = aaCell(snesT);
+        vec2 snesTexel = floor(snesT / snesS) * snesS;
         vec2 snesUV = snesTexel / snesGrid;
         // O dither fica na grade PADRÃO: se encolhesse junto com o pixel, viraria um padrão
         // mais fino que os pixels da tela e apareceria como listras (moiré).
-        float snesDither = (bayer4x4(floor(vec2(azNorm, height * 0.5 + 0.5) * vec2(1920.0, 960.0))) - 0.5);
+        vec2 snesDT = vec2(azNorm, height * 0.5 + 0.5) * vec2(1920.0, 960.0);
+        float snesDither = (bayer4x4(floor(snesDT / aaCell(snesDT))) - 0.5);
+
+        // Coordenadas das duas camadas de nuvens (as mesmas de dentro dos ifs abaixo) e o
+        // agrupamento anti-cintilação delas, calculados aqui fora dos ifs (fwidth)
+        float aaPlaneH = max(height, 0.035);
+        vec2 aaSun2D = normalize(normalize(uSunDir).xz + vec2(0.001, 0.001));
+        vec2 aaUV1 = (ray.xz / aaPlaneH) * 0.32 + uWindOffset + uCameraPos.xz * 0.00008;
+        vec2 aaUV2 = (ray.xz / aaPlaneH) * 0.32 + uWindOffset2 + uCameraPos.xz * 0.00010
+          - (ray.xz / aaPlaneH) * 0.028 - aaSun2D * 0.018;
+        vec2 aaS1 = aaCell(aaUV1 * 320.0 * uPixelScale);
+        vec2 aaD1 = aaCell(aaUV1 * 320.0);
+        vec2 aaS2 = aaCell(aaUV2 * 320.0 * uPixelScale);
+        vec2 aaD2 = aaCell(aaUV2 * 320.0);
 
         // 1. CÉU SNES: Gradiente HDMA com bandas celestes e dithering 16-bit
         vec3 sky;
@@ -255,8 +279,10 @@ export class CartoonSkybox {
         // Camada 1: Base / Sombra / Volume inferior (cor escura/sombra, sem o branco puro)
         // Camada 2: Cristas e Volume Iluminado Superior em camada 3D separada com paralaxe volumétrico
         if (height > 0.02 && uCloudCoverage > 0.05) {
-          float planeH = max(height, 0.08);
-          float hFade = smoothstep(0.04, 0.16, height);
+          // trava da projeção abaixo de onde as nuvens já sumiram (hFade): abaixo dela a nuvem
+          // só dependia do azimute e escorria em listras verticais ("cachoeira") no horizonte
+          float planeH = max(height, 0.035);
+          float hFade = smoothstep(0.05, 0.17, height);
           float coverageThresh = mix(0.58, 0.38, uCloudCoverage);
           vec2 sunDir2D = normalize(normSunDir.xz + vec2(0.001, 0.001));
           float cloudGridRes = 320.0 * uPixelScale;
@@ -265,7 +291,7 @@ export class CartoonSkybox {
           // CAMADA 1: BASE E CORPO INFERIOR (SOMBRA E BASE DAS NUVENS)
           // =========================================================================
           vec2 planeUV1 = (ray.xz / planeH) * 0.32 + uWindOffset + uCameraPos.xz * 0.00008;
-          vec2 cloudTexel1 = floor(planeUV1 * cloudGridRes);
+          vec2 cloudTexel1 = floor(planeUV1 * cloudGridRes / aaS1) * aaS1;
           vec2 pixelUV1 = cloudTexel1 / cloudGridRes;
 
           float macroMask1 = noise2D(pixelUV1 * 0.45 + vec2(4.1, 7.8)) * 0.5 + 0.5;
@@ -281,7 +307,7 @@ export class CartoonSkybox {
             float shadowShape1 = billowFBM(shadowUV1) * (0.35 + 0.65 * macroMask1);
             float shadowDensity1 = (shadowShape1 - coverageThresh) / max(1.0 - coverageThresh, 0.001);
 
-            float cDither1 = (bayer4x4(floor(planeUV1 * 320.0)) - 0.5) * 0.12;
+            float cDither1 = (bayer4x4(floor(planeUV1 * 320.0 / aaD1)) - 0.5) * 0.12;
             float isShadow1 = 1.0 - step(0.18 + cDither1, shadowDensity1);
 
             // Camada 1: tom de sombra/base periwinkle característico do estilo cel-shaded
@@ -300,7 +326,7 @@ export class CartoonSkybox {
           vec2 parallax3D = - (ray.xz / planeH) * 0.028 - sunDir2D * 0.018;
           vec2 planeUV2 = (ray.xz / planeH) * 0.32 + uWindOffset2 + uCameraPos.xz * 0.00010 + parallax3D;
 
-          vec2 cloudTexel2 = floor(planeUV2 * cloudGridRes);
+          vec2 cloudTexel2 = floor(planeUV2 * cloudGridRes / aaS2) * aaS2;
           vec2 pixelUV2 = cloudTexel2 / cloudGridRes;
 
           float macroMask2 = noise2D(pixelUV2 * 0.45 + vec2(4.1, 7.8)) * 0.5 + 0.5;
@@ -309,7 +335,7 @@ export class CartoonSkybox {
           float cloudDensity2 = (cloudShape2 - coverageThresh) / max(1.0 - coverageThresh, 0.001);
 
           // Dither Bayer 4x4 para a borda da camada clara
-          float cDither2 = (bayer4x4(floor(planeUV2 * 320.0)) - 0.5) * 0.12;
+          float cDither2 = (bayer4x4(floor(planeUV2 * 320.0 / aaD2)) - 0.5) * 0.12;
 
           // A camada 2 renderiza exclusivamente a parte mais clara (creme/branco iluminado)
           float isHighlight2 = step(0.15 + cDither2, cloudDensity2);
@@ -335,7 +361,7 @@ export class CartoonSkybox {
         // 5. Transição Suave com o Fog Costeiro no Horizonte
         float hFog = 1.0 - clamp((height + 0.01) / 0.09, 0.0, 1.0);
         float qFog = floor(clamp(hFog + snesDither * 0.15, 0.0, 1.0) * 4.0) / 4.0;
-        sky = mix(sky, uFogColor, clamp(qFog * 0.65, 0.0, 1.0));
+        sky = mix(sky, uFogColor, clamp(qFog * 0.9, 0.0, 1.0));
 
         gl_FragColor = vec4(sky, 1.0);
       }
@@ -414,6 +440,16 @@ export class CartoonSkybox {
     this.targetStarVis = starVis;
     this.targetMoonVis = moonVis;
     this.targetCloudCoverage = cloudCov;
+  }
+
+  /** Cor atual da névoa do horizonte (a névoa da cena usa a mesma: o relevo distante some no céu). */
+  public getCurrentFogColor(): THREE.Color {
+    return this.currentFogColor;
+  }
+
+  /** Cor atual do brilho em volta do sol (a luz do ar na direção do sol usa a mesma). */
+  public getCurrentCoronaColor(): THREE.Color {
+    return this.currentCoronaColor;
   }
 
   public update(delta: number, cameraPosition: THREE.Vector3): void {

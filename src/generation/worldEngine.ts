@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { FADE } from './shaders/fadeDither.ts';
+import { AERIAL, linearToDisplay } from '../atmosphere/atmosphericFog.ts';
 import { SeedManager } from './seed/seedManager.ts';
 import { TerrainGenerator } from './terrain/terrainGenerator.ts';
 import { VegetationManager } from './vegetation/vegetationManager.ts';
@@ -13,6 +15,7 @@ import { createWaterMaterial, WATER_PRESETS } from './shaders/waterShader.ts';
 import { createSeamlessCascadedWaterGeometry } from './waterGeometry.ts';
 import { TerrainTextureForge } from './terrain/terrainTextureForge.ts';
 import { getTextureWorkerPool } from './terrain/textureWorkerPool.ts';
+import { HorizonTerrain } from './terrain/horizonTerrain.ts';
 import { WaterBiomeMap } from './hydrology/waterBiomeMap.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
 import { CONFIG } from '../config.ts';
@@ -53,6 +56,7 @@ export class WorldEngine {
   // Sistema de ripples interativas portado de untitled
   private ripples: RipplePoint[] = [];
 
+  private horizon: HorizonTerrain;
   private lastObserverX: number = 0;
   private lastObserverZ: number = 0;
 
@@ -88,6 +92,8 @@ export class WorldEngine {
       this.waterMaterial,
       this.forge
     );
+    // terreno distante (horizonte) além dos chunks detalhados
+    this.horizon = new HorizonTerrain(this.scene, this.forge.gradMap, numericSeed);
 
     // Inicializa todos os subsistemas especiais do mundo de forma 100% procedural
     this.geothermalMgr = new GeothermalManager(this.scene, this.terrainGen.getGeothermalGenerator());
@@ -143,10 +149,29 @@ export class WorldEngine {
     }
   }
 
+  /** Desenha o atlas de impostores (árvores distantes) com os modelos e texturas originais. */
+  public initTreeImpostors(renderer: THREE.WebGLRenderer): void {
+    const atlas = this.vegetationMgr.buildTreeImpostors(renderer);
+    this.horizon.setTreeAtlas(atlas.texture, atlas.info, atlas.cols, atlas.rows);
+  }
+
   public updateObserverPosition(x: number, z: number): void {
     this.lastObserverX = x;
     this.lastObserverZ = z;
     this.prefetchIslands(x, z);
+    // Transições com pontilhado (fadeDither.ts). Um chunk entra no raio pelo centro, então o raio
+    // coberto de certeza é ~0.7 chunk menor: as faixas terminam 0.8 chunk para dentro.
+    const CS = CONFIG.CHUNK_SIZE;
+    const chunkEnd = Math.max(160, (this.chunkMgr.getViewRadius() - 0.8) * CS);
+    const vegEnd = Math.max(96, (CONFIG.VEGETATION_RADIUS_CHUNKS - 0.8) * CS);
+    const grassEnd = Math.max(48, (CONFIG.GRASS_RADIUS_CHUNKS - 0.8) * CS);
+    FADE.uFadeCam.value.set(x, z);
+    FADE.uChunkFade.value.set(chunkEnd - 110, chunkEnd);
+    FADE.uVegFade.value.set(vegEnd - 90, vegEnd);
+    FADE.uTreeSwap.value.set(vegEnd - 0.05, vegEnd);
+    FADE.uGrassFade.value.set(grassEnd - 50, grassEnd);
+    // o horizonte começa um pouco antes dos chunks começarem a sumir (fica por baixo deles)
+    this.horizon.update(x, z, chunkEnd - 120);
     this.chunkMgr.update(x, z);
     // Move a malha de água com snap na grade de 8m (tamanho exato dos quads centrais).
     // Isso mantém os vértices 100% estáticos no espaço de mundo durante a caminhada,
@@ -252,6 +277,7 @@ export class WorldEngine {
     this.forge = new TerrainTextureForge(newSeed);
     this.chunkMgr.setForge(this.forge);
     this.chunkMgr.clearAll();
+    this.horizon.reset(newSeed);
 
     const spawn = this.getSpawnCoordinate();
     this.chunkMgr.update(spawn.x, spawn.z, true);
@@ -383,7 +409,8 @@ export class WorldEngine {
     reflectMatrix: THREE.Matrix4,
     camera: THREE.Camera,
     resX: number,
-    resY: number
+    resY: number,
+    exposure: number = 1.0
   ): void {
     const u = this.waterMaterial.uniforms;
     if (sceneDepth) {
@@ -394,6 +421,17 @@ export class WorldEngine {
     }
     u.uReflectTextureMatrix.value.copy(reflectMatrix);
     u.uResolution.value.set(resX, resY);
+    // a água é desenhada à parte (sem a névoa da cena): copia a névoa para o shader dela
+    const fog = this.scene.fog;
+    u.uFogOn.value = fog instanceof THREE.Fog ? 1 : 0;
+    if (fog instanceof THREE.Fog) {
+      // a água vai por cima da imagem já em cores de tela: a névoa dela também
+      linearToDisplay(fog.color.r, fog.color.g, fog.color.b, exposure, u.uFogColor.value);
+      const sc = AERIAL.uFogSunColor.value;
+      linearToDisplay(sc.x, sc.y, sc.z, exposure, u.uFogSunColor.value);
+      u.uFogNear.value = fog.near;
+      u.uFogFar.value = fog.far;
+    }
 
     if (camera instanceof THREE.PerspectiveCamera) {
       u.uIsOrthographic.value = 0.0;

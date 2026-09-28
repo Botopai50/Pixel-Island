@@ -1,6 +1,8 @@
 import { genChunkTexture, makePerlin, ForgeParams } from './terrainTextureForge.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { buildChunkGeometry } from './chunkGeometry.ts';
+import { buildHorizonTile } from './horizonGeometry.ts';
+import { buildImpostorBlock } from './horizonTrees.ts';
 
 /**
  * Worker dedicado à geração pesada de chunks: texturas (Pixel Terrain Forge) e malha de relevo.
@@ -60,6 +62,29 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
     installIslands(ev.data.seed, ev.data.items);
     return;
   }
+  // bloco do horizonte (terreno distante, malha grossa com cor por vértice)
+  if (ev.data.type === 'horizon') {
+    const { reqId, seed, minX, minZ, size, seg } = ev.data;
+    try {
+      const t = buildHorizonTile(getTerrainGen(seed), minX, minZ, size, seg);
+      const bufs: ArrayBuffer[] = [t.positions.buffer, t.normals.buffer, t.colors.buffer, t.index.buffer, t.morph.buffer] as ArrayBuffer[];
+      ctx.postMessage({ reqId, horizon: t }, bufs);
+    } catch (err: any) {
+      ctx.postMessage({ reqId, error: err?.message || String(err) });
+    }
+    return;
+  }
+  // árvores distantes (impostores) de um pedaço do mundo, nas posições da vegetação de verdade
+  if (ev.data.type === 'impostors') {
+    const { reqId, seed, minX, minZ, size, originX, originZ } = ev.data;
+    try {
+      const t = buildImpostorBlock(getTerrainGen(seed), minX, minZ, size, originX, originZ);
+      ctx.postMessage({ reqId, impostors: t }, [t.positions.buffer, t.tree.buffer, t.colors.buffer, t.index.buffer] as ArrayBuffer[]);
+    } catch (err: any) {
+      ctx.postMessage({ reqId, error: err?.message || String(err) });
+    }
+    return;
+  }
   const { reqId, seed, params, minWorldX, minWorldZ, chunkSize, density, segments, walls } = ev.data as BuildRequest;
   try {
     const terrainGen = getTerrainGen(seed);
@@ -82,7 +107,7 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
       const grid = segments + 1, hs = new Float32Array(grid * grid);
       for (let i = 0; i < grid * grid; i++) hs[i] = geo.positions[i * 3 + 1];
       meshHeights = { heights: hs, grid, step: chunkSize / segments };
-      transfer.push(geo.positions.buffer as ArrayBuffer, geo.normals.buffer as ArrayBuffer, geo.wall.buffer as ArrayBuffer, geo.index.buffer as ArrayBuffer);
+      transfer.push(geo.positions.buffer as ArrayBuffer, geo.normals.buffer as ArrayBuffer, geo.wall.buffer as ArrayBuffer, geo.morph.buffer as ArrayBuffer, geo.index.buffer as ArrayBuffer);
     }
 
     msg.tGeo = performance.now() - tG0;

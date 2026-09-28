@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { FOG_AMOUNT_GLSL, AERIAL } from '../../atmosphere/atmosphericFog.ts';
 
 export interface WaterPreset {
   id?: string;
@@ -120,6 +121,10 @@ export const WaterShader = {
     uFlowSpeed: { value: 0.8 },
     uWindAngle: { value: 0.785 }, // 45 degrees
     uOpacity: { value: 0.92 },
+    uFogColor: { value: new THREE.Vector3() },
+    uFogNear: { value: 100 },
+    uFogFar: { value: 11000 },
+    uFogOn: { value: 0 },
     // Depth-based intersection foam uniforms
     tDepth: { value: null as THREE.Texture | null },
     tPlanarReflection: { value: null as THREE.Texture | null },
@@ -259,6 +264,11 @@ export const WaterShader = {
     uniform vec4 uRipples[8];
     uniform int uActiveRipples;
 
+    uniform vec3 uFogColor;
+    uniform float uFogNear;
+    uniform float uFogFar;
+    uniform float uFogOn;
+    ${FOG_AMOUNT_GLSL}
     varying vec3 vWorldPosition;
     varying vec3 vNormal;
     varying vec2 vUv;
@@ -602,6 +612,8 @@ export const WaterShader = {
         finalColor = mix(finalColor, vec3(1.0, 1.0, 1.0), isContactFoam);
       }
 
+      // névoa (a água é desenhada à parte, sem a névoa da cena: mesma conta, valores copiados)
+      if (uFogOn > 0.5) finalColor = aerialPerspective(finalColor, vWorldPosition, uFogColor, uFogNear, uFogFar);
       gl_FragColor = vec4(finalColor, uOpacity);
     }
   `,
@@ -682,6 +694,10 @@ export function createWaterMaterial(): THREE.ShaderMaterial {
     side: THREE.DoubleSide,
   });
 
+  // direção do sol compartilhada; as cores da névoa da água vão já convertidas para a tela
+  // (worldEngine.updateWaterUniforms), por isso a cor do sol é própria
+  mat.uniforms.uFogSunDir = AERIAL.uFogSunDir;
+  mat.uniforms.uFogSunColor = { value: new THREE.Vector3(1, 0.9, 0.7) };
   mat.uniforms.tPlanarReflection.value = defaultTex;
   mat.uniforms.tDepth.value = defaultDepth;
 

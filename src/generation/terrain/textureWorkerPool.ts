@@ -1,5 +1,6 @@
 import { ForgeParams, ChunkTextureResult } from './terrainTextureForge.ts';
 import { ChunkGeometryData } from './chunkGeometry.ts';
+import { HorizonTileData, HorizonTreeData } from './horizonGeometry.ts';
 import { CONFIG } from '../../config.ts';
 
 /**
@@ -14,6 +15,8 @@ const islandKey = (seed: number, cx: number, cz: number) => seed + ':' + cx + ':
 export interface ChunkJobResult {
   texture?: ChunkTextureResult;
   geometry?: ChunkGeometryData;
+  horizon?: HorizonTileData;
+  impostors?: HorizonTreeData;
 }
 
 /**
@@ -36,6 +39,10 @@ interface PendingReq {
   priority: number;
   /** pré-cálculo da hidrologia de uma ilha (em vez de um chunk) */
   island?: { cx: number; cz: number };
+  /** bloco do horizonte (em vez de um chunk): subdivisões da malha */
+  horizonSeg?: number;
+  /** árvores distantes de um pedaço (em vez de um chunk): posições locais a esta origem */
+  impostor?: { originX: number; originZ: number };
   resolve: (r: ChunkJobResult) => void;
   reject: (e: unknown) => void;
 }
@@ -104,6 +111,35 @@ export class TextureWorkerPool {
     if (this.enqueueIsland(seed, cx, cz, priority)) this.pump();
   }
 
+  /**
+   * Bloco do horizonte (terreno distante): não usa hidrologia nem textura, e vai depois de todo o
+   * resto (a prioridade que vem de quem pede já é alta).
+   */
+  public requestHorizon(seed: number, minX: number, minZ: number, size: number, seg: number, priority: number): { promise: Promise<ChunkJobResult>; reqId: number } {
+    const reqId = ++this.reqCounter;
+    const promise = new Promise<ChunkJobResult>((resolve, reject) => {
+      this.queue.push({
+        reqId, seed, params: {} as ForgeParams, minWorldX: minX, minWorldZ: minZ, chunkSize: size, density: 0, segments: 0,
+        priority, horizonSeg: seg, resolve, reject,
+      });
+      this.pump();
+    });
+    return { promise, reqId };
+  }
+
+  /** Árvores distantes (impostores) de um pedaço do mundo, com posições locais a (originX, originZ). */
+  public requestImpostors(seed: number, minX: number, minZ: number, size: number, originX: number, originZ: number, priority: number): { promise: Promise<ChunkJobResult>; reqId: number } {
+    const reqId = ++this.reqCounter;
+    const promise = new Promise<ChunkJobResult>((resolve, reject) => {
+      this.queue.push({
+        reqId, seed, params: {} as ForgeParams, minWorldX: minX, minWorldZ: minZ, chunkSize: size, density: 0, segments: 0,
+        priority, impostor: { originX, originZ }, resolve, reject,
+      });
+      this.pump();
+    });
+    return { promise, reqId };
+  }
+
   /** Põe a ilha na fila (se ainda não foi calculada nem pedida). */
   private enqueueIsland(seed: number, cx: number, cz: number, priority: number): boolean {
     const k = islandKey(seed, cx, cz);
@@ -159,7 +195,7 @@ export class TextureWorkerPool {
    * pegava um chunk dali calculava a mesma ilha de novo (0.3-1.5s jogados fora, por worker).
    */
   private waitsForIsland(item: PendingReq): boolean {
-    if (item.island) return false;
+    if (item.island || item.horizonSeg || item.impostor) return false;
     const G = CONFIG.ISLAND_GRID_SIZE;
     const c0 = Math.ceil((item.minWorldX - ISLAND_REACH) / G), c1 = Math.floor((item.minWorldX + item.chunkSize + ISLAND_REACH) / G);
     const r0 = Math.ceil((item.minWorldZ - ISLAND_REACH) / G), r1 = Math.floor((item.minWorldZ + item.chunkSize + ISLAND_REACH) / G);
@@ -192,6 +228,14 @@ export class TextureWorkerPool {
       this.inflight.set(item.reqId, item);
       if (item.island) {
         this.workers[workerIndex].postMessage({ type: 'island', reqId: item.reqId, seed: item.seed, cx: item.island.cx, cz: item.island.cz });
+        continue;
+      }
+      if (item.horizonSeg) {
+        this.workers[workerIndex].postMessage({ type: 'horizon', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, seg: item.horizonSeg });
+        continue;
+      }
+      if (item.impostor) {
+        this.workers[workerIndex].postMessage({ type: 'impostors', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, originX: item.impostor.originX, originZ: item.impostor.originZ });
         continue;
       }
       this.workers[workerIndex].postMessage({
@@ -233,7 +277,7 @@ export class TextureWorkerPool {
       } else if (data.error) {
         item.reject(new Error(data.error));
       } else {
-        item.resolve({ texture: data.texture, geometry: data.geometry });
+        item.resolve({ texture: data.texture, geometry: data.geometry, horizon: data.horizon, impostors: data.impostors });
       }
     }
     this.pump();

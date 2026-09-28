@@ -17,6 +17,37 @@ const SEABED_SPACING = 8; // metros entre vértices
 const PREVIEW_ABOVE = Infinity;
 const PREVIEW_DENSITY = 3;
 const seabedMaterial = new THREE.MeshLambertMaterial({ color: 0x3d5c58 });
+
+/**
+ * Dissolve das trocas de LOD (ms). Trocar de uma vez a textura/malha de um chunk por outra de
+ * resolução diferente, ou um bloco distante pelos chunks (e vice-versa), aparecia como o terreno
+ * piscando com a câmera andando. Agora a versão velha some e a nova aparece nos mesmos blocos de
+ * 2m (ver terrainShader), nunca as duas no mesmo pixel.
+ */
+const REVEAL_MS = 600;
+type RevealUniforms = { uReveal: { value: number }; uRevealInv: { value: number } };
+const fades: { u: RevealUniforms; t0: number; done?: () => void }[] = [];
+
+function startFade(material: THREE.Material | undefined, out: boolean, done?: () => void): void {
+  const u = material?.userData?.uniforms as RevealUniforms | undefined;
+  if (!u?.uReveal) { done?.(); return; }
+  u.uRevealInv.value = out ? 1 : 0;
+  u.uReveal.value = 0;
+  fades.push({ u, t0: performance.now(), done });
+}
+
+/** Avança os dissolves (chamado a cada quadro pelo ChunkManager). */
+export function tickChunkFades(now: number = performance.now()): void {
+  for (let i = fades.length - 1; i >= 0; i--) {
+    const f = fades[i];
+    const k = Math.min(1, (now - f.t0) / REVEAL_MS);
+    f.u.uReveal.value = k;
+    if (k >= 1) {
+      fades.splice(i, 1);
+      f.done?.();
+    }
+  }
+}
 // Identifica as instâncias de vegetação de cada chunk no pool compartilhado (único por instância,
 // não por coordenada: um chunk descarregado e recriado ganha um id novo)
 let nextVegetationOwner = 1;
@@ -140,6 +171,38 @@ export class Chunk {
     this.onSceneChanged?.();
   }
 
+  /** Tira as árvores/pedras/arbustos (o chunk saiu do raio de vegetação: o horizonte põe as simples). */
+  public releaseVegetation(): void {
+    if (!this.hasVegetation) return;
+    this.hasVegetation = false;
+    this.vegetationMgr?.releaseChunk(this.vegetationOwner);
+    this.onSceneChanged?.();
+  }
+
+  /** Escondido enquanto um bloco distante ainda cobre a área (a troca é feita de uma vez, com dissolve). */
+  private heldBack = false;
+
+  public setHeldBack(on: boolean): void {
+    if (on === this.heldBack) return;
+    this.heldBack = on;
+    this.group.visible = !on;
+    if (!on && this.terrainMesh && !this.isSubmerged) startFade(this.chunkMaterial, false);
+  }
+
+  public isHeldBack(): boolean {
+    return this.heldBack;
+  }
+
+  /** Some com dissolve (substituído por outro LOD) e depois é destruído. */
+  public fadeOutAndDestroy(scene: THREE.Object3D): void {
+    const finish = () => { scene.remove(this.group); this.destroy(); };
+    if (!this.terrainMesh || this.isSubmerged || !this.group.visible || this.isDestroyed) { finish(); return; }
+    // a vegetação sai já (a do LOD novo, se houver, já está no lugar)
+    this.vegetationMgr?.releaseChunk(this.vegetationOwner);
+    this.vegetationMgr?.releaseChunk(this.grassOwner);
+    startFade(this.chunkMaterial, true, finish);
+  }
+
   /** A malha já está na cena (primeira resposta do worker chegou). */
   public isReady(): boolean {
     return !!this.terrainMesh;
@@ -200,11 +263,19 @@ export class Chunk {
         this.syncGrass();
       }
 
+      // Troca num chunk já visível: a versão velha vira um "fantasma" que some com dissolve
+      // enquanto a nova aparece (material novo sempre, para os dois terem o dissolve separado)
+      const swapVisible = !!this.terrainMesh && !this.isSubmerged && this.group.visible && !!this.chunkMaterial && !!(geometry || textures);
+      const ghostGeo = this.terrainGeo;
+      const ghostMat = this.chunkMaterial;
+      const ghostTex = [this.topTex, this.topDarkTex];
+
       if (geometry) {
         const geo = new THREE.BufferGeometry();
         geo.setAttribute('position', new THREE.BufferAttribute(geometry.positions, 3));
         geo.setAttribute('normal', new THREE.BufferAttribute(geometry.normals, 3));
         if (geometry.wall) geo.setAttribute('wallInfo', new THREE.BufferAttribute(geometry.wall, 3));
+        geo.setAttribute('morph', new THREE.BufferAttribute(geometry.morph, 1));
         geo.setIndex(new THREE.BufferAttribute(geometry.index, 1));
         geo.computeBoundingSphere();
         geo.computeBoundingBox();
@@ -213,7 +284,7 @@ export class Chunk {
         this.appliedSegments = geometry.segments;
         this.appliedWalls = wantWalls;
         if (this.terrainMesh) this.terrainMesh.geometry = geo;
-        oldGeo?.dispose();
+        if (!swapVisible) oldGeo?.dispose();
       }
 
       if (textures) {
@@ -226,8 +297,30 @@ export class Chunk {
         );
         this.appliedDensity = density;
         if (this.terrainMesh) this.terrainMesh.material = this.chunkMaterial;
-        oldMaterial?.dispose();
-        for (const t of oldTextures) t?.dispose();
+        if (!swapVisible) {
+          oldMaterial?.dispose();
+          for (const t of oldTextures) t?.dispose();
+        }
+      } else if (swapVisible && this.topTex && this.topDarkTex) {
+        // só a malha mudou: material novo com as mesmas texturas
+        this.chunkMaterial = createChunkTerrainMaterial(
+          this.forge, this.topTex, this.topDarkTex, originX, originZ, size, this.appliedDensity
+        );
+        this.terrainMesh!.material = this.chunkMaterial;
+      }
+
+      if (swapVisible && ghostGeo && ghostMat) {
+        const ghost = new THREE.Mesh(ghostGeo, ghostMat);
+        ghost.position.copy(this.terrainMesh!.position);
+        ghost.receiveShadow = true;
+        this.group.add(ghost);
+        startFade(this.chunkMaterial, false);
+        startFade(ghostMat, true, () => {
+          this.group.remove(ghost);
+          if (geometry) ghostGeo.dispose();
+          ghostMat.dispose();
+          if (textures) for (const t of ghostTex) t?.dispose();
+        });
       }
 
       const material = this.isSubmerged ? seabedMaterial : this.chunkMaterial;

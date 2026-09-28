@@ -1,16 +1,12 @@
 import * as THREE from 'three';
-import { PRNG } from '../math/prng.ts';
-import { TerrainPoint, BiomeType } from '../types.ts';
-import { CONFIG } from '../../config.ts';
 import { VegetationTextures } from './vegetationTextures.ts';
 import { GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 import { BotanicalGeometryFactory } from './botanicalGeometryFactory.ts';
 import { VegetationInstancePool } from './instancePool.ts';
+import { FADE, FADE_GLSL } from '../shaders/fadeDither.ts';
+import { planChunkVegetation, ITerrainQueryable, TreeTransformItem } from './vegetationPlanner.ts';
 
-export interface ITerrainQueryable {
-  getPoint(x: number, z: number): TerrainPoint;
-  getPointFast?(x: number, z: number): TerrainPoint;
-}
+export type { ITerrainQueryable, TreeTransformItem } from './vegetationPlanner.ts';
 
 export class VegetationGeometries {
   // 1. Carvalho (Mature & Sapling)
@@ -223,14 +219,38 @@ export class VegetationGeometries {
   }
 }
 
-export interface TreeTransformItem {
-  matrix: THREE.Matrix4;
-  trunkTint: THREE.Color;
-  leafTint: THREE.Color;
-}
 
-function setupCartoonMaterial(mat: THREE.MeshLambertMaterial): THREE.MeshLambertMaterial {
+/**
+ * fade: faixa em que as instâncias somem com pontilhado (pela distância do pé de cada uma):
+ * 'veg' no fim do raio da vegetação (pedras, arbustos, troncos: somem), 'tree' árvores (trocam seco
+ * pelo impostor na mesma posição, no fim do raio), 'grass' no fim da grama 3D, 'none' sem.
+ */
+export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg' | 'tree' | 'grass' | 'none' = 'veg'): THREE.MeshLambertMaterial {
   mat.onBeforeCompile = (shader) => {
+    if (fade !== 'none') {
+      shader.uniforms.uFadeCam = FADE.uFadeCam;
+      shader.uniforms.uInstFade = fade === 'grass' ? FADE.uGrassFade : fade === 'tree' ? FADE.uTreeSwap : FADE.uVegFade;
+      shader.vertexShader = 'uniform vec2 uFadeCam;\nvarying float vInstDist;\nvarying float vInstHash;\n' + FADE_GLSL + shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        [
+          '#include <begin_vertex>',
+          '#ifdef USE_INSTANCING',
+          '  vec2 instW = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xz;',
+          '  vInstDist = distance(instW, uFadeCam);',
+          // limiar por objeto (o mesmo do impostor da árvore, pela posição do pé)
+          '  vInstHash = fadeHash(floor(instW * 4.0));',
+          '#else',
+          '  vInstDist = 0.0;',
+          '  vInstHash = 0.0;',
+          '#endif',
+        ].join('\n')
+      );
+      // cada objeto some inteiro na sua própria distância dentro da faixa (sem pontilhado)
+      shader.fragmentShader = 'uniform vec2 uInstFade;\nvarying float vInstDist;\nvarying float vInstHash;\n' + shader.fragmentShader.replace(
+        'void main() {',
+        'void main() {\n  if (vInstHash > 1.0 - smoothstep(uInstFade.x, uInstFade.y, vInstDist)) discard;'
+      );
+    }
     // 1. Substitui o cálculo da luz difusa em lights_lambert_pars_fragment para iluminação plana toon (sem decaimento de cosseno)
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <lights_lambert_pars_fragment>',
@@ -346,21 +366,21 @@ function setupCartoonMaterial(mat: THREE.MeshLambertMaterial): THREE.MeshLambert
           bool sampled = false;
           #if NUM_DIR_LIGHT_SHADOWS >= 1
           if (!sampled && c0.x >= 0.01 && c0.x <= 0.99 && c0.y >= 0.01 && c0.y <= 0.99 && c0.z <= 1.0) {
-            float bias0 = directionalLightShadows[0].shadowBias - 0.00004 * slopeFactor;
+            float bias0 = directionalLightShadows[0].shadowBias - 0.00004 * slopeFactor * (2048.0 / directionalLightShadows[0].shadowMapSize.x);
             clipmapShadow = sampleShadowSMSR( directionalShadowMap[0], c0.xy, c0.z + bias0, directionalLightShadows[0].shadowMapSize, dz_duv0 );
             sampled = true;
           }
           #endif
           #if NUM_DIR_LIGHT_SHADOWS >= 2
           if (!sampled && c1.x >= 0.01 && c1.x <= 0.99 && c1.y >= 0.01 && c1.y <= 0.99 && c1.z <= 1.0) {
-            float bias1 = directionalLightShadows[1].shadowBias - 0.00008 * slopeFactor;
+            float bias1 = directionalLightShadows[1].shadowBias - 0.00008 * slopeFactor * (2048.0 / directionalLightShadows[1].shadowMapSize.x);
             clipmapShadow = sampleShadowSMSR( directionalShadowMap[1], c1.xy, c1.z + bias1, directionalLightShadows[1].shadowMapSize, dz_duv1 );
             sampled = true;
           }
           #endif
           #if NUM_DIR_LIGHT_SHADOWS >= 3
           if (!sampled && c2.x >= 0.01 && c2.x <= 0.99 && c2.y >= 0.01 && c2.y <= 0.99 && c2.z <= 1.0) {
-            float bias2 = directionalLightShadows[2].shadowBias - 0.00016 * slopeFactor;
+            float bias2 = directionalLightShadows[2].shadowBias - 0.00016 * slopeFactor * (2048.0 / directionalLightShadows[2].shadowMapSize.x);
             clipmapShadow = sampleShadowSMSR( directionalShadowMap[2], c2.xy, c2.z + bias2, directionalLightShadows[2].shadowMapSize, dz_duv2 );
             sampled = true;
           }
@@ -467,19 +487,19 @@ export class VegetationManager {
       map: barkTex,
       color: 0xffffff,
       flatShading: false
-    }));
+    }), 'tree');
 
     this.birchTrunkMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: birchTex,
       color: 0xffffff,
       flatShading: false
-    }));
+    }), 'tree');
 
     this.palmTrunkMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: palmBarkTex,
       color: 0xffffff,
       flatShading: false
-    }));
+    }), 'tree');
 
     this.foliageMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: foliageTex,
@@ -487,7 +507,7 @@ export class VegetationManager {
       flatShading: false,
       side: THREE.DoubleSide,
       shadowSide: THREE.DoubleSide
-    }));
+    }), 'tree');
 
     this.palmFrondMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: palmFrondTex,
@@ -495,13 +515,13 @@ export class VegetationManager {
       flatShading: false,
       side: THREE.DoubleSide,
       shadowSide: THREE.DoubleSide
-    }));
+    }), 'tree');
 
     this.cactusMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: cactusTex,
       color: 0xffffff,
       flatShading: false
-    }));
+    }), 'tree');
 
     this.snowPineFoliageMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: snowFoliageTex,
@@ -509,7 +529,7 @@ export class VegetationManager {
       flatShading: false,
       side: THREE.DoubleSide,
       shadowSide: THREE.DoubleSide
-    }));
+    }), 'tree');
 
     this.shrubMaterial = setupCartoonMaterial(new THREE.MeshLambertMaterial({
       map: foliageTex,
@@ -535,7 +555,7 @@ export class VegetationManager {
       map: burntTex,
       color: 0xffffff,
       flatShading: false
-    }));
+    }), 'tree');
 
     this.grassGeometry = buildGrassClumpGeometry();
     this.grassMaterials = VegetationTextures.getGrassVariantTextures('green').map((t) => this.makeGrassMaterial(t));
@@ -559,528 +579,7 @@ export class VegetationManager {
     owner: number,
     enableDetailFlora: boolean = true
   ): void {
-    const chunkSeed = PRNG.hash2D(chunkX, chunkZ, 0x85ebca6b);
-    const prng = new PRNG(chunkSeed * 100000);
-
-    // Listas de instâncias: Adultas, Mudas (Saplings) e Variantes
-    const oakItems: TreeTransformItem[] = [];
-    const broadOakItems: TreeTransformItem[] = [];
-    const oakSaplingItems: TreeTransformItem[] = [];
-    const pineItems: TreeTransformItem[] = [];
-    const pineSaplingItems: TreeTransformItem[] = [];
-    const birchItems: TreeTransformItem[] = [];
-    const twinBirchItems: TreeTransformItem[] = [];
-    const birchSaplingItems: TreeTransformItem[] = [];
-    const palmItems: TreeTransformItem[] = [];
-    const palmSaplingItems: TreeTransformItem[] = [];
-    const acaciaItems: TreeTransformItem[] = [];
-    const acaciaSaplingItems: TreeTransformItem[] = [];
-    const mapleItems: TreeTransformItem[] = [];
-    const mangroveItems: TreeTransformItem[] = [];
-    const mangroveSaplingItems: TreeTransformItem[] = [];
-    const snowPineItems: TreeTransformItem[] = [];
-    const arcticWillowItems: TreeTransformItem[] = [];
-    const deadTreeTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const cactusTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const cactusSaplingTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const shrubLushTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const shrubBerryTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-
-    // Rochas Variadas (5 Formatos Distintos)
-    const rockBoulderTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const rockSlateTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const rockPebblesTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const rockSpireTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const rockMossyTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-
-    // Madeira e Troncos Caídos Variados (4 Formatos)
-    const logHollowTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const logRootedTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const logStumpTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const logStraightTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-
-    // Sub-bosque e Flora Rasteira
-    const fernTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const wildflowerTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-    const reedTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-
-    const dummy = new THREE.Object3D();
-    const halfSize = chunkSize / 2;
-    const startX = chunkX * chunkSize - halfSize;
-    const startZ = chunkZ * chunkSize - halfSize;
-
-    // Amostragem espaçada de 6.2m para clareiras naturais
-    const sampleStep = 6.2;
-    const steps = Math.floor(chunkSize / sampleStep);
-
-    for (let ix = 0; ix < steps; ix++) {
-      for (let iz = 0; iz < steps; iz++) {
-        const jx = (prng.next() - 0.5) * sampleStep * 0.85;
-        const jz = (prng.next() - 0.5) * sampleStep * 0.85;
-        const wx = startX + (ix + 0.5) * sampleStep + jx;
-        const wz = startZ + (iz + 0.5) * sampleStep + jz;
-
-        const pt: TerrainPoint = terrainGen.getPointFast ? terrainGen.getPointFast(wx, wz) : terrainGen.getPoint(wx, wz);
-
-        // 1. Nenhuma árvore dentro d'água (apenas seixos ou blocos submersos eventuais)
-        if (pt.isWater || pt.height <= CONFIG.SEA_LEVEL) {
-          if (pt.height > -2.0 && prng.chance(0.025)) {
-            const rScale = prng.range(0.75, 1.4);
-            dummy.position.set(wx, pt.height - 0.08 * rScale, wz);
-            dummy.scale.set(rScale, rScale * 0.55, rScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            if (prng.chance(0.65)) {
-              rockPebblesTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x687078) });
-            } else {
-              rockBoulderTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x6e747c) });
-            }
-          }
-          continue;
-        }
-
-        const biome = pt.biome;
-        const isBeach = biome.type === 'Praia Arenosa' && (pt.iceInfluence || 0) < 0.15;
-
-        // Juncos aquáticos / Taboas nas margens úmidas (0.12m a 1.40m de altitude)
-        if (enableDetailFlora && pt.height >= 0.12 && pt.height <= 1.40 && pt.slope < 0.32 && !isBeach) {
-          if (prng.chance(0.065)) {
-            const rScale = prng.range(0.85, 1.35);
-            dummy.position.set(wx, pt.height - 0.02, wz);
-            dummy.scale.set(rScale, rScale * prng.range(0.95, 1.25), rScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            reedTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x448a32) });
-          }
-        }
-
-        // 2. Areia Molhada da Orla (faixa até 0.85m): 100% limpa de árvores
-        if (pt.height <= 0.85) {
-          if (prng.chance(0.025)) {
-            const rScale = prng.range(0.4, 0.85);
-            dummy.position.set(wx, pt.height - 0.06 * rScale, wz);
-            dummy.scale.set(rScale, rScale * 0.5, rScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            if (prng.chance(0.70)) {
-              rockPebblesTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x756e5e) });
-            } else {
-              rockBoulderTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x6a6558) });
-            }
-          } else if (prng.chance(0.014)) {
-            const logScale = prng.range(0.65, 0.95);
-            dummy.position.set(wx, pt.height - 0.04 * logScale, wz);
-            dummy.scale.set(logScale, logScale, logScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            if (prng.chance(0.60)) {
-              logHollowTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x4a3c30) });
-            } else {
-              logRootedTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x4a3c30) });
-            }
-          }
-          continue;
-        }
-
-        // Na praia, a faixa de areia baixa (até 1.8m) é preservada limpa
-        if (isBeach && pt.height < 1.8) {
-          if (prng.chance(0.018)) {
-            const rScale = prng.range(0.4, 0.75);
-            dummy.position.set(wx, pt.height - 0.06 * rScale, wz);
-            dummy.scale.set(rScale, rScale * 0.5, rScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            rockPebblesTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x756e5e) });
-          }
-          continue;
-        }
-
-        const canTree = pt.slope <= CONFIG.VEGETATION.MAX_SLOPE_FOR_TREES;
-        const treeChance = canTree ? biome.vegetationDensity * 0.75 : 0;
-        const shrubChance = (!isBeach && pt.slope < 0.52) ? biome.shrubDensity * 0.22 : 0;
-        const maxRockSlope = pt.height > 45.0 ? 0.38 : 0.50;
-        const canRock = pt.slope <= maxRockSlope;
-        const rockChance = canRock ? biome.rockDensity * 0.16 : 0;
-        const logChance = pt.slope < 0.35 ? biome.fallenLogDensity * 0.08 : 0;
-
-        const roll = prng.next();
-
-        if (roll < treeChance) {
-          // REGRA DA PRAIA: Apenas coqueiros (adulto ou muda)
-          if (isBeach) {
-            const isSapling = prng.chance(0.28); // 28% de mudas jovens na praia
-            if (isSapling) {
-              const sScale = prng.range(0.85, 1.2);
-              const yaw = prng.range(0, Math.PI * 2);
-              dummy.position.set(wx, pt.height - 0.05, wz);
-              dummy.rotation.set(0, yaw, 0);
-              dummy.scale.set(sScale, sScale, sScale);
-              dummy.updateMatrix();
-              palmSaplingItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x8a633a),
-                leafTint: new THREE.Color(0x76c22c)
-              });
-            } else {
-              const palmHeightScale = prng.range(0.92, 1.25);
-              const palmWidthScale = prng.range(0.92, 1.15);
-              const palmTilt = prng.range(0.08, 0.20);
-              const palmYaw = prng.range(0, Math.PI * 2);
-
-              dummy.position.set(wx, pt.height - 0.08, wz);
-              dummy.rotation.set(Math.sin(palmYaw) * palmTilt, palmYaw, Math.cos(palmYaw) * palmTilt);
-              dummy.scale.set(palmWidthScale, palmHeightScale, palmWidthScale);
-              dummy.updateMatrix();
-
-              palmItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0xa68252),
-                leafTint: new THREE.Color(0x4cb828)
-              });
-            }
-            continue;
-          }
-
-          // VEGETAÇÃO DO INTERIOR
-          const isSapling = prng.chance(0.24);
-          const heightScale = prng.range(0.90, 1.22);
-          const widthScale = prng.range(0.90, 1.18);
-          const yaw = prng.range(0, Math.PI * 2);
-
-          const treeEmbed = Math.max(0.06, pt.slope * 0.15);
-          dummy.position.set(wx, pt.height - treeEmbed, wz);
-          dummy.rotation.set(0, yaw, 0);
-
-          const dist = biome.treeTypeDistribution;
-          const totalWeight =
-            (dist.oak || 0) +
-            (dist.pine || 0) +
-            (dist.birch || 0) +
-            (dist.coastalPalm || 0) +
-            (dist.acacia || 0) +
-            (dist.autumnMaple || 0) +
-            (dist.mangrove || 0) +
-            (dist.deadBurntTree || 0) +
-            (dist.snowPine || 0) +
-            (dist.arcticWillow || 0) +
-            (dist.cactus || 0);
-
-          if (totalWeight <= 0) continue;
-          const normType = prng.next() * totalWeight;
-          let acc = 0;
-
-          if ((acc += (dist.oak || 0)) && normType < acc) {
-            // Carvalho (Adulto padrão vs Carvalho de Copa Ampla vs Muda)
-            if (isSapling) {
-              dummy.scale.set(widthScale * 0.9, heightScale * 0.9, widthScale * 0.9);
-              dummy.updateMatrix();
-              oakSaplingItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x72573e),
-                leafTint: new THREE.Color(0x68c434)
-              });
-            } else {
-              const isBroad = prng.chance(0.32);
-              if (isBroad) {
-                dummy.scale.set(widthScale * 1.12, heightScale * 0.95, widthScale * 1.12);
-                dummy.updateMatrix();
-                broadOakItems.push({
-                  matrix: dummy.matrix.clone(),
-                  trunkTint: new THREE.Color(0x563e2a),
-                  leafTint: new THREE.Color(0x429c2c)
-                });
-              } else {
-                dummy.scale.set(widthScale * 1.05, heightScale, widthScale * 1.05);
-                dummy.updateMatrix();
-                oakItems.push({
-                  matrix: dummy.matrix.clone(),
-                  trunkTint: new THREE.Color(0x5c422d),
-                  leafTint: new THREE.Color(0x48aa32)
-                });
-              }
-            }
-          } else if ((acc += (dist.pine || 0)) && normType < acc) {
-            // Pinheiro Conífero
-            if (isSapling) {
-              dummy.scale.set(widthScale * 0.85, heightScale * 0.85, widthScale * 0.85);
-              dummy.updateMatrix();
-              pineSaplingItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x563e2c),
-                leafTint: new THREE.Color(0x388248)
-              });
-            } else {
-              dummy.scale.set(widthScale * 0.95, heightScale * 1.05, widthScale * 0.95);
-              dummy.updateMatrix();
-              pineItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x4a3424),
-                leafTint: new THREE.Color(0x2a7238)
-              });
-            }
-          } else if ((acc += (dist.birch || 0)) && normType < acc) {
-            // Bétula (Adulto padrão vs Bétula de Tronco Duplo vs Muda)
-            if (isSapling) {
-              dummy.scale.set(widthScale * 0.82, heightScale * 0.82, widthScale * 0.82);
-              dummy.updateMatrix();
-              birchSaplingItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0xf4f4f0),
-                leafTint: new THREE.Color(0x7ed638)
-              });
-            } else {
-              const isTwin = prng.chance(0.28);
-              if (isTwin) {
-                dummy.scale.set(widthScale * 0.95, heightScale * 0.95, widthScale * 0.95);
-                dummy.updateMatrix();
-                twinBirchItems.push({
-                  matrix: dummy.matrix.clone(),
-                  trunkTint: new THREE.Color(0xf0f0ea),
-                  leafTint: new THREE.Color(0x6ec430)
-                });
-              } else {
-                dummy.scale.set(widthScale * 0.88, heightScale * 1.05, widthScale * 0.88);
-                dummy.updateMatrix();
-                birchItems.push({
-                  matrix: dummy.matrix.clone(),
-                  trunkTint: new THREE.Color(0xeeeee8),
-                  leafTint: new THREE.Color(0x6ec430)
-                });
-              }
-            }
-          } else if ((acc += (dist.coastalPalm || 0)) && normType < acc) {
-            // Palmeira de Interior
-            dummy.scale.set(widthScale, heightScale, widthScale);
-            dummy.updateMatrix();
-            palmItems.push({
-              matrix: dummy.matrix.clone(),
-              trunkTint: new THREE.Color(0xa68252),
-              leafTint: new THREE.Color(0x4cb828)
-            });
-          } else if ((acc += (dist.acacia || 0)) && normType < acc) {
-            // Acácia da Savana
-            if (isSapling) {
-              dummy.scale.set(widthScale * 0.9, heightScale * 0.9, widthScale * 0.9);
-              dummy.updateMatrix();
-              acaciaSaplingItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x604a36),
-                leafTint: new THREE.Color(0x78ab32)
-              });
-            } else {
-              dummy.scale.set(widthScale * 1.1, heightScale, widthScale * 1.1);
-              dummy.updateMatrix();
-              acaciaItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x4c3826),
-                leafTint: new THREE.Color(0x6e9c2e)
-              });
-            }
-          } else if ((acc += (dist.autumnMaple || 0)) && normType < acc) {
-            // Bordo Outonal
-            dummy.scale.set(widthScale * 1.02, heightScale, widthScale * 1.02);
-            dummy.updateMatrix();
-            const mapleRoll = prng.next();
-            let leafTint: THREE.Color;
-            if (mapleRoll < 0.38) {
-              leafTint = new THREE.Color(0xd44022);
-            } else if (mapleRoll < 0.72) {
-              leafTint = new THREE.Color(0xe87a1a);
-            } else {
-              leafTint = new THREE.Color(0xe8b824);
-            }
-            mapleItems.push({
-              matrix: dummy.matrix.clone(),
-              trunkTint: new THREE.Color(0x4c3828),
-              leafTint
-            });
-          } else if ((acc += (dist.mangrove || 0)) && normType < acc) {
-            // Manguezal
-            if (isSapling) {
-              dummy.scale.set(widthScale * 0.85, heightScale * 0.85, widthScale * 0.85);
-              dummy.updateMatrix();
-              mangroveSaplingItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x483626),
-                leafTint: new THREE.Color(0x3e9834)
-              });
-            } else {
-              dummy.scale.set(widthScale * 1.05, heightScale, widthScale * 1.05);
-              dummy.updateMatrix();
-              mangroveItems.push({
-                matrix: dummy.matrix.clone(),
-                trunkTint: new THREE.Color(0x3e2d1f),
-                leafTint: new THREE.Color(0x348c2c)
-              });
-            }
-          } else if ((acc += (dist.deadBurntTree || 0)) && normType < acc) {
-            // Tronco calcinado vulcânico
-            dummy.scale.set(widthScale * 0.9, heightScale, widthScale * 0.9);
-            dummy.updateMatrix();
-            deadTreeTransforms.push({
-              matrix: dummy.matrix.clone(),
-              tint: new THREE.Color(0x22201e)
-            });
-          } else if ((acc += (dist.snowPine || 0)) && normType < acc) {
-            // Pinheiro Glacial Nevado
-            dummy.scale.set(widthScale * 0.95, heightScale * 1.05, widthScale * 0.95);
-            dummy.updateMatrix();
-            snowPineItems.push({
-              matrix: dummy.matrix.clone(),
-              trunkTint: new THREE.Color(0x3c2c22),
-              leafTint: new THREE.Color(0xffffff)
-            });
-          } else if ((acc += (dist.arcticWillow || 0)) && normType < acc) {
-            // Salgueiro-anão de tundra
-            dummy.scale.set(widthScale * 1.2, heightScale * 0.85, widthScale * 1.2);
-            dummy.updateMatrix();
-            arcticWillowItems.push({
-              matrix: dummy.matrix.clone(),
-              trunkTint: new THREE.Color(0x44362a),
-              leafTint: new THREE.Color(0x72927c)
-            });
-          } else if ((dist.cactus || 0) > 0) {
-            // Cacto Saguaro do Deserto
-            if (isSapling) {
-              dummy.scale.set(widthScale * 0.85, heightScale * 0.85, widthScale * 0.85);
-              dummy.updateMatrix();
-              cactusSaplingTransforms.push({
-                matrix: dummy.matrix.clone(),
-                tint: new THREE.Color(0x5ca850)
-              });
-            } else {
-              dummy.scale.set(widthScale * 0.95, heightScale, widthScale * 0.95);
-              dummy.updateMatrix();
-              cactusTransforms.push({
-                matrix: dummy.matrix.clone(),
-                tint: new THREE.Color(0x4e8e42)
-              });
-            }
-          }
-        } else if (roll < treeChance + shrubChance) {
-          // 2. ARBUSTOS (Folhoso vs Frutífero)
-          const isArctic = biome.type === BiomeType.FROZEN_TUNDRA || (pt.iceInfluence || 0) > 0.15;
-          const sScale = prng.range(0.85, 1.35) * (isArctic ? 0.85 : 1.0);
-          dummy.position.set(wx, pt.height - 0.08 * sScale, wz);
-          dummy.scale.set(sScale, sScale * prng.range(0.9, 1.15), sScale);
-          dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-          dummy.updateMatrix();
-
-          const hasBerberries = !isArctic && prng.chance(0.32);
-          if (hasBerberries) {
-            shrubBerryTransforms.push({
-              matrix: dummy.matrix.clone(),
-              tint: new THREE.Color(0xffffff)
-            });
-          } else {
-            const shrubTint = isArctic ? new THREE.Color(0x94b4a2) : new THREE.Color(0x4e9c2c);
-            shrubLushTransforms.push({
-              matrix: dummy.matrix.clone(),
-              tint: shrubTint
-            });
-          }
-        } else if (roll < treeChance + shrubChance + rockChance) {
-          // 3. ROCHAS ASSENTADAS COM VARIEDADE (5 Formatos)
-          const isArctic = biome.type === BiomeType.FROZEN_TUNDRA || (pt.iceInfluence || 0) > 0.15;
-          const isPeakOrVolcano = biome.type === BiomeType.ROCKY_PEAKS || biome.type === BiomeType.SNOW_SUMMIT ||
-            biome.type === BiomeType.VOLCANIC_FIELD || biome.type === BiomeType.VOLCANIC_CALDERA ||
-            biome.type === BiomeType.CANYON_DESERT;
-          const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST;
-
-          const rScale = prng.range(0.70, 1.40);
-          const embedOffset = Math.max(0.16 * rScale, pt.slope * 0.45 * rScale);
-          dummy.position.set(wx, pt.height - embedOffset, wz);
-          dummy.scale.set(
-            rScale * prng.range(0.85, 1.25),
-            rScale * prng.range(0.75, 1.15),
-            rScale * prng.range(0.85, 1.25)
-          );
-
-          // Alinhamento tangencial com a normal da encosta
-          const normalVec = pt.normal ? pt.normal : new THREE.Vector3(0, 1, 0);
-          const slopeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normalVec);
-          const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), prng.range(0, Math.PI * 2));
-          dummy.quaternion.copy(slopeQuat.multiply(yawQuat));
-          dummy.updateMatrix();
-
-          const rockShade = prng.range(0.90, 1.10);
-          const baseColor = isArctic ? 0xa8c2cf : 0x8a8e92;
-          const rockTint = new THREE.Color(baseColor).multiplyScalar(rockShade);
-
-          const rockPick = prng.next();
-          if (isPeakOrVolcano) {
-            if (rockPick < 0.45) {
-              rockSlateTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else if (rockPick < 0.80) {
-              rockSpireTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else {
-              rockBoulderTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            }
-          } else if (isForest) {
-            if (rockPick < 0.40) {
-              rockMossyTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else if (rockPick < 0.70) {
-              rockBoulderTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else if (rockPick < 0.88) {
-              rockPebblesTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else {
-              rockSlateTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            }
-          } else {
-            if (rockPick < 0.45) {
-              rockBoulderTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else if (rockPick < 0.75) {
-              rockPebblesTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            } else {
-              rockSlateTransforms.push({ matrix: dummy.matrix.clone(), tint: rockTint });
-            }
-          }
-        } else if (roll < treeChance + shrubChance + rockChance + logChance) {
-          // 4. TRONCOS CAÍDOS E TOCOS COM VARIEDADE (4 Formatos)
-          const logScale = prng.range(0.75, 1.25);
-          dummy.position.set(wx, pt.height - 0.04 * logScale, wz);
-          dummy.scale.set(logScale, logScale, logScale);
-
-          const normalVec = pt.normal ? pt.normal : new THREE.Vector3(0, 1, 0);
-          const slopeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), normalVec);
-          const yawQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), prng.range(0, Math.PI * 2));
-          dummy.quaternion.copy(slopeQuat.multiply(yawQuat));
-          dummy.updateMatrix();
-
-          const logTint = new THREE.Color(0x6a5442).multiplyScalar(prng.range(0.85, 1.15));
-          const logPick = prng.next();
-          if (logPick < 0.38) {
-            logHollowTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
-          } else if (logPick < 0.65) {
-            logRootedTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
-          } else if (logPick < 0.88) {
-            logStumpTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
-          } else {
-            logStraightTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
-          }
-        } else {
-          // 5. SUB-BOSQUE E FLORA RASTEIRA NAS CLAREIRAS
-          const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST;
-          const isMeadow = biome.type === BiomeType.COASTAL_MEADOW || biome.type === BiomeType.SAVANNAH;
-
-          if (enableDetailFlora && isForest && pt.slope < 0.45 && prng.chance(0.14)) {
-            const fScale = prng.range(0.85, 1.35);
-            dummy.position.set(wx, pt.height + 0.02, wz);
-            dummy.scale.set(fScale, fScale * prng.range(0.9, 1.15), fScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            fernTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x42b828) });
-          } else if (enableDetailFlora && isMeadow && pt.slope < 0.38 && prng.chance(0.12)) {
-            const wScale = prng.range(0.9, 1.3);
-            dummy.position.set(wx, pt.height + 0.02, wz);
-            dummy.scale.set(wScale, wScale, wScale);
-            dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
-            dummy.updateMatrix();
-            wildflowerTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0xffffff) });
-          }
-        }
-      }
-    }
+    const { oakItems, broadOakItems, oakSaplingItems, pineItems, pineSaplingItems, birchItems, twinBirchItems, birchSaplingItems, palmItems, palmSaplingItems, acaciaItems, acaciaSaplingItems, mapleItems, mangroveItems, mangroveSaplingItems, snowPineItems, arcticWillowItems, deadTreeTransforms, cactusTransforms, cactusSaplingTransforms, shrubLushTransforms, shrubBerryTransforms, rockBoulderTransforms, rockSlateTransforms, rockPebblesTransforms, rockSpireTransforms, rockMossyTransforms, logHollowTransforms, logRootedTransforms, logStumpTransforms, logStraightTransforms, fernTransforms, wildflowerTransforms, reedTransforms } = planChunkVegetation(chunkX, chunkZ, chunkSize, terrainGen, enableDetailFlora);
 
     // Instanciação em Pares de Árvores (Adultas, Mudas e Variantes)
     this.createInstancedPair(VegetationGeometries.oakTrunk, VegetationGeometries.oakLeaves, this.trunkMaterial, this.foliageMaterial, oakItems, owner);
@@ -1160,7 +659,7 @@ export class VegetationManager {
       color: 0xffffff,
       side: THREE.DoubleSide,
       alphaTest: 0.5,
-    }));
+    }), 'grass');
     const cartoon = mat.onBeforeCompile;
     const windTime = this.windTime;
     const pusher = this.grassPusher;
@@ -1325,5 +824,83 @@ export class VegetationManager {
   /** Remove todas as instâncias que um chunk adicionou. */
   public releaseChunk(owner: number): void {
     this.instances.remove(owner);
+  }
+
+  /**
+   * Atlas de impostores das árvores distantes: cada espécie (na ordem de IMPOSTOR_TYPES) é
+   * desenhada de lado, uma vez, com a geometria, a textura e a tinta originais, numa célula
+   * quadrada. Luz ambiente pura (= cor do material): a luz da cena é aplicada depois, no material
+   * do horizonte, com a mesma iluminação cartoon das árvores de perto.
+   * info: por tipo (lado do quadrado S, centro x, centro y) em metros, escala 1.
+   */
+  public buildTreeImpostors(renderer: THREE.WebGLRenderer): { texture: THREE.Texture; info: THREE.Vector3[]; cols: number; rows: number } {
+    VegetationGeometries.init();
+    const G = VegetationGeometries;
+    // [geometria do tronco/corpo, da copa (ou null), materiais, tinta do tronco, da copa]
+    const specs: [THREE.BufferGeometry, THREE.BufferGeometry | null, THREE.Material, THREE.Material | null, number, number][] = [
+      [G.oakTrunk, G.oakLeaves, this.trunkMaterial, this.foliageMaterial, 0x5c422d, 0x48aa32],
+      [G.broadOakTrunk, G.broadOakLeaves, this.trunkMaterial, this.foliageMaterial, 0x563e2a, 0x429c2c],
+      [G.pineTrunk, G.pineLeaves, this.trunkMaterial, this.foliageMaterial, 0x4a3424, 0x2a7238],
+      [G.birchTrunk, G.birchLeaves, this.birchTrunkMaterial, this.foliageMaterial, 0xf0f0ea, 0x6ec430],
+      [G.palmTrunk, G.palmLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, 0xa68252, 0x4cb828],
+      [G.acaciaTrunk, G.acaciaLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3826, 0x6e9c2e],
+      [G.mapleTrunk, G.mapleLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3828, 0xd44022],
+      [G.mapleTrunk, G.mapleLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3828, 0xe87a1a],
+      [G.mapleTrunk, G.mapleLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3828, 0xe8b824],
+      [G.mangroveTrunk, G.mangroveLeaves, this.trunkMaterial, this.foliageMaterial, 0x3e2d1f, 0x348c2c],
+      [G.snowPineTrunk, G.snowPineLeaves, this.trunkMaterial, this.snowPineFoliageMaterial, 0x3c2c22, 0xffffff],
+      [G.arcticWillowTrunk, G.arcticWillowLeaves, this.trunkMaterial, this.foliageMaterial, 0x44362a, 0x72927c],
+      [G.deadTrunk, null, this.deadTreeMaterial, null, 0x22201e, 0x22201e],
+      [G.cactusBody, null, this.cactusMaterial, null, 0x4e8e42, 0x4e8e42],
+      [G.cactusSaplingBody, null, this.cactusMaterial, null, 0x5ca850, 0x5ca850],
+    ];
+    const CELL = 128, cols = 4, rows = Math.ceil(specs.length / cols);
+    const rt = new THREE.WebGLRenderTarget(CELL * cols, CELL * rows, {
+      minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.NearestFilter, generateMipmaps: true,
+      colorSpace: THREE.SRGBColorSpace, depthBuffer: true,
+    });
+    const scene = new THREE.Scene();
+    scene.add(new THREE.AmbientLight(0xffffff, Math.PI));
+    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+    const prevTarget = renderer.getRenderTarget();
+    const prevColor = renderer.getClearColor(new THREE.Color());
+    const prevAlpha = renderer.getClearAlpha();
+    const prevAutoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    rt.scissorTest = true;
+    const info: THREE.Vector3[] = [];
+    const box = new THREE.Box3(), tmp = new THREE.Box3();
+    specs.forEach(([tg, lg, tm, lm, tc, lc], i) => {
+      tg.computeBoundingBox();
+      box.copy(tg.boundingBox!);
+      if (lg) { lg.computeBoundingBox(); box.union(tmp.copy(lg.boundingBox!)); }
+      const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
+      const S = Math.max(w, h) * 1.04;
+      const cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
+      info.push(new THREE.Vector3(S, cx, cy));
+      cam.left = -S / 2; cam.right = S / 2; cam.top = S / 2; cam.bottom = -S / 2;
+      cam.position.set(cx, cy, 100); cam.lookAt(cx, cy, 0);
+      cam.updateProjectionMatrix();
+      const meshes = [new THREE.InstancedMesh(tg, tm, 1)];
+      meshes[0].setMatrixAt(0, new THREE.Matrix4()); meshes[0].setColorAt(0, new THREE.Color(tc));
+      if (lg && lm) {
+        meshes.push(new THREE.InstancedMesh(lg, lm, 1));
+        meshes[1].setMatrixAt(0, new THREE.Matrix4()); meshes[1].setColorAt(0, new THREE.Color(lc));
+      }
+      for (const m of meshes) { m.frustumCulled = false; scene.add(m); }
+      const x = (i % cols) * CELL, y = Math.floor(i / cols) * CELL;
+      rt.viewport.set(x, y, CELL, CELL);
+      rt.scissor.set(x, y, CELL, CELL);
+      renderer.setRenderTarget(rt);
+      // fundo transparente com a cor da copa (as bordas filtradas não escurecem)
+      renderer.setClearColor(new THREE.Color(lc).multiplyScalar(0.55), 0);
+      renderer.clear(true, true, false);
+      renderer.render(scene, cam);
+      for (const m of meshes) { scene.remove(m); m.dispose(); }
+    });
+    renderer.setRenderTarget(prevTarget);
+    renderer.setClearColor(prevColor, prevAlpha);
+    renderer.autoClear = prevAutoClear;
+    return { texture: rt.texture, info, cols, rows };
   }
 }

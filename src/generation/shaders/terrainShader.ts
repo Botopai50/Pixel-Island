@@ -1,3 +1,4 @@
+import { FADE, FADE_GLSL } from './fadeDither.ts';
 import * as THREE from 'three';
 import { TerrainTextureForge, NB, WALL, DEFAULT_D } from '../terrain/terrainTextureForge.ts';
 import { CONFIG } from '../../config.ts';
@@ -47,6 +48,9 @@ export interface ChunkMaterialUniforms {
   uCt: { value: number };
   uRockY: { value: number };
   uPixelScale: { value: number };
+  /** dissolve da troca de LOD (0-1) e o sentido (0 = aparecendo, 1 = sumindo) */
+  uReveal: { value: number };
+  uRevealInv: { value: number };
 }
 
 /**
@@ -90,6 +94,8 @@ export function createChunkTerrainMaterial(
     uCt:    { value: 2.2 / density },
     uRockY: { value: 9.5 },
     uPixelScale: { value: pixelScale },
+    uReveal: { value: 1 },
+    uRevealInv: { value: 0 },
   };
 
   mat.userData = { uniforms: customUniforms };
@@ -99,7 +105,13 @@ export function createChunkTerrainMaterial(
     float totalD = uD * uPixelScale;
     vec2 texel = vWPos.xz * totalD;
     vec2 pixCoord = floor(texel);
-    float dth = clg(texel) - 0.5;
+    // Anti-cintilação: quantos texels cabem num pixel da tela. O pontilhado por texel (dth, que
+    // decide chão x paredão, a divisa da rocha, a grama que escorre) e o detalhe de micro-pixels
+    // só valem enquanto o texel tem ~1 pixel ou mais; de longe eles viravam sorteio por pixel e as
+    // bordas de neve/rocha das montanhas faiscavam com a câmera andando. Somem suave com a distância.
+    vec2 texFw = fwidth(texel);
+    float nearK = 1.0 - smoothstep(0.6, 1.6, max(texFw.x, texFw.y));
+    float dth = (clg(texel) - 0.5) * nearK;
 
     // UV local do CHUNK alinhada perfeitamente na grade de micro-pixels (sub-texels)
     vec2 pixWorld = (pixCoord + 0.5) / totalD;
@@ -224,7 +236,7 @@ export function createChunkTerrainMaterial(
 
     // Intensidade do detalhamento proporcional ao pixelScale
     // Pontilhado leve: no estilo diorama as áreas lisas são limpas (o detalhe vem das formas)
-    float detailStrength = clamp((uPixelScale - 0.6) * 1.1, 0.0, 1.0) * 0.35;
+    float detailStrength = clamp((uPixelScale - 0.6) * 1.1, 0.0, 1.0) * 0.35 * nearK;
     vec3 topC = mix(topBase, subPixelCol, detailStrength);
 
     // Barranco baixo na beira d'água (até ~1.5m): segue a textura do chão (areia/terra da margem),
@@ -239,13 +251,13 @@ export function createChunkTerrainMaterial(
     if (lowBank > 0.0 && (m > 0.0 || slope > 0.3)) {
       vec2 inland = -normalize(wn.xz + vec2(1e-5));
       vec2 uvBank = clamp((pixWorld + inland * 3.0 - uOrig) / uSize, 0.0, 1.0);
-      vec4 bankS = textureLod(uTop, uvBank, 0.0);
+      vec4 bankS = textureGrad(uTop, uvBank, dTopX, dTopY);
       // chão de vegetação acima: a face vira areia (a grama esticada ficava em listras verdes, e a
       // terra das paredes em listras marrons) - a areia molhada 1m para dentro da margem, ou uma
       // areia fixa se ali ainda é grama
       if (bankS.a > 0.4) {
         vec2 uvNear = clamp((pixWorld + inland * 1.0 - uOrig) / uSize, 0.0, 1.0);
-        bankS = textureLod(uTop, uvNear, 0.0);
+        bankS = textureGrad(uTop, uvNear, dTopX, dTopY);
         if (bankS.a > 0.4) bankS.rgb = vec3(0.78, 0.62, 0.42);
       }
       topC = bankS.rgb * 0.84;
@@ -264,20 +276,21 @@ export function createChunkTerrainMaterial(
       // em paredes baixas (barrancos de 2-3m) a grama e a terra de tamanho fixo cobriam a face toda,
       // misturadas e esticadas: no máximo ~30% da altura da parede, e nada abaixo de 2.5m
       float wallHt = (rimD < 90.0 && baseH < 90.0) ? rimD + baseH : 99.0;
-      drip = wallHt < 2.5 ? -1.0 : min(drip, wallHt * 0.3);
+      drip = wallHt < 2.5 ? -1.0 : min(drip, wallHt * 0.3) * nearK;
       if (rimD < drip) {
         // cor da grama do topo, lida um pouco para dentro do platô
         vec2 inland = -normalize(wn.xz + vec2(1e-5));
         vec2 uvG = clamp((pixWorld + inland * (2.5 + rimD) - uOrig) / uSize, 0.0, 1.0);
-        // nível 0 da textura: com as derivadas da parede (UV variando muito por pixel) caía num
-        // mipmap borrado e a grama que escorre virava uma faixa verde lisa
-        vec4 g = textureLod(uTop, uvG, 0.0);
-        vec4 gd = textureLod(uTopD, uvG, 0.0);
+        // derivadas do CHÃO (as da parede, com o UV variando muito por pixel, caíam num mipmap
+        // borrado e a grama que escorre virava uma faixa verde lisa; o nível 0 fixo faiscava de longe)
+        vec4 g = textureGrad(uTop, uvG, dTopX, dTopY);
+        vec4 gd = textureGrad(uTopD, uvG, dTopX, dTopY);
         // só onde o topo tem vegetação; a ponta dos fios fica no tom escuro
         if (g.a > 0.4) wall = rimD > drip - 0.45 ? gd.rgb : g.rgb;
       }
       float creep = 0.4 + 1.5 * vn2(vec2(along * 0.4, 11.3)) + 0.8 * h21(vec2(floor(col / 3.0), 19.0)) + dth * 0.35;
       if (baseH < 90.0 && rimD < 90.0) creep = min(creep, (rimD + baseH) * 0.25);
+      creep *= nearK;
       if (baseH < creep) {
         // terra do barranco subindo pelo pé, com a borda de cima um degrau mais escura
         vec3 soil = textureGrad(uWallA, uvD, dDirtX, dDirtY).rgb;
@@ -360,13 +373,22 @@ export function createChunkTerrainMaterial(
       uCt: customUniforms.uCt,
       uRockY: customUniforms.uRockY,
       uPixelScale: customUniforms.uPixelScale,
+      uFadeCam: FADE.uFadeCam,
+      uChunkFade: FADE.uChunkFade,
+      uReveal: customUniforms.uReveal,
+      uRevealInv: customUniforms.uRevealInv,
     });
 
-    sh.vertexShader = 'attribute vec3 wallInfo;\nvarying vec3 vWall;\nvarying vec3 vWPos;\nvarying vec3 vWNrm;\n' + sh.vertexShader.replace(
+    sh.vertexShader = 'attribute vec3 wallInfo;\nattribute float morph;\nuniform vec2 uFadeCam;\nuniform vec2 uChunkFade;\nvarying vec3 vWall;\nvarying vec3 vWPos;\nvarying vec3 vWNrm;\n' + sh.vertexShader.replace(
       '#include <begin_vertex>',
       `#include <begin_vertex>
+       // posição para as texturas ANTES do morph: presa ao relevo de verdade (com ela depois do
+       // morph, a textura dos paredões deslizava enquanto a câmera andava)
        vWall = wallInfo;
        vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+       // geomorphing: no fim do raio o relevo vai tomando a forma do horizonte (que está logo
+       // abaixo), e só então some com pontilhado - sem silhuetas fantasmas
+       transformed.y += morph * smoothstep(uChunkFade.x - 140.0, uChunkFade.x + 20.0, distance(vWPos.xz, uFadeCam));
        vWNrm = normalize((modelMatrix * vec4(normal, 0.0)).xyz);`
     );
 
@@ -384,12 +406,23 @@ export function createChunkTerrainMaterial(
       uniform float uCt;
       uniform float uRockY;
       uniform float uPixelScale;
+      uniform vec2 uFadeCam;
+      uniform vec2 uChunkFade;
+      uniform float uReveal;
+      uniform float uRevealInv;
     `;
 
     sh.fragmentShader = 'varying vec3 vWall;\nvarying vec3 vWPos;\nvarying vec3 vWNrm;\n' +
       uniformDecls + '\n' +
-      GLSL_NOISE + '\n' +
+      GLSL_NOISE + '\n' + FADE_GLSL + '\n' +
       sh.fragmentShader
+        // fim do raio dos chunks: blocos de 4m (presos ao mundo) somem aos poucos e revelam o
+        // horizonte por baixo (sem borda seca e sem o pontilhado "fervendo" com a câmera andando)
+        .replace('void main() {', 'void main() {\n  if (fadeHash(floor(vWPos.xz / 4.0)) > 1.0 - smoothstep(uChunkFade.x, uChunkFade.y, distance(vWPos.xz, uFadeCam))) discard;' +
+          // troca de LOD (textura/malha nova, bloco distante <-> chunks): a versão velha some e a
+          // nova aparece nos mesmos blocos de 2m, em partes complementares (nunca as duas no mesmo
+          // pixel: sem briga de profundidade e sem piscar)
+          '\n  if (uReveal < 1.0 || uRevealInv > 0.5) {\n    bool rvShow = fadeHash(floor(vWPos.xz * 0.5) + 31.0) < uReveal;\n    if (uRevealInv > 0.5) rvShow = !rvShow;\n    if (!rvShow) discard;\n  }')
         .replace('#include <map_fragment>', fragShaderPatch)
         .replace('#include <shadowmap_pars_fragment>', '#include <shadowmap_pars_fragment>\n' + cascadeShadowFns)
         .replace('#include <lights_fragment_begin>', lightsFragmentBegin);

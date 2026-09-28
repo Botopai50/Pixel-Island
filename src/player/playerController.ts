@@ -49,7 +49,7 @@ export class PlayerController {
     this.movement = new PlayerMovement();
     this.observerCamera = new ObserverCamera(aspect);
     this.firstPersonController = new FirstPersonController();
-    this.transitionCamera = new THREE.PerspectiveCamera(50, aspect, 0.1, 2500);
+    this.transitionCamera = new THREE.PerspectiveCamera(50, aspect, 0.1, 14000);
 
     // Listener global para a tecla ESC sair da primeira pessoa
     window.addEventListener('keydown', (e) => {

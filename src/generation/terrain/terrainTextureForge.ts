@@ -1131,7 +1131,10 @@ export function genChunkTexture(
 
         // Rocha: encosta + ruído
         let rk = macroRk[i] + clamp(sl - 0.95, 0, 2) * 0.30 + (0.28 - hn) * 0.30 + (cluster(tx + 91, ty + 17, sd + 5) - 0.5) * 0.26;
-        const isRock = rk > (1.10 - P.rock * 0.80 - BI.rockBias);
+        // O slider "Quantidade de Rocha" não vale no deserto (como o da grama): lá as manchas de
+        // rocha no meio das dunas ficavam feias; sobra só a rocha das encostas íngremes.
+        const rockAmt = b === B_DESERT ? 0 : P.rock;
+        const isRock = rk > (1.10 - rockAmt * 0.80 - BI.rockBias);
 
         // Areia na faixa da praia
         let sn = macroSn[i] + (cluster(tx + 41, ty + 63, sd + 9) - 0.5) * 0.30;

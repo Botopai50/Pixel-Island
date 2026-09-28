@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
+import { installAtmosphericFog } from './atmosphere/atmosphericFog.ts';
 import { getTextureWorkerPool } from './generation/terrain/textureWorkerPool.ts';
 import { WorldEngine } from './generation/worldEngine.ts';
 import { PlayerController, CameraMode } from './player/playerController.ts';
@@ -11,6 +12,9 @@ import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
 import { setForgeTextureAnisotropy, DEFAULT_D } from './generation/terrain/terrainTextureForge.ts';
 import { AdaptiveQuality, QualityLevel, QUALITY_LEVELS, detectInitialQuality } from './quality.ts';
+
+// névoa atmosférica (da cor do horizonte): antes de compilar qualquer material
+installAtmosphericFog();
 
 /**
  * Aplicação Principal: Procedural Island Explorer
@@ -125,6 +129,7 @@ class App {
 
     // Inicialização do Motor de Geração Procedural do Mundo
     this.worldEngine = new WorldEngine(this.scene);
+    this.worldEngine.initTreeImpostors(this.renderer);
     this.syncAtmosphereWithWorld();
 
     // Configuração do Render Target de Água com DepthTexture (1x nativo para máximo fillrate)
@@ -212,7 +217,7 @@ class App {
       magFilter: THREE.LinearFilter,
       format: THREE.RGBAFormat,
     });
-    this.reflectionCameraPerspective = new THREE.PerspectiveCamera(75, aspect, 0.1, 2500);
+    this.reflectionCameraPerspective = new THREE.PerspectiveCamera(75, aspect, 0.1, 14000);
 
     if (new URLSearchParams(window.location.search).get('pixel') === '1') {
       CONFIG.PIXEL_SIZE = CONFIG.PIXELATION_SIZE;
@@ -279,8 +284,9 @@ class App {
       this.pegmanWidget.onModeChange(mode);
       this.touchControlsWidget.onModeChange(mode);
       if (mode === CameraMode.FIRST_PERSON) {
-        // Em primeira pessoa, raio adaptativo de 5 chunks (~320m) cobre perfeitamente a distância de névoa e poupa recursos
-        this.worldEngine.setViewRadius(5);
+        // Em primeira pessoa: 11 chunks (~700m) de terreno detalhado; além disso o horizonte (malha
+        // grossa até ~12km) continua a paisagem
+        this.worldEngine.setViewRadius(11);
       } else if (mode === CameraMode.OBSERVER) {
         // No modo aéreo panorâmico, restaura o raio amplo para visualização continental completa
         this.worldEngine.setViewRadius(CONFIG.VIEW_RADIUS_CHUNKS);
@@ -440,7 +446,10 @@ class App {
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
     this.atmosphere.update(dt, this.playerController.getCamera().position);
     // Neblina a partir do ponto focado (na visão aérea a câmera fica centenas de metros acima)
-    this.atmosphere.setFocusDistance(this.playerController.getCamera().position.distanceTo(playerPos));
+    this.atmosphere.setFocusDistance(
+      this.playerController.getCamera().position.distanceTo(playerPos),
+      this.playerController.getMode() === CameraMode.FIRST_PERSON
+    );
     const [fogNear, fogFar] = this.atmosphere.getFogRange();
     this.worldEngine.setFogRange(fogNear, fogFar);
     // Pixels do céu acompanham a densidade de texels do chão (1.0 = densidade padrão)
@@ -574,7 +583,8 @@ class App {
       this.reflectTextureMatrix,
       activeCamera,
       this.waterRenderTarget.width,
-      this.waterRenderTarget.height
+      this.waterRenderTarget.height,
+      this.renderer.toneMappingExposure
     );
 
     this.renderer.autoClear = false;

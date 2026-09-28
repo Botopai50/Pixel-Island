@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Chunk } from './chunk.ts';
+import { Chunk, tickChunkFades } from './chunk.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { VegetationManager } from '../vegetation/vegetationManager.ts';
 import { TerrainTextureForge } from './terrainTextureForge.ts';
@@ -83,6 +83,7 @@ export class ChunkManager {
       this.refreshChunkPlan(cx, cz);
     }
 
+    tickChunkFades();
     // Processa a fila de construção com orçamento de tempo por frame (garante 60 FPS cravados)
     this.processBuildQueue();
     this.populatePendingVegetation();
@@ -193,6 +194,12 @@ export class ChunkManager {
       segments: this.segmentsFor(NEAR_RING + 1, 0) * FAR_TILE,
       area: { centerX: minX + size / 2, centerZ: minZ + size / 2, size }
     });
+    // chunks ainda na área: o bloco espera escondido até ficar pronto e trocar com eles
+    for (let ix = 0; ix < FAR_TILE && !tile.isHeldBack(); ix++) {
+      for (let iz = 0; iz < FAR_TILE; iz++) {
+        if (this.chunks.has(`${tx * FAR_TILE + ix}_${tz * FAR_TILE + iz}`)) { tile.setHeldBack(true); break; }
+      }
+    }
     this.tiles.set(key, tile);
     this.scene.add(tile.group);
   }
@@ -216,13 +223,25 @@ export class ChunkManager {
           const chunkKey = `${ccx}_${ccz}`;
           const chunk = this.chunks.get(chunkKey);
           if (far) {
-            if (chunk) this.removeChunk(chunkKey, chunk);
+            // o bloco pronto entra com dissolve e os chunks saem no mesmo compasso
+            if (chunk) {
+              this.chunks.delete(chunkKey);
+              chunk.fadeOutAndDestroy(this.scene);
+              this.sceneVersion++;
+            }
           } else if ((ccx - cx) ** 2 + (ccz - cz) ** 2 <= viewSq && !chunk?.isReady()) {
             replacementsReady = false;
           }
         }
       }
-      if (!far && replacementsReady) this.removeTile(key, tile);
+      if (far) tile.setHeldBack(false);
+      if (!far && replacementsReady) {
+        // os chunks que esperavam aparecem com dissolve e o bloco sai no mesmo compasso
+        this.releaseHeldChunks(tile);
+        this.tiles.delete(key);
+        tile.fadeOutAndDestroy(this.scene);
+        this.sceneVersion++;
+      }
     }
   }
 
@@ -233,7 +252,17 @@ export class ChunkManager {
     this.sceneVersion++;
   }
 
+  /** Mostra (com dissolve) os chunks que esperavam escondidos debaixo deste bloco. */
+  private releaseHeldChunks(tile: Chunk): void {
+    for (let ix = 0; ix < FAR_TILE; ix++) {
+      for (let iz = 0; iz < FAR_TILE; iz++) {
+        this.chunks.get(`${tile.cx * FAR_TILE + ix}_${tile.cz * FAR_TILE + iz}`)?.setHeldBack(false);
+      }
+    }
+  }
+
   private removeTile(key: string, tile: Chunk): void {
+    this.releaseHeldChunks(tile);
     this.scene.remove(tile.group);
     tile.destroy();
     this.tiles.delete(key);
@@ -255,6 +284,12 @@ export class ChunkManager {
     const budget = this.initialVegetationDone ? 4.0 : 16.0;
     const startTime = performance.now();
     let best: Chunk | undefined, bestD = Infinity;
+    // Fora do raio: a vegetação sai (as árvores simples do horizonte aparecem no lugar, sem duplicar)
+    for (const chunk of this.chunks.values()) {
+      if (!chunk.hasVegetation) continue;
+      const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
+      if (dx * dx + dz * dz > vegRadiusSq) chunk.releaseVegetation();
+    }
     // Procura sempre o mais perto que falta (poucas centenas de chunks: custo desprezível)
     for (;;) {
       best = undefined; bestD = Infinity;
@@ -302,6 +337,9 @@ export class ChunkManager {
       });
 
       chunk.setGrassEnabled(distSq <= CONFIG.GRASS_RADIUS_CHUNKS ** 2 && CONFIG.GRASS_RADIUS_CHUNKS > 0, this.vegetationMgr);
+      // um bloco distante ainda cobre a área: o chunk espera escondido (senão os dois ficavam um
+      // sobre o outro, brigando pela profundidade, até o último chunk do bloco carregar)
+      if (this.tiles.has(`${Math.floor(item.cx / FAR_TILE)}_${Math.floor(item.cz / FAR_TILE)}`)) chunk.setHeldBack(true);
       this.chunks.set(item.key, chunk);
       this.scene.add(chunk.group);
       chunksBuilt++;
@@ -355,18 +393,21 @@ export class ChunkManager {
    * pixels (lá 1 texel já dá ~1 pixel de tela).
    */
   private textureDensityFor(dx: number, dz: number): number {
-    const base = Math.min(this.forge.density, CONFIG.TEXTURE_DENSITY_CAP);
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
-    const factor = ring <= 1 ? 1.0 : ring <= 3 ? 0.5 : ring <= NEAR_RING ? 0.25 : 0.125;
-    const floor = ring <= 3 ? 3.0 : ring <= NEAR_RING ? 2.0 : 1.0;
+    // O teto da qualidade (geração mais barata) não vale para os 9 chunks em volta do personagem:
+    // são poucos e é onde os pixels grandes mais aparecem. Até o anel 4 o teto é no mínimo 4.
+    const cap = ring <= 1 ? Infinity : ring <= 4 ? Math.max(4, CONFIG.TEXTURE_DENSITY_CAP) : CONFIG.TEXTURE_DENSITY_CAP;
+    const base = Math.min(this.forge.density, cap);
+    const factor = ring <= 1 ? 1.0 : ring <= 4 ? 0.5 : ring <= NEAR_RING ? 0.25 : 0.125;
+    const floor = ring <= 4 ? 3.0 : ring <= NEAR_RING ? 2.0 : 1.0;
     return Math.max(Math.min(base, floor), base * factor);
   }
 
-  /** LOD da malha de relevo por anel: 32 subdivisões (2m) perto, 16 até o anel 7 e 8 além. */
+  /** LOD da malha de relevo por anel: 32 subdivisões (2m) até o anel 4, 16 até o anel 7 e 8 além. */
   private segmentsFor(dx: number, dz: number): number {
     const full = CONFIG.CHUNK_SEGMENTS;
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
-    return ring <= 3 ? full : ring <= NEAR_RING ? Math.max(8, full / 2) : Math.max(8, full / 4);
+    return ring <= 4 ? full : ring <= NEAR_RING ? Math.max(8, full / 2) : Math.max(8, full / 4);
   }
 
   public getSceneVersion(): number {

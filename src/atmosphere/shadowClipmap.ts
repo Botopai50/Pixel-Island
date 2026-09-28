@@ -165,8 +165,16 @@ export class ShadowClipmap {
    * só o tamanho do texel; o Three recria o mapa no próximo render de sombra.
    */
   public setMapSize(size: number): void {
-    this.configs = this.configs.map((cfg) => ({ ...cfg, mapSize: size }));
-    for (const light of this.lights) {
+    // As folgas contra acne foram calibradas para 2048: com um mapa menor cada texel cobre mais
+    // chão (512 -> 4x) e o terreno se auto-sombreava em listras. Crescem na mesma proporção.
+    this.configs = DEFAULT_CLIPMAP_CONFIGS.map((cfg) => {
+      const k = cfg.mapSize / size;
+      return { ...cfg, mapSize: size, bias: cfg.bias * k, normalBias: cfg.normalBias * k };
+    });
+    for (let i = 0; i < this.lights.length; i++) {
+      const light = this.lights[i];
+      light.shadow.bias = this.configs[i].bias;
+      light.shadow.normalBias = this.configs[i].normalBias;
       if (light.shadow.mapSize.x === size) continue;
       light.shadow.mapSize.set(size, size);
       light.shadow.map?.dispose();
