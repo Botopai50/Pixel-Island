@@ -1791,7 +1791,7 @@ private:
         t={};
     }
 
-    VkDescriptorSet allocateTerrainDescriptor(const TextureGpu& chunkTexture) {
+    VkDescriptorSet allocateTerrainDescriptor(const TextureGpu& chunkTexture,VkSampler primarySampler=VK_NULL_HANDLE) {
         VkDescriptorSet set=VK_NULL_HANDLE;
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool=descriptorPool_;
@@ -1800,7 +1800,7 @@ private:
         check(vkAllocateDescriptorSets(device_,&ai,&set),"vkAllocateDescriptorSets(chunk)");
 
         VkDescriptorImageInfo infos[2]{};
-        infos[0].sampler=terrainTextureSampler_;
+        infos[0].sampler=primarySampler?primarySampler:terrainTextureSampler_;
         infos[0].imageView=chunkTexture.view;
         infos[0].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         infos[1].sampler=wallTextureSampler_;
@@ -1858,6 +1858,16 @@ private:
         wallSci.magFilter=VK_FILTER_NEAREST;
         wallSci.minFilter=VK_FILTER_NEAREST;
         check(vkCreateSampler(device_,&wallSci,nullptr,&wallTextureSampler_),"vkCreateSampler(walls)");
+
+        VkSamplerCreateInfo pixelClampSci=wallSci;
+        pixelClampSci.addressModeU=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        pixelClampSci.addressModeV=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        check(vkCreateSampler(device_,&pixelClampSci,nullptr,&pixelClampSampler_),"vkCreateSampler(pixel-clamp)");
+
+        VkSamplerCreateInfo pixelRepeatSci=wallSci;
+        pixelRepeatSci.addressModeU=VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        pixelRepeatSci.addressModeV=VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        check(vkCreateSampler(device_,&pixelRepeatSci,nullptr,&pixelRepeatSampler_),"vkCreateSampler(pixel-repeat)");
 
         VkDescriptorPoolSize ps{};
         ps.type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2124,7 +2134,8 @@ private:
 
         out.mesh=uploadVertexIndexMesh(vertices,src.indices);
         out.texture=createTextureRgba(src.rgba,src.texW,src.texH);
-        out.descriptor=allocateTerrainDescriptor(out.texture);
+        const bool repeats=std::abs(src.repeatX-1.0f)>0.001f||std::abs(src.repeatY-1.0f)>0.001f;
+        out.descriptor=allocateTerrainDescriptor(out.texture,repeats?pixelRepeatSampler_:pixelClampSampler_);
         return out;
     }
 
@@ -3067,6 +3078,8 @@ private:
             }
             destroyTexture(fallbackTexture_);
             destroyTexture(wallTexture_);
+            if(pixelRepeatSampler_)vkDestroySampler(device_,pixelRepeatSampler_,nullptr);
+            if(pixelClampSampler_)vkDestroySampler(device_,pixelClampSampler_,nullptr);
             if(wallTextureSampler_)vkDestroySampler(device_,wallTextureSampler_,nullptr);
             if(terrainTextureSampler_)vkDestroySampler(device_,terrainTextureSampler_,nullptr);
             if(terrainTextureView_)vkDestroyImageView(device_,terrainTextureView_,nullptr);
@@ -3121,6 +3134,8 @@ private:
     VkImageView terrainTextureView_=VK_NULL_HANDLE;
     VkSampler terrainTextureSampler_=VK_NULL_HANDLE;
     VkSampler wallTextureSampler_=VK_NULL_HANDLE;
+    VkSampler pixelClampSampler_=VK_NULL_HANDLE;
+    VkSampler pixelRepeatSampler_=VK_NULL_HANDLE;
     TextureGpu fallbackTexture_{};
     TextureGpu wallTexture_{};
     bool terrainTextureInitialized_=false;
