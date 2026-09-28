@@ -290,3 +290,63 @@ function align4(v:number){ return (v + 3) & ~3; }
   hydro.setDeferMissing(true);
   return new Float32Array([bestX,bestZ,elevation]).buffer;
 };
+
+
+/**
+ * WaterBiomeMap original em uma única chamada (o original divide em frames apenas por orçamento).
+ * Header uint32[6]: magic, version, width, height, span, cell
+ * depois float32 originX, originZ e RGBA8 128x128.
+ */
+(globalThis as any).pixelGenerateWaterBiomeMap=function(seedText:string,centerX:number,centerZ:number){
+  const world=worldFor(seedText);
+  const RES=128, CELL=12, SPAN=RES*CELL, MAX_DEPTH=6;
+  const originX=Math.floor((centerX-SPAN/2)/CELL)*CELL;
+  const originZ=Math.floor((centerZ-SPAN/2)/CELL)*CELL;
+  const data=new Uint8Array(RES*RES*4);
+  const biomeMgr=world.getBiomeManager();
+
+  for(let row=0;row<RES;row++){
+    const z=originZ+(row+0.5)*CELL;
+    for(let col=0;col<RES;col++){
+      const x=originX+(col+0.5)*CELL;
+      const r=36;
+      const shoreElevation=(
+        Math.max(0,world.getHeight(x+r,z))+Math.max(0,world.getHeight(x-r,z))+
+        Math.max(0,world.getHeight(x,z+r))+Math.max(0,world.getHeight(x,z-r))
+      )/4;
+      const climate=world.getClimate(x,z,shoreElevation);
+      const polarZ=biomeMgr.polarLatitudeZ(x,z);
+      const ice=world.getIceInfluence(x,z,0);
+
+      const smooth=(a:number,b:number,v:number)=>{
+        const t=Math.max(0,Math.min(1,(v-a)/(b-a)));
+        return t*t*(3-2*t);
+      };
+      const arctic=Math.max(
+        smooth(-440,-520,polarZ),
+        1-smooth(0.26,0.34,climate.temperature),
+        smooth(0.05,0.15,ice)
+      );
+      const warm=smooth(0.60,0.68,climate.temperature)*(1-arctic);
+      const swamp=warm*smooth(0.52,0.62,climate.moisture);
+      const tropical=warm*(1-swamp);
+      const depth=Math.max(0,Math.min(MAX_DEPTH,-world.getHeight(x,z)));
+
+      const o=(row*RES+col)*4;
+      data[o]=Math.round(Math.max(0,Math.min(1,arctic))*255);
+      data[o+1]=Math.round(Math.max(0,Math.min(1,swamp))*255);
+      data[o+2]=Math.round(Math.max(0,Math.min(1,tropical))*255);
+      data[o+3]=Math.round((depth/MAX_DEPTH)*255);
+    }
+  }
+
+  const header=6*4+2*4;
+  const out=new ArrayBuffer(header+data.byteLength);
+  const dv=new DataView(out),u8=new Uint8Array(out);
+  const H=[0x50495742,1,RES,RES,SPAN,CELL];
+  for(let i=0;i<H.length;i++)dv.setUint32(i*4,H[i],true);
+  dv.setFloat32(24,originX,true);
+  dv.setFloat32(28,originZ,true);
+  u8.set(data,32);
+  return out;
+};
