@@ -2995,8 +2995,32 @@ private:
             vkCmdDrawIndexed(cmd,ch.mesh.indexCount,1,0,0,0);
         }
 
-        // 3) Vegetação/props. Enquanto os assets finais Pixel_Tree não entram, estes ainda são
-        // provisórios; o terreno/horizon já não depende mais deles.
+        // 3) Pixel_Tree real exportado do mesmo PixelTreeAssetLibrary do projeto original.
+        for(const auto& [assetKey,asset]:pixelTreeAssets_){
+            if(asset.visible.empty())continue;
+            for(const auto& part:asset.parts){
+                if(!part.mesh.indexCount)continue;
+                PushConstants pt=base;
+                pt.environment[2]=3.0f;
+                pt.environment[3]=1.0f;
+                pt.terrain[0]=part.repeatX;
+                pt.terrain[1]=part.repeatY;
+                pt.terrain[2]=part.alphaTest;
+                pt.terrain[3]=part.flipY?1.0f:0.0f;
+                vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,0,1,&part.descriptor,0,nullptr);
+                vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pt),&pt);
+                VkBuffer bufs[2]={part.mesh.vb.buffer,asset.instanceBuffer.buffer};
+                vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
+                vkCmdBindIndexBuffer(cmd,part.mesh.ib.buffer,0,VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(
+                    cmd,part.mesh.indexCount,
+                    static_cast<uint32_t>(asset.visible.size()),
+                    0,0,0
+                );
+            }
+        }
+
+        // 4) Rochas e outros props ainda pertencentes ao pool leve do Pixel-Island.
         PushConstants p=base;
         p.environment[2]=0.0f;
         p.environment[3]=1.0f;
@@ -3046,6 +3070,11 @@ private:
         size_t visibleTotal=0;
         int propDraws=0;
         for(const auto& v:visible_){visibleTotal+=v.size();if(!v.empty())propDraws++;}
+        size_t pixelTrees=0;int pixelDraws=0;
+        for(const auto& [k,a]:pixelTreeAssets_){
+            pixelTrees+=a.visible.size();
+            if(!a.visible.empty())pixelDraws+=static_cast<int>(a.parts.size());
+        }
         std::wostringstream ss;
         ss<<L"Pixel Island Native | Vulkan | "
           <<deviceProps_.deviceName
@@ -3056,8 +3085,9 @@ private:
           <<L" | Horizon "<<horizonTiles_.size()
           <<L" | Fila "<<(exactStreamer_?exactStreamer_->pendingCount():0)
           <<L"/"<<(horizonStreamer_?horizonStreamer_->pendingCount():0)
+          <<L" | PixelTree "<<pixelTrees
           <<L" | Props "<<visibleTotal
-          <<L" | Draws "<<(exactChunks_.size()+horizonTiles_.size()+propDraws)
+          <<L" | Draws "<<(exactChunks_.size()+horizonTiles_.size()+propDraws+pixelDraws)
           <<L" | TAB modo";
         SetWindowTextW(hwnd_,ss.str().c_str());
     }
@@ -3149,6 +3179,7 @@ private:
             for(auto& [k,h]:horizonTiles_)destroyHorizon(h);
             horizonTiles_.clear();
 
+            destroyPixelTreeAssets();
             for(int i=0;i<MESH_KIND_COUNT;i++){destroyMesh(meshes_[i]);destroyBuffer(instanceBuffers_[i]);}
             destroyBuffer(dummyInstance_);
             destroyBuffer(terrainVB_);destroyBuffer(terrainIB_);
@@ -3234,6 +3265,8 @@ private:
     std::array<GpuMesh,MESH_KIND_COUNT> meshes_{};
     std::array<Buffer,MESH_KIND_COUNT> instanceBuffers_{};
     std::array<std::vector<InstanceGPU>,MESH_KIND_COUNT> visible_{};
+    std::unordered_map<uint32_t,PixelTreeAssetGpu> pixelTreeAssets_;
+    uint32_t pixelTreeWorldSeed_=0;
     std::vector<ObjectSeed> objects_;
     std::vector<float> terrainHeights_;
 
