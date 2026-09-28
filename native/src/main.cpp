@@ -1657,7 +1657,7 @@ private:
     }
 
     void createDescriptorSetLayout() {
-        std::array<VkDescriptorSetLayoutBinding,3> bindings{};
+        std::array<VkDescriptorSetLayoutBinding,7> bindings{};
         for(uint32_t i=0;i<2;i++){
             bindings[i].binding=i;
             bindings[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1668,6 +1668,17 @@ private:
         bindings[2].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         bindings[2].descriptorCount=1;
         bindings[2].stageFlags=VK_SHADER_STAGE_VERTEX_BIT;
+
+        for(uint32_t i=0;i<3;i++){
+            bindings[3+i].binding=3+i;
+            bindings[3+i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[3+i].descriptorCount=1;
+            bindings[3+i].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        bindings[6].binding=6;
+        bindings[6].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[6].descriptorCount=1;
+        bindings[6].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         ci.bindingCount=static_cast<uint32_t>(bindings.size());
