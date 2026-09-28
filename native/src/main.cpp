@@ -3,6 +3,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <vulkan/vulkan.h>
+#include "js_world.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -26,13 +28,14 @@ namespace {
 
 constexpr uint32_t WINDOW_WIDTH = 1280;
 constexpr uint32_t WINDOW_HEIGHT = 720;
-constexpr int TERRAIN_SEGMENTS = 160;
-constexpr float TERRAIN_SIZE = 2048.0f;
-constexpr float STREAM_STEP = 256.0f;
+constexpr int TERRAIN_SEGMENTS = 192; // 4m por vértice: equivalente ao preset fraco (16 seg / 64m)
+constexpr float TERRAIN_SIZE = 768.0f;
+constexpr float STREAM_STEP = 64.0f;
 constexpr float FOG_FAR = 720.0f;
 constexpr uint32_t MAX_INSTANCES_PER_MESH = 60000;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
-constexpr uint32_t WORLD_SEED = 0x5EED1234u;
+constexpr const char* WORLD_SEED_TEXT = "Avalon";
+constexpr uint32_t WORLD_SEED = 0x5EED1234u; // legado do protótipo; não é usado pelo gerador exato
 constexpr float PI = 3.14159265358979323846f;
 
 struct Vec3 {
@@ -310,9 +313,8 @@ struct Vertex {
 };
 
 struct InstanceGPU {
-    float x,y,z,scale;
-    float rotation;
-    float r,g,b;
+    float m[16];
+    float r,g,b,a;
 };
 
 enum MeshKind : int {
@@ -328,13 +330,19 @@ enum MeshKind : int {
     LANDMARK,
     CACTUS,
     FLOWER,
+    LOG_PROP,
+    FERN_PROP,
+    REED_PROP,
+    DEAD_TREE_PROP,
     MESH_KIND_COUNT
 };
 
 struct ObjectSeed {
     float x=0,y=0,z=0,scale=1,rotation=0;
     float r=1,g=1,b=1;
-    int kind=TREE_LOD0; // árvores armazenam kind TREE_LOD0 e escolhem LOD em runtime
+    int kind=TREE_LOD0;
+    std::array<float,16> matrix{};
+    bool exactMatrix=false;
 };
 
 struct WorldData {
