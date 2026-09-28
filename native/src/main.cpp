@@ -70,6 +70,13 @@ Vec3 operator+(const Vec3& a, const Vec3& b) { return {a.x+b.x, a.y+b.y, a.z+b.z
 Vec3 operator-(const Vec3& a, const Vec3& b) { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
 Vec3 operator*(const Vec3& a, float s) { return {a.x*s, a.y*s, a.z*s}; }
 
+Vec3 lerpVec(const Vec3& a,const Vec3& b,float t){
+    return {a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.z+(b.z-a.z)*t};
+}
+float cubicEaseInOut(float t){
+    return t<0.5f?4.0f*t*t*t:1.0f-std::pow(-2.0f*t+2.0f,3.0f)/2.0f;
+}
+
 float dot(const Vec3& a, const Vec3& b) { return a.x*b.x + a.y*b.y + a.z*b.z; }
 Vec3 cross(const Vec3& a, const Vec3& b) {
     return {a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
@@ -2077,26 +2084,88 @@ private:
     }
 
     void enterFirstPersonAtFocus() {
-        if(!observerMode_)return;
-        observerMode_=false;
-        camera_={focus_.x,std::max(heightAt(focus_.x,focus_.z),0.0f)+1.75f,focus_.z};
-        yaw_=observerYaw_+PI*0.75f;
-        pitch_=-0.05f;
-        fpsVelX_=fpsVelZ_=0.0f;
-        fpsBobTimer_=fpsBob_=0.0f;
-        planExactStreaming(camera_.x,camera_.z,true);
-        logLine("CAMERA: primeira pessoa");
+        if(!observerMode_||transitionMode_!=0)return;
+        transitionMode_=1;
+        transitionTimer_=0.0f;
+        transitionDuration_=1.35f;
+        transitionStartPos_=observerEye();
+        transitionStartLook_=focus_;
+
+        const float ground=std::max(heightAt(focus_.x,focus_.z),0.0f);
+        transitionTargetPos_={focus_.x,ground+1.75f,focus_.z};
+        transitionTargetYaw_=std::atan2(focus_.x,focus_.z)+PI*0.75f;
+        transitionTargetPitch_=-0.05f;
+        const float fx=-std::sin(transitionTargetYaw_);
+        const float fz=-std::cos(transitionTargetYaw_);
+        transitionTargetLook_={
+            focus_.x+fx*15.0f,
+            transitionTargetPos_.y,
+            focus_.z+fz*15.0f
+        };
+        transitionStartFov_=45.0f;
+        transitionTargetFov_=75.0f;
+        transitionPos_=transitionStartPos_;
+        transitionLook_=transitionStartLook_;
+        transitionFov_=transitionStartFov_;
+        logLine("CAMERA: transition in");
     }
 
     void exitFirstPersonToObserver() {
-        if(observerMode_)return;
-        observerMode_=true;
-        focus_.x=camera_.x;
-        focus_.z=camera_.z;
-        focus_.y=0.0f;
+        if(observerMode_||transitionMode_!=0)return;
+        transitionMode_=2;
+        transitionTimer_=0.0f;
+        transitionDuration_=1.15f;
+        transitionStartPos_={camera_.x,camera_.y+fpsBob_,camera_.z};
+        const float fx=-std::sin(yaw_)*std::cos(pitch_);
+        const float fy=std::sin(pitch_);
+        const float fz=-std::cos(yaw_)*std::cos(pitch_);
+        transitionStartLook_=transitionStartPos_+Vec3{fx,fy,fz}*15.0f;
+
+        focus_={camera_.x,0.0f,camera_.z};
         observerVelX_=observerVelZ_=0.0f;
-        planExactStreaming(focus_.x,focus_.z,true);
-        logLine("CAMERA: observador");
+        transitionTargetPos_=observerEye();
+        transitionTargetLook_=focus_;
+        transitionStartFov_=75.0f;
+        transitionTargetFov_=50.0f;
+        transitionPos_=transitionStartPos_;
+        transitionLook_=transitionStartLook_;
+        transitionFov_=transitionStartFov_;
+        logLine("CAMERA: transition out");
+    }
+
+    void updateCameraTransition(float dt){
+        if(transitionMode_==0)return;
+        transitionTimer_+=dt;
+        const float progress=std::min(1.0f,transitionTimer_/transitionDuration_);
+        const float ease=cubicEaseInOut(progress);
+        transitionPos_=lerpVec(transitionStartPos_,transitionTargetPos_,ease);
+        transitionPos_.y+=std::sin(progress*PI)*28.0f;
+
+        const float safeGround=heightAt(transitionPos_.x,transitionPos_.z);
+        const float minSafeY=std::max(safeGround,0.0f)+2.2f;
+        if(transitionPos_.y<minSafeY)transitionPos_.y=minSafeY;
+
+        transitionLook_=lerpVec(transitionStartLook_,transitionTargetLook_,ease);
+        transitionFov_=transitionStartFov_+(transitionTargetFov_-transitionStartFov_)*ease;
+
+        if(progress>=1.0f){
+            if(transitionMode_==1){
+                observerMode_=false;
+                camera_=transitionTargetPos_;
+                yaw_=transitionTargetYaw_;
+                pitch_=transitionTargetPitch_;
+                fpsVelX_=fpsVelZ_=0.0f;
+                fpsBobTimer_=fpsBob_=0.0f;
+                planExactStreaming(camera_.x,camera_.z,true);
+                logLine("CAMERA: primeira pessoa");
+            }else{
+                observerMode_=true;
+                camera_=observerEye();
+                planExactStreaming(focus_.x,focus_.z,true);
+                logLine("CAMERA: observador");
+            }
+            transitionMode_=0;
+        }
     }
 
     void updateObserverControls(float dt) {
@@ -2256,17 +2325,18 @@ private:
         const bool tabNow=keyPressed(VK_TAB);
         const bool fNow=keyPressed('F');
         const bool modeNow=tabNow||fNow;
-        if(modeNow&&!tabDown_){
+        if(modeNow&&!tabDown_&&transitionMode_==0){
             if(observerMode_)enterFirstPersonAtFocus();
             else exitFirstPersonToObserver();
         }
         tabDown_=modeNow;
 
         const bool escNow=keyPressed(VK_ESCAPE);
-        if(escNow&&!escapeDown_&&!observerMode_)exitFirstPersonToObserver();
+        if(escNow&&!escapeDown_&&!observerMode_&&transitionMode_==0)exitFirstPersonToObserver();
         escapeDown_=escNow;
 
-        if(observerMode_)updateObserverControls(dt);
+        if(transitionMode_!=0) updateCameraTransition(dt);
+        else if(observerMode_) updateObserverControls(dt);
         else updateFirstPersonControls(dt);
 
         input_.clearTransient();
@@ -2831,6 +2901,14 @@ private:
     // FirstPersonController original.
     float fpsVelX_=0.0f,fpsVelZ_=0.0f;
     float fpsBobTimer_=0.0f,fpsBob_=0.0f;
+
+    // PlayerController transition camera.
+    int transitionMode_=0; // 1 in, 2 out
+    float transitionTimer_=0.0f,transitionDuration_=1.0f;
+    Vec3 transitionStartPos_{},transitionTargetPos_{},transitionPos_{};
+    Vec3 transitionStartLook_{},transitionTargetLook_{},transitionLook_{};
+    float transitionStartFov_=45.0f,transitionTargetFov_=75.0f,transitionFov_=45.0f;
+    float transitionTargetYaw_=0.0f,transitionTargetPitch_=0.0f;
 
     float fogFar_=720.0f;
     float time_=0.0f;
