@@ -64,10 +64,14 @@ export class ShadowClipmap {
   private currentSunDir: THREE.Vector3 = new THREE.Vector3(0.5, 0.8, 0.35).normalize();
   private lastTargetPos: THREE.Vector3 = new THREE.Vector3();
   private sunIntensity: number = 1.35;
+  private baseFarRadius: number;
+  private baseFarNormalBias: number;
 
   constructor(scene: THREE.Scene, configs: ClipmapCascadeConfig[] = DEFAULT_CLIPMAP_CONFIGS) {
     this.scene = scene;
-    this.configs = configs;
+    this.configs = configs.map((cfg) => ({ ...cfg }));
+    this.baseFarRadius = configs[configs.length - 1].radius;
+    this.baseFarNormalBias = configs[configs.length - 1].normalBias;
 
     this.initLights();
   }
@@ -158,6 +162,33 @@ export class ShadowClipmap {
       light.position.copy(snappedCenter).addScaledVector(sunDir, cfg.lightDistance);
       light.updateMatrixWorld();
     }
+  }
+
+  /**
+   * Garante que a última faixa cubra pelo menos `radius` metros em volta do foco. Na visão aérea
+   * afastada o terreno visível chega a ~1.4km, mas a faixa 2 cobria só 600m: além disso a sombra
+   * do vulcão (e de todo o relevo) sumia conforme o foco se afastava dele. A faixa cresce em
+   * degraus de 64m (não refaz o mapa a cada frame do zoom suave) e nunca fica menor que o raio
+   * base. O normalBias acompanha o tamanho do texel. Retorna true se o raio mudou.
+   */
+  public setCoverage(radius: number): boolean {
+    const i = this.configs.length - 1;
+    const base = this.baseFarRadius;
+    const target = Math.max(base, Math.ceil(radius / 64) * 64);
+    const cfg = this.configs[i];
+    if (target === cfg.radius) return false;
+
+    this.configs[i] = { ...cfg, radius: target, normalBias: this.baseFarNormalBias * (target / base) };
+    const light = this.lights[i];
+    light.shadow.normalBias = this.configs[i].normalBias;
+    const cam = light.shadow.camera;
+    cam.left = -target;
+    cam.right = target;
+    cam.top = target;
+    cam.bottom = -target;
+    cam.updateProjectionMatrix();
+    this.updatePositions(this.lastTargetPos.x, this.lastTargetPos.y, this.lastTargetPos.z);
+    return true;
   }
 
   /**
