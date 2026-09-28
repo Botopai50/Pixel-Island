@@ -268,7 +268,13 @@ function isFoliagePart(name: string, source: THREE.Material): boolean {
 
 function isWoodPart(name: string, source: THREE.Material): boolean {
   if (/wood|bark|trunk|branch|log|stump|endgrain|root/i.test(name)) return true;
+
+  // Pixel_Tree pixel-bark shaders ALSO have uStruct/uPalette, exactly like leaves.
+  // These uniforms are bark-specific and must win over the generic foliage test.
   if (getUniform(source, 'uBarkColor')) return true;
+  if (getUniform(source, 'uBarkVScale') !== undefined) return true;
+  if (getUniform(source, 'uMossAmount') !== undefined && getUniform(source, 'uRootY') !== undefined) return true;
+
   return false;
 }
 
@@ -305,8 +311,10 @@ function buildPixelIslandMaterial(
   ownedTextures: THREE.Texture[],
   styleMaterial: LambertStyler
 ): THREE.MeshLambertMaterial {
-  const foliage = isFoliagePart(partName, source);
-  const wood = !foliage && isWoodPart(partName, source);
+  // IMPORTANT: bark and foliage both use uStruct/uPalette in Pixel_Tree.
+  // Classify wood FIRST or the trunk is mistaken for a leaf atlas.
+  const wood = isWoodPart(partName, source);
+  const foliage = !wood && isFoliagePart(partName, source);
   const baseColor = chooseBaseColor(preset, foliage, source);
 
   let map: THREE.Texture | null = null;
