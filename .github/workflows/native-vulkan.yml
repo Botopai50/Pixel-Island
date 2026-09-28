@@ -43,6 +43,12 @@ jobs:
           name: native-vulkan-shaders
           path: native/runtime-shaders
 
+      - name: Bundle exact original procedural runtime
+        shell: pwsh
+        run: |
+          npm install --no-audit --no-fund
+          npx esbuild native/world_runtime.ts --bundle --platform=neutral --format=iife --alias:three=./native/three_shim.ts --outfile=native/world.bundle.js
+
       - name: Configure Vulkan prototype
         shell: pwsh
         run: |
@@ -54,7 +60,6 @@ jobs:
       - name: Verify original-world numerical parity
         shell: pwsh
         run: |
-          npm install --no-audit --no-fund
           npx esbuild native/parity_reference.ts --bundle --platform=node --format=cjs --outfile=native/parity_reference.cjs
 
           foreach ($seed in @("Avalon", "Teste-123", "Ilha-Ancestral")) {
@@ -84,6 +89,7 @@ jobs:
           New-Item -ItemType Directory -Force native/package/shaders | Out-Null
           Copy-Item native/build/Release/PixelIslandNative.exe native/package/
           Copy-Item native/runtime-shaders/*.spv native/package/shaders/
+          Copy-Item native/world.bundle.js native/package/
           Copy-Item native/INICIAR.bat native/package/
           Copy-Item native/README.md native/package/
           Compress-Archive -Path native/package/* -DestinationPath Pixel-Island-Native-Vulkan-Windows.zip -Force
