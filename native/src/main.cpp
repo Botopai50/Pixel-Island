@@ -1624,7 +1624,7 @@ private:
         infos[0].sampler=terrainTextureSampler_;
         infos[0].imageView=chunkTexture.view;
         infos[0].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        infos[1].sampler=terrainTextureSampler_;
+        infos[1].sampler=wallTextureSampler_;
         infos[1].imageView=wallTexture_.view;
         infos[1].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -1674,6 +1674,11 @@ private:
         sci.maxAnisotropy=1.0f;
         sci.borderColor=VK_BORDER_COLOR_INT_OPAQUE_BLACK;
         check(vkCreateSampler(device_,&sci,nullptr,&terrainTextureSampler_),"vkCreateSampler(terrain)");
+
+        VkSamplerCreateInfo wallSci=sci;
+        wallSci.magFilter=VK_FILTER_NEAREST;
+        wallSci.minFilter=VK_FILTER_NEAREST;
+        check(vkCreateSampler(device_,&wallSci,nullptr,&wallTextureSampler_),"vkCreateSampler(walls)");
 
         VkDescriptorPoolSize ps{};
         ps.type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2493,6 +2498,7 @@ private:
             }
             destroyTexture(fallbackTexture_);
             destroyTexture(wallTexture_);
+            if(wallTextureSampler_)vkDestroySampler(device_,wallTextureSampler_,nullptr);
             if(terrainTextureSampler_)vkDestroySampler(device_,terrainTextureSampler_,nullptr);
             if(terrainTextureView_)vkDestroyImageView(device_,terrainTextureView_,nullptr);
             if(terrainTextureImage_)vkDestroyImage(device_,terrainTextureImage_,nullptr);
@@ -2544,6 +2550,7 @@ private:
     VkDeviceMemory terrainTextureMemory_=VK_NULL_HANDLE;
     VkImageView terrainTextureView_=VK_NULL_HANDLE;
     VkSampler terrainTextureSampler_=VK_NULL_HANDLE;
+    VkSampler wallTextureSampler_=VK_NULL_HANDLE;
     TextureGpu fallbackTexture_{};
     TextureGpu wallTexture_{};
     bool terrainTextureInitialized_=false;
