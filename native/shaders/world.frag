@@ -184,6 +184,23 @@ void main(){
     vec3 color;
     if(mode>0.5&&mode<1.5) {
         color=terrainColor()*vLight;
+    } else if(mode>3.5&&mode<4.5) {
+        vec4 texel=texture(uChunkTopPack,vUV);
+        if(texel.a<0.5)discard;
+        // Reforço de alfa do original baseado no LOD do atlas.
+        vec2 ts=vUV*vec2(640.0,640.0);
+        vec2 dx=dFdx(ts),dy=dFdy(ts);
+        float lod=max(0.5*log2(max(dot(dx,dx),dot(dy,dy))),0.0);
+        float alphaBoost=clamp(texel.a*(1.0+lod*0.35),0.0,1.0);
+        if(alphaBoost<0.5)discard;
+
+        // Mesma troca seca árvore real -> impostor.
+        float dist=distance(vWorldPos.xz,pc.terrain.xy);
+        float endD=(3.0-0.8)*64.0;
+        float startD=endD-0.05;
+        float hash=fract(sin(dot(floor(vWorldPos.xz*4.0),vec2(12.9898,78.233)))*43758.5453);
+        if(hash<=1.0-smoothstep(startD,endD,dist))discard;
+        color=texel.rgb*vColor*vLight;
     } else if(mode>2.5&&mode<3.5) {
         vec2 uv=vUV*pc.terrain.xy;
         if(pc.terrain.w>0.5) uv.y=1.0-uv.y;
