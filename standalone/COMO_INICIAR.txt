@@ -1,0 +1,20 @@
+PIXEL ISLAND - VERSAO STANDALONE
+
+COMO ABRIR:
+1. Extraia o ZIP para uma pasta.
+2. Dê dois cliques em INICIAR_JOGO.bat.
+3. O navegador abrirá automaticamente.
+
+NAO PRECISA INSTALAR:
+- Node.js
+- npm
+- Python
+- Vite
+
+O jogo já está compilado dentro desta pasta.
+O inicializador usa apenas o PowerShell do Windows para criar um servidor local temporário.
+
+IMPORTANTE:
+- Não feche a janela preta enquanto estiver jogando.
+- Para encerrar o servidor, pressione Ctrl+C na janela do inicializador.
+- Caso o Windows mostre um aviso do firewall, a conexão usada é somente em 127.0.0.1 (seu próprio computador).
