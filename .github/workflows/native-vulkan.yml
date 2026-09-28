@@ -52,6 +52,13 @@ jobs:
           node -e "require('./native/world.bundle.js'); const fs=require('fs'); fs.writeFileSync('native/forge_globals.bin', Buffer.from(globalThis.pixelGetForgeGlobals('Avalon'))); fs.writeFileSync('native/spawn.bin', Buffer.from(globalThis.pixelGetSpawn('Avalon')));"
           npx esbuild native/export_pixel_tree_assets.ts --bundle --platform=node --format=cjs --external:@napi-rs/canvas --outfile=native/export_pixel_tree_assets.cjs
           node native/export_pixel_tree_assets.cjs
+          $vite = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "npx vite --host 127.0.0.1 --port 5173" -PassThru -WindowStyle Hidden
+          try {
+            Start-Sleep -Seconds 4
+            node native/export_impostor_atlas.cjs
+          } finally {
+            Stop-Process -Id $vite.Id -Force -ErrorAction SilentlyContinue
+          }
 
       - name: Configure Vulkan prototype
         shell: pwsh
@@ -103,6 +110,8 @@ jobs:
           Copy-Item native/spawn.bin native/package/
           Copy-Item native/pixel_tree_assets.bin native/package/
           Copy-Item native/pixel_tree_presets.json native/package/
+          Copy-Item native/tree_impostor_atlas.bin native/package/
+          Copy-Item native/tree_impostor_info.json native/package/
           Copy-Item native/INICIAR.bat native/package/
           Copy-Item native/README.md native/package/
           Compress-Archive -Path native/package/* -DestinationPath Pixel-Island-Native-Vulkan-Windows.zip -Force
