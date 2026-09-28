@@ -2074,7 +2074,7 @@ private:
         }
 
         // Distant Horizons original, nível 0. O preset "integrada fraca" mantém 1 nível a 55%.
-        if(force||std::hypot(x-lastHorizonPlanX_,z-lastHorizonPlanZ_)>=200.0f){
+        if(worldReady_&&(force||std::hypot(x-lastHorizonPlanX_,z-lastHorizonPlanZ_)>=200.0f)){
             lastHorizonPlanX_=x;lastHorizonPlanZ_=z;
             constexpr float size=1024.0f;
             constexpr int seg=64;
