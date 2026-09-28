@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -31,7 +32,21 @@ public:
         bool detail
     );
 
+    std::vector<uint8_t> generateChunkTexture(
+        const std::string& seed,
+        double minWorldX,
+        double minWorldZ,
+        double chunkSize,
+        double density
+    );
+
 private:
+    std::vector<uint8_t> callByteBuffer(
+        const char* functionName,
+        const std::vector<std::string>& stringArgs,
+        const std::vector<double>& numberArgs
+    );
+
     std::vector<float> callFloatBuffer(
         const char* functionName,
         const std::vector<std::string>& stringArgs,
