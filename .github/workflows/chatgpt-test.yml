@@ -1,0 +1,42 @@
+name: ChatGPT Test Build
+
+on:
+  push:
+    branches: ["chatgpt/tree-variation-test-20260928"]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout test branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript and production build
+        run: npm run build
+
+      - name: Procedural tests
+        run: npm test
+
+      - name: Package test source
+        run: |
+          mkdir -p artifact
+          git archive --format=zip --output=artifact/Pixel-Island-tree-variation-test.zip HEAD
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: pixel-island-tree-variation-test
+          path: artifact/Pixel-Island-tree-variation-test.zip
+          if-no-files-found: error
