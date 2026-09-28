@@ -74,8 +74,8 @@ void ExactStreamingWorker::requestImpostors(int tx,int tz,float minX,float minZ,
 bool ExactStreamingWorker::take(ExactStreamResult& out){
     std::lock_guard<std::mutex> lock(m_);
     if(ready_.empty())return false;
-    out=std::move(ready_.back());
-    ready_.pop_back();
+    out=std::move(ready_.front());
+    ready_.erase(ready_.begin());
     return true;
 }
 bool ExactStreamingWorker::takeError(std::string& out){
