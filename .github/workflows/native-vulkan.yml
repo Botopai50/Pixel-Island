@@ -21,11 +21,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y glslang-tools
 
+      - name: Generate parity shaders from original sources
+        run: |
+          node native/generate_water_shaders.cjs
+
       - name: Compile Vulkan shaders
         run: |
           mkdir -p native/compiled-shaders
           glslangValidator -V --target-env vulkan1.0 native/shaders/world.vert -o native/compiled-shaders/world.vert.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/world.frag -o native/compiled-shaders/world.frag.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/water.vert -o native/compiled-shaders/water.vert.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/water.frag -o native/compiled-shaders/water.frag.spv
 
       - uses: actions/upload-artifact@v4
         with:
