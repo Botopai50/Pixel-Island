@@ -1678,6 +1678,16 @@ private:
         wci.bindingCount=static_cast<uint32_t>(waterBindings.size());
         wci.pBindings=waterBindings.data();
         check(vkCreateDescriptorSetLayout(device_,&wci,nullptr,&waterDescriptorSetLayout_),"vkCreateDescriptorSetLayout(water)");
+
+        VkDescriptorSetLayoutBinding skyBinding{};
+        skyBinding.binding=0;
+        skyBinding.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        skyBinding.descriptorCount=1;
+        skyBinding.stageFlags=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo sci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        sci.bindingCount=1;
+        sci.pBindings=&skyBinding;
+        check(vkCreateDescriptorSetLayout(device_,&sci,nullptr,&skyDescriptorSetLayout_),"vkCreateDescriptorSetLayout(sky)");
     }
 
     VkSurfaceFormatKHR chooseFormat(const std::vector<VkSurfaceFormatKHR>& f) {
