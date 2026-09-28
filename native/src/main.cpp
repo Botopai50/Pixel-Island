@@ -1826,9 +1826,11 @@ private:
             VkPipelineDepthStencilStateCreateInfo bds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
             bds.depthTestEnable=VK_FALSE;bds.depthWriteEnable=VK_FALSE;
 
-            VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            lci.setLayoutCount=1;lci.pSetLayouts=&blitDescriptorSetLayout_;
-            check(vkCreatePipelineLayout(device_,&lci,nullptr,&blitPipelineLayout_),"vkCreatePipelineLayout(blit)");
+            if(blitPipelineLayout_==VK_NULL_HANDLE){
+                VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                lci.setLayoutCount=1;lci.pSetLayouts=&blitDescriptorSetLayout_;
+                check(vkCreatePipelineLayout(device_,&lci,nullptr,&blitPipelineLayout_),"vkCreatePipelineLayout(blit)");
+            }
 
             VkGraphicsPipelineCreateInfo pci=ci;
             pci.pStages=bst;
@@ -1874,9 +1876,11 @@ private:
             VkPipelineColorBlendStateCreateInfo wblend{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
             wblend.attachmentCount=1;wblend.pAttachments=&watt;
 
-            VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            lci.setLayoutCount=1;lci.pSetLayouts=&waterDescriptorSetLayout_;
-            check(vkCreatePipelineLayout(device_,&lci,nullptr,&waterPipelineLayout_),"vkCreatePipelineLayout(water)");
+            if(waterPipelineLayout_==VK_NULL_HANDLE){
+                VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                lci.setLayoutCount=1;lci.pSetLayouts=&waterDescriptorSetLayout_;
+                check(vkCreatePipelineLayout(device_,&lci,nullptr,&waterPipelineLayout_),"vkCreatePipelineLayout(water)");
+            }
 
             VkGraphicsPipelineCreateInfo pci=ci;
             pci.pStages=wst;
@@ -3810,6 +3814,7 @@ private:
         createPipeline();
         createDepthResources();
         createFramebuffers();
+        if(postDescriptorPool_)refreshPostDescriptors();
     }
 
     void cleanup() {
