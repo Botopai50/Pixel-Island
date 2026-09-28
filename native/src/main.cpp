@@ -2240,9 +2240,11 @@ private:
     PushConstants makePush() {
         Mat4 view{},proj{};
         Vec3 eye{};
+        float focusDistance=0.0f;
         if(observerMode_) {
             eye=observerEye();
             const Vec3 target{focus_.x,focus_.y,focus_.z};
+            focusDistance=length(eye-target);
             view=lookAt(eye,target,{0,1,0});
             const float aspect=static_cast<float>(swapExtent_.width)/swapExtent_.height;
             const float half=observerSize_*0.5f;
@@ -2254,16 +2256,17 @@ private:
             proj=perspectiveVulkan(74.0f*PI/180.0f,static_cast<float>(swapExtent_.width)/swapExtent_.height,0.08f,2400.0f);
         }
 
+        // skyAtmosphere.ts + preset "integrada fraca".
+        const float fogNear=observerMode_?std::max(180.0f,focusDistance+120.0f):12.0f;
+        const float fogFar=observerMode_?std::max(1000.0f,focusDistance+700.0f):1400.0f;
+
         PushConstants p{};
         p.viewProj=multiply(proj,view);
-        p.cameraFog[0]=eye.x;p.cameraFog[1]=eye.y;p.cameraFog[2]=eye.z;
-        p.cameraFog[3]=observerMode_?std::max(fogFar_,observerSize_*2.4f):fogFar_;
-        p.sunAmbient[0]=0.36f;p.sunAmbient[1]=0.82f;p.sunAmbient[2]=0.43f;p.sunAmbient[3]=0.34f;
-        p.environment[0]=time_;p.environment[1]=observerMode_?1.0f:0.0f;p.environment[2]=0.0f;p.environment[3]=0.0f;
-        p.terrainAtlas[0]=terrainTextureOriginX_;
-        p.terrainAtlas[1]=terrainTextureOriginZ_;
-        p.terrainAtlas[2]=TERRAIN_SIZE;
-        p.terrainAtlas[3]=0.0f;
+        p.cameraFog[0]=eye.x;p.cameraFog[1]=eye.y;p.cameraFog[2]=eye.z;p.cameraFog[3]=fogNear;
+        // NOON: elevação 45°, azimute 140°.
+        p.sunAmbient[0]=0.45452f;p.sunAmbient[1]=0.70711f;p.sunAmbient[2]=-0.54168f;p.sunAmbient[3]=0.34f;
+        p.environment[0]=time_;p.environment[1]=fogFar;p.environment[2]=0.0f;p.environment[3]=1.0f;
+        p.terrain[0]=p.terrain[1]=p.terrain[2]=p.terrain[3]=0.0f;
         return p;
     }
 
@@ -2272,7 +2275,8 @@ private:
         check(vkBeginCommandBuffer(cmd,&bi),"vkBeginCommandBuffer");
 
         VkClearValue clear[2]{};
-        clear[0].color={{0.52f,0.70f,0.79f,1.0f}};
+        // skyColor NOON (#6aa8ea), em linear aproximado.
+        clear[0].color={{0.144f,0.394f,0.823f,1.0f}};
         clear[1].depthStencil={1.0f,0};
 
         VkRenderPassBeginInfo ri{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
@@ -2286,24 +2290,52 @@ private:
         vkCmdSetViewport(cmd,0,1,&vp);
         vkCmdSetScissor(cmd,0,1,&sc);
 
-        vkCmdBindDescriptorSets(
-            cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,
-            0,1,&descriptorSet_,0,nullptr
-        );
-
-        PushConstants p=makePush();
-        p.terrainAtlas[3]=1.0f;
-        vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
-
         VkDeviceSize off[2]={0,0};
-        VkBuffer terrainBuffers[2]={terrainVB_.buffer,dummyInstance_.buffer};
-        vkCmdBindVertexBuffers(cmd,0,2,terrainBuffers,off);
-        vkCmdBindIndexBuffer(cmd,terrainIB_.buffer,0,VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd,terrainIndexCount_,1,0,0,0);
+        PushConstants base=makePush();
 
-        p.terrainAtlas[3]=0.0f;
+        // 1) Distant Horizons original por baixo dos chunks.
+        if(!horizonTiles_.empty()){
+            PushConstants p=base;
+            p.environment[2]=2.0f;
+            const float chunkEnd=std::max(160.0f,(activeViewRadius()-0.8f)*64.0f);
+            p.terrain[2]=chunkEnd-120.0f;
+            p.terrain[3]=3000.0f*0.55f;
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,0,1,&descriptorSet_,0,nullptr);
+            vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
+            for(const auto& [key,h]:horizonTiles_){
+                if(!h.mesh.indexCount)continue;
+                VkBuffer bufs[2]={h.mesh.vb.buffer,dummyInstance_.buffer};
+                vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
+                vkCmdBindIndexBuffer(cmd,h.mesh.ib.buffer,0,VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(cmd,h.mesh.indexCount,1,0,0,0);
+            }
+        }
+
+        // 2) Chunks 64x64 originais, cada um com sua textura e LOD.
+        for(const auto& [key,ch]:exactChunks_){
+            if(!ch.mesh.indexCount)continue;
+            PushConstants p=base;
+            p.environment[2]=1.0f;
+            p.environment[3]=ch.density;
+            p.terrain[0]=ch.cx*64.0f-32.0f;
+            p.terrain[1]=ch.cz*64.0f-32.0f;
+            p.terrain[2]=64.0f;
+            p.terrain[3]=std::max(160.0f,(activeViewRadius()-0.8f)*64.0f);
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,0,1,&ch.descriptor,0,nullptr);
+            vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
+            VkBuffer bufs[2]={ch.mesh.vb.buffer,dummyInstance_.buffer};
+            vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
+            vkCmdBindIndexBuffer(cmd,ch.mesh.ib.buffer,0,VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd,ch.mesh.indexCount,1,0,0,0);
+        }
+
+        // 3) Vegetação/props. Enquanto os assets finais Pixel_Tree não entram, estes ainda são
+        // provisórios; o terreno/horizon já não depende mais deles.
+        PushConstants p=base;
+        p.environment[2]=0.0f;
+        p.environment[3]=1.0f;
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,0,1,&descriptorSet_,0,nullptr);
         vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
-
         for(int i=0;i<MESH_KIND_COUNT;i++) {
             if(visible_[i].empty()) continue;
             VkBuffer bufs[2]={meshes_[i].vb.buffer,instanceBuffers_[i].buffer};
