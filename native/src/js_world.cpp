@@ -179,3 +179,56 @@ std::vector<uint8_t> JsWorldRuntime::generateChunkTexture(
         { minWorldX, minWorldZ, chunkSize, density }
     );
 }
+
+
+std::vector<uint8_t> JsWorldRuntime::generateExactChunk(
+    const std::string& seed,
+    int cx,
+    int cz,
+    double chunkSize,
+    double density,
+    int segments,
+    bool walls
+) {
+    return callByteBuffer(
+        "pixelGenerateExactChunk",
+        { seed },
+        {
+            static_cast<double>(cx),
+            static_cast<double>(cz),
+            chunkSize,
+            density,
+            static_cast<double>(segments),
+            walls ? 1.0 : 0.0
+        }
+    );
+}
+
+std::vector<uint8_t> JsWorldRuntime::generateHorizonTile(
+    const std::string& seed,
+    double minX,
+    double minZ,
+    double size,
+    int segments
+) {
+    return callByteBuffer(
+        "pixelGenerateHorizonTile",
+        { seed },
+        { minX, minZ, size, static_cast<double>(segments) }
+    );
+}
+
+std::vector<uint8_t> JsWorldRuntime::generateImpostorBlock(
+    const std::string& seed,
+    double minX,
+    double minZ,
+    double size,
+    double originX,
+    double originZ
+) {
+    return callByteBuffer(
+        "pixelGenerateImpostorBlock",
+        { seed },
+        { minX, minZ, size, originX, originZ }
+    );
+}
