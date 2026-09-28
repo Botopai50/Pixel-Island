@@ -10,6 +10,7 @@ layout(location=6) in vec4 instanceM3;
 layout(location=7) in vec4 instanceColor;
 layout(location=8) in vec3 inWall;
 layout(location=9) in float inMorph;
+layout(location=10) in vec2 inUV;
 
 layout(push_constant) uniform PushConstants {
     mat4 viewProj;
@@ -25,6 +26,7 @@ layout(location=2) out vec3 vWorldNormal;
 layout(location=3) out vec3 vWall;
 layout(location=4) out float vLight;
 layout(location=5) out float vMode;
+layout(location=6) out vec2 vUV;
 
 void main(){
     mat4 inst=mat4(instanceM0,instanceM1,instanceM2,instanceM3);
@@ -55,4 +57,5 @@ void main(){
     vWall=inWall;
     vLight=mix(pc.sunAmbient.w,1.0,toon);
     vMode=mode;
+    vUV=inUV;
 }
