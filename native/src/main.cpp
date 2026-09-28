@@ -1034,10 +1034,11 @@ public:
         createGpuWorldResources();
 
         const std::filesystem::path bundle=std::filesystem::path(executableDir())/L"world.bundle.js";
+        loadOriginalSpawn();
         logLine("APP: iniciando streaming exato de chunks/horizon");
         exactStreamer_=std::make_unique<ExactStreamingWorker>(bundle);
         horizonStreamer_=std::make_unique<ExactStreamingWorker>(bundle);
-        planExactStreaming(0.0f,0.0f,true);
+        planExactStreaming(spawnX_,spawnZ_,true);
 
         mainLoop();
         vkDeviceWaitIdle(device_);
@@ -2021,6 +2022,20 @@ private:
         requestedCenterX_=worldCenterX_; requestedCenterZ_=worldCenterZ_;
     }
 
+    void loadOriginalSpawn() {
+        const std::wstring path=executableDir()+L"\\spawn.bin";
+        auto raw=readBinary(path);
+        if(raw.size()<sizeof(float)*3u) throw std::runtime_error("spawn.bin ausente ou invalido.");
+        float vals[3]{};
+        std::memcpy(vals,raw.data(),sizeof(vals));
+        spawnX_=vals[0];spawnZ_=vals[1];spawnElevation_=vals[2];
+        focus_={spawnX_,0.0f,spawnZ_};
+        const int cx=static_cast<int>(std::floor((spawnX_+32.0f)/64.0f));
+        const int cz=static_cast<int>(std::floor((spawnZ_+32.0f)/64.0f));
+        spawnCx_=cx;spawnCz_=cz;
+        logLine("SPAWN: "+std::to_string(spawnX_)+","+std::to_string(spawnZ_)+" h="+std::to_string(spawnElevation_));
+    }
+
     float heightAt(float x,float z) const {
         const int cx=static_cast<int>(std::floor((x+32.0f)/64.0f));
         const int cz=static_cast<int>(std::floor((z+32.0f)/64.0f));
@@ -2366,11 +2381,11 @@ private:
                         it->second=std::move(fresh);
                     }else exactChunks_.emplace(key,std::move(fresh));
 
-                    if(!worldReady_&&exactChunks_.contains(chunkKey(0,0))){
+                    if(!worldReady_&&exactChunks_.contains(chunkKey(spawnCx_,spawnCz_))){
                         worldReady_=true;
-                        focus_={0,heightAt(0,0),0};
+                        focus_={spawnX_,0.0f,spawnZ_};
                         camera_=observerEye();
-                        logLine("APP: chunk central pronto; streaming continua em background");
+                        logLine("APP: chunk de spawn pronto; streaming continua em background");
                     }
                 }
             }
@@ -2830,6 +2845,8 @@ private:
     int exactCenterCx_=999999,exactCenterCz_=999999;
     float lastHorizonPlanX_=1e9f,lastHorizonPlanZ_=1e9f;
     uint64_t streamGeneration_=1;
+    float spawnX_=0.0f,spawnZ_=0.0f,spawnElevation_=0.0f;
+    int spawnCx_=0,spawnCz_=0;
 };
 
 } // namespace
