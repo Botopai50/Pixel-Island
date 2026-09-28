@@ -266,6 +266,12 @@ function isFoliagePart(name: string, source: THREE.Material): boolean {
   return false;
 }
 
+function isWoodPart(name: string, source: THREE.Material): boolean {
+  if (/wood|bark|trunk|branch|log|stump|endgrain|root/i.test(name)) return true;
+  if (getUniform(source, 'uBarkColor')) return true;
+  return false;
+}
+
 function chooseBaseColor(
   preset: PixelTreePresetKey,
   foliage: boolean,
@@ -300,12 +306,18 @@ function buildPixelIslandMaterial(
   styleMaterial: LambertStyler
 ): THREE.MeshLambertMaterial {
   const foliage = isFoliagePart(partName, source);
+  const wood = !foliage && isWoodPart(partName, source);
   const baseColor = chooseBaseColor(preset, foliage, source);
 
   let map: THREE.Texture | null = null;
   let alphaTest = 0;
 
-  if (foliage) {
+  if (wood) {
+    // Madeira do Pixel_Tree vira albedo opaco comum do Pixel-Island.
+    // Nenhum alpha/alphaTest do material original é reaproveitado.
+    map = bakePalettePattern(source, baseColor, seed, ownedTextures);
+    alphaTest = 0;
+  } else if (foliage) {
     const cfg = TREE_PRESETS[preset] as any;
     const hasStructAtlas = !!getTexture(source, 'uStruct');
     const legacyAtlas = getTexture(source, 'uAtlas');
@@ -334,12 +346,18 @@ function buildPixelIslandMaterial(
   }
 
   if (!map) {
-    const sourceMap = (source as any).map;
-    if (sourceMap?.isTexture) {
-      map = cloneResolvedColorTexture(sourceMap, ownedTextures);
-      alphaTest = Number((source as any).alphaTest ?? 0);
-    } else {
+    if (wood) {
       map = bakePalettePattern(source, baseColor, seed, ownedTextures);
+      alphaTest = 0;
+    } else {
+      const sourceMap = (source as any).map;
+      if (sourceMap?.isTexture) {
+        map = cloneResolvedColorTexture(sourceMap, ownedTextures);
+        alphaTest = Number((source as any).alphaTest ?? 0);
+      } else {
+        map = bakePalettePattern(source, baseColor, seed, ownedTextures);
+        alphaTest = 0;
+      }
     }
   }
 
@@ -348,9 +366,13 @@ function buildPixelIslandMaterial(
     color: map ? 0xffffff : baseColor,
     flatShading: false,
     vertexColors: !!geometry.getAttribute('color'),
-    side: foliage || source.side === THREE.DoubleSide ? THREE.DoubleSide : THREE.FrontSide,
-    shadowSide: foliage ? THREE.DoubleSide : THREE.FrontSide,
-    alphaTest: alphaTest > 0 ? 0.5 : 0,
+    side: wood
+      ? THREE.FrontSide
+      : (foliage || source.side === THREE.DoubleSide ? THREE.DoubleSide : THREE.FrontSide),
+    shadowSide: wood
+      ? THREE.FrontSide
+      : (foliage ? THREE.DoubleSide : THREE.FrontSide),
+    alphaTest: foliage ? 0.5 : 0,
     opacity: 1.0,
     transparent: false,
     alphaToCoverage: false,
