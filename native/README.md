@@ -1,86 +1,113 @@
 # Pixel Island Native — C++20 + Vulkan
 
-Protótipo nativo criado para medir se uma arquitetura C++/Vulkan consegue entregar um ganho real de desempenho antes de portar o jogo inteiro.
+Esta branch é a migração nativa do Pixel-Island. O runtime final não usa HTML, Three.js, navegador ou Node.js.
 
-## O que já existe
+## Sistemas já portados
 
-- executável Windows nativo, sem navegador e sem Node.js;
-- Vulkan 1.0 + swapchain Win32;
-- terreno procedural por seed;
-- geração do mundo em thread separada;
-- streaming por células de 256 m;
-- milhares de árvores procedurais distribuídas de forma determinística;
-- árvores renderizadas com instancing;
-- três LODs de árvore;
-- culling por distância e direção;
-- fog para esconder o corte agressivo de distância;
-- iluminação toon simples;
-- profundidade real;
-- no máximo quatro draws principais por frame:
-  - terreno;
-  - árvores LOD0;
-  - árvores LOD1;
-  - árvores LOD2;
-- métricas no título da janela: GPU, FPS, frame time, árvores e LODs.
+- Vulkan + Win32 nativo;
+- mundo procedural determinístico por seed;
+- massas continentais/ilhas em grade;
+- relevo macro + detalhes;
+- praias e oceano;
+- rio principal e lago interior;
+- cânions;
+- vulcão, cratera e lava;
+- temperatura e umidade;
+- biomas verdes, deserto, pântano e neve;
+- árvores com três LODs;
+- rochas;
+- arbustos;
+- grama;
+- flores;
+- cactos;
+- gelo;
+- cavernas;
+- geotermia/geysers;
+- landmarks;
+- streaming do mundo em worker thread;
+- instancing Vulkan para todas as classes de props;
+- culling por distância/direção;
+- fog para esconder o corte agressivo de LOD;
+- água e lava animadas em um único passe;
+- modo observador ortográfico;
+- modo primeira pessoa;
+- métricas no título da janela.
 
-## Objetivo
+## Arquitetura
 
-Este não é ainda o port completo do Pixel-Island.
+O gerador produz apenas dados do mundo. O renderer não cria um objeto C++ por árvore.
 
-A ideia é testar no hardware alvo se o núcleo nativo realmente vale a migração. Se esse protótipo já rodar muito melhor que a versão Three.js, o próximo passo é portar por etapas:
+Exemplo:
 
-1. sistema de chunks/clipmap de terreno;
-2. assets reais do Pixel_Tree;
-3. GPU culling e indirect drawing;
-4. água;
-5. sombras;
-6. biomas;
-7. landmarks;
-8. gameplay.
+seed -> WorldData -> buffers -> instancing -> LOD/culling -> Vulkan
+
+Uma classe de objeto usa uma malha compartilhada e um único buffer de instâncias.
 
 ## Controles
 
-- W / A / S / D: mover;
-- Espaço: subir;
-- Ctrl: descer;
-- Shift: movimento rápido;
-- Setas esquerda/direita: girar;
-- Setas cima/baixo: inclinar câmera;
-- Esc: sair.
+### Geral
 
-## Rodar
+- TAB: alternar Observador / Primeira Pessoa
+- 1: alcance baixo (520 m)
+- 2: alcance médio (720 m)
+- 3: alcance alto (980 m)
+- Esc: sair
 
-Extraia o ZIP e execute:
+### Observador
 
-`INICIAR.bat`
+- W/A/S/D: mover pelo mundo
+- Setas esquerda/direita: girar
+- Q/E: afastar/aproximar zoom
+- Shift: movimento rápido
 
-ou diretamente:
+### Primeira pessoa
 
-`PixelIslandNative.exe`
+- W/A/S/D: andar
+- Setas: olhar
+- Shift: correr
 
-Os arquivos `.spv` precisam permanecer dentro da pasta `shaders`.
+## Performance
 
-## Requisito de runtime
+A versão nativa evita os custos mais pesados da antiga arquitetura:
 
-É necessário um driver de vídeo com Vulkan instalado. Em GPUs Intel isso normalmente vem junto do driver gráfico atual.
+- sem DOM;
+- sem WebGL/Three.js;
+- sem reflection pass duplicando a cena;
+- sem milhares de objetos de cena;
+- sem um material por árvore;
+- geração procedural fora do render loop;
+- poucos draws por classe de objeto;
+- LOD agressivo;
+- grama apenas perto;
+- fog adaptado ao alcance.
 
-Se aparecer a mensagem "Nenhuma GPU com Vulkan encontrada", atualize o driver Intel antes de concluir que a GPU não suporta o protótipo.
+## O que ainda não é uma cópia visual pixel-a-pixel da versão Three.js
 
-## Compilar do fonte no Windows
+A lógica estrutural do mundo está sendo portada, mas alguns sistemas visuais ainda usam equivalentes nativos mais baratos:
+
+- árvores usam malhas Vulkan low-poly próprias nesta versão, não o asset final exportado do Pixel_Tree;
+- água não usa a reflexão planar antiga;
+- o SMSR ainda não foi reimplementado integralmente;
+- recifes e gelo avançado ainda usam representação simplificada;
+- UI de Texture Forge/Pegman ainda não foi portada;
+- áudio ainda não está no runtime nativo.
+
+Isso é intencional nesta etapa: primeiro manter o jogo funcional e rápido; depois substituir cada representação simplificada pelo equivalente visual final sem mudar a arquitetura.
+
+## Executar
+
+Extraia o pacote e execute `INICIAR.bat` ou `PixelIslandNative.exe`.
+
+Requisito: driver de vídeo com Vulkan.
+
+## Compilar
 
 Requisitos:
 
-- Visual Studio 2022 com "Desktop development with C++";
+- Visual Studio 2022/2026 com Desktop development with C++;
 - CMake;
-- vcpkg;
-- glslangValidator ou shaders `.spv` já compilados.
+- vcpkg.
 
-Defina:
+Defina `VCPKG_ROOT` e execute `build_windows.bat`.
 
-`VCPKG_ROOT=C:\vcpkg`
-
-Depois execute:
-
-`build_windows.bat`
-
-O projeto usa apenas Vulkan-Headers/Vulkan-Loader como dependência de renderização. A janela e input usam Win32 diretamente.
+O build usa Vulkan-Headers/Vulkan-Loader. Shaders GLSL são compilados para SPIR-V no pipeline.
