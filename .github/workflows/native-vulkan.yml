@@ -51,6 +51,33 @@ jobs:
       - name: Build Release
         run: cmake --build native/build --config Release --parallel
 
+      - name: Verify original-world numerical parity
+        shell: pwsh
+        run: |
+          npm install --no-audit --no-fund
+          npx esbuild native/parity_reference.ts --bundle --platform=node --format=cjs --outfile=native/parity_reference.cjs
+
+          foreach ($seed in @("Avalon", "Teste-123", "Ilha-Ancestral")) {
+            node native/parity_reference.cjs $seed | Out-File -Encoding ascii native/ref-$seed.csv
+            native/build/Release/PixelIslandParity.exe $seed | Out-File -Encoding ascii native/cpp-$seed.csv
+
+            $ref = Get-Content native/ref-$seed.csv
+            $cpp = Get-Content native/cpp-$seed.csv
+            if ($ref.Count -ne $cpp.Count) { throw "Parity row count mismatch for $seed" }
+
+            for ($i=0; $i -lt $ref.Count; $i++) {
+              $a = $ref[$i].Split(',') | ForEach-Object {[double]$_}
+              $b = $cpp[$i].Split(',') | ForEach-Object {[double]$_}
+              for ($j=0; $j -lt $a.Count; $j++) {
+                $err = [math]::Abs($a[$j] - $b[$j])
+                if ($err -gt 0.00001) {
+                  throw "Parity mismatch seed=$seed row=$i col=$j TS=$($a[$j]) C++=$($b[$j]) err=$err"
+                }
+              }
+            }
+            Write-Host "Parity OK: $seed"
+          }
+
       - name: Package runnable Windows build
         shell: pwsh
         run: |
