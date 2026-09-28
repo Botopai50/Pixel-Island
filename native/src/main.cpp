@@ -1071,7 +1071,10 @@ private:
         }
         switch(msg) {
             case WM_KEYDOWN:
+                if(app && wp<256) app->input_.keys[static_cast<size_t>(wp)]=true;
+                return 0;
             case WM_SYSKEYDOWN:
+                if(wp==VK_F4 && (GetKeyState(VK_MENU)&0x8000)) return DefWindowProcW(hwnd,msg,wp,lp);
                 if(app && wp<256) app->input_.keys[static_cast<size_t>(wp)]=true;
                 return 0;
             case WM_KEYUP:
@@ -2482,7 +2485,7 @@ private:
     }
 
     void updateStreaming() {
-        const Vec3 anchor=observerMode_?focus_:camera_;
+        const Vec3 anchor=transitionMode_!=0?transitionPos_:(observerMode_?focus_:camera_);
         planExactStreaming(anchor.x,anchor.z,false);
         processExactStreaming();
     }
