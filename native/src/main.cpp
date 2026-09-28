@@ -1001,7 +1001,7 @@ struct PushConstants {
     float cameraFog[4];
     float sunAmbient[4];
     float environment[4];
-    float terrainAtlas[4];
+    float terrain[4];
 };
 
 class VulkanApp {
