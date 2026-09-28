@@ -17,6 +17,7 @@ layout(location=2) in vec3 vWorldNormal;
 layout(location=3) in vec3 vWall;
 layout(location=4) in float vLight;
 layout(location=5) in float vMode;
+layout(location=6) in vec2 vUV;
 layout(location=0) out vec4 outColor;
 
 float h21(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453123);}
@@ -181,9 +182,19 @@ void main(){
     }
 
     vec3 color;
-    if(mode>0.5&&mode<1.5) color=terrainColor()*vLight;
-    else if(mode>1.5) color=horizonPixelTone(vColor)*vLight;
-    else color=vColor*vLight;
+    if(mode>0.5&&mode<1.5) {
+        color=terrainColor()*vLight;
+    } else if(mode>2.5&&mode<3.5) {
+        vec2 uv=vUV*pc.terrain.xy;
+        if(pc.terrain.w>0.5) uv.y=1.0-uv.y;
+        vec4 texel=texture(uChunkTopPack,uv);
+        if(pc.terrain.z>0.0 && texel.a<pc.terrain.z) discard;
+        color=texel.rgb*vColor*vLight;
+    } else if(mode>1.5) {
+        color=horizonPixelTone(vColor)*vLight;
+    } else {
+        color=vColor*vLight;
+    }
 
     color=aerialPerspective(color,vWorldPos,vec3(0.2462,0.5029,0.8069),pc.cameraFog.w,pc.environment.y);
     outColor=vec4(color,1.0);
