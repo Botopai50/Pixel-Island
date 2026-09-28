@@ -9,9 +9,10 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "preview": "vite preview",
-    "test": "npx tsx src/test/verifyProcedural.ts"
+    "test": "npx tsx src/test/verifyProcedural.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "pixel-tree": "github:Botopai50/Pixel_Tree#main",
