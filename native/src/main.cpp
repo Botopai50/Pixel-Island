@@ -1997,9 +1997,17 @@ private:
                 if(renderFinished_[i])vkDestroySemaphore(device_,renderFinished_[i],nullptr);
                 if(inFlight_[i])vkDestroyFence(device_,inFlight_[i],nullptr);
             }
+            if(terrainTextureSampler_)vkDestroySampler(device_,terrainTextureSampler_,nullptr);
+            if(terrainTextureView_)vkDestroyImageView(device_,terrainTextureView_,nullptr);
+            if(terrainTextureImage_)vkDestroyImage(device_,terrainTextureImage_,nullptr);
+            if(terrainTextureMemory_)vkFreeMemory(device_,terrainTextureMemory_,nullptr);
+            if(descriptorPool_)vkDestroyDescriptorPool(device_,descriptorPool_,nullptr);
+
             if(commandPool_)vkDestroyCommandPool(device_,commandPool_,nullptr);
             cleanupSwapchain();
+
             if(pipelineLayout_)vkDestroyPipelineLayout(device_,pipelineLayout_,nullptr);
+            if(descriptorSetLayout_)vkDestroyDescriptorSetLayout(device_,descriptorSetLayout_,nullptr);
             vkDestroyDevice(device_,nullptr);
             device_=VK_NULL_HANDLE;
         }
@@ -2026,12 +2034,23 @@ private:
     std::vector<VkImage> swapImages_;
     std::vector<VkImageView> swapViews_;
     VkRenderPass renderPass_=VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptorSetLayout_=VK_NULL_HANDLE;
+    VkDescriptorPool descriptorPool_=VK_NULL_HANDLE;
+    VkDescriptorSet descriptorSet_=VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout_=VK_NULL_HANDLE;
     VkPipeline pipeline_=VK_NULL_HANDLE;
     VkImage depthImage_=VK_NULL_HANDLE;
     VkDeviceMemory depthMemory_=VK_NULL_HANDLE;
     VkImageView depthView_=VK_NULL_HANDLE;
     std::vector<VkFramebuffer> framebuffers_;
+
+    VkImage terrainTextureImage_=VK_NULL_HANDLE;
+    VkDeviceMemory terrainTextureMemory_=VK_NULL_HANDLE;
+    VkImageView terrainTextureView_=VK_NULL_HANDLE;
+    VkSampler terrainTextureSampler_=VK_NULL_HANDLE;
+    bool terrainTextureInitialized_=false;
+    float terrainTextureOriginX_=0.0f;
+    float terrainTextureOriginZ_=0.0f;
 
     VkCommandPool commandPool_=VK_NULL_HANDLE;
     std::array<VkCommandBuffer,MAX_FRAMES_IN_FLIGHT> commandBuffers_{};
