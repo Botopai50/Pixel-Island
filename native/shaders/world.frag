@@ -162,7 +162,8 @@ vec3 terrainColor(){
 }
 
 void main(){
-    float mode=vMode;
+    float mode=mod(vMode,10.0);
+    if(vMode>=10.0 && vWorldPos.y<0.05) discard;
 
     // Mesma faixa de dissolve dos chunks: blocos de 4m fixos no mundo.
     if(mode>0.5&&mode<1.5){
