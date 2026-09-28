@@ -35,7 +35,8 @@ layout(location=6) out vec2 vUV;
 
 void main(){
     mat4 inst=mat4(instanceM0,instanceM1,instanceM2,instanceM3);
-    float mode=pc.environment.z;
+    float rawMode=pc.environment.z;
+    float mode=mod(rawMode,10.0);
     vec3 worldPos=(inst*vec4(inPosition,1.0)).xyz;
     vec3 worldNormal=normalize(mat3(inst)*inNormal);
     vec2 finalUV=inUV;
@@ -88,6 +89,6 @@ void main(){
     vWorldNormal=worldNormal;
     vWall=inWall;
     vLight=mix(pc.sunAmbient.w,1.0,toon);
-    vMode=mode;
+    vMode=rawMode;
     vUV=finalUV;
 }
