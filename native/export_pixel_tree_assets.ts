@@ -1,3 +1,4 @@
+// exact-parity exporter
 import fs from 'node:fs';
 import { createCanvas, Image, ImageData } from '@napi-rs/canvas';
 
