@@ -13,6 +13,8 @@ import { CONFIG } from '../../config.ts';
 export interface ITerrainQueryable {
   getPoint(x: number, z: number): TerrainPoint;
   getPointFast?(x: number, z: number): TerrainPoint;
+  /** Seed estrutural do mundo. Opcional para manter compatibilidade com stubs/testes antigos. */
+  getSeed?(): number;
 }
 
 export interface TreeTransformItem {
@@ -30,11 +32,19 @@ export function planChunkVegetation(
   terrainGen: ITerrainQueryable,
   enableDetailFlora: boolean = true
 ) {
-  const chunkSeed = PRNG.hash2D(chunkX, chunkZ, 0x85ebca6b);
-  const prng = new PRNG(chunkSeed * 100000);
-  // flora rasteira (só perto da câmera) com a sua própria sequência: assim as árvores, pedras e
-  // troncos saem iguais com ou sem ela (e iguais às árvores distantes, planejadas nos workers)
-  const flora = new PRNG(chunkSeed * 100000 + 7919);
+  // Aleatoriedade hierárquica:
+  // world seed -> chunk seed -> sub-seed individual por árvore.
+  // Isso mantém o mundo reproduzível sem fazer árvores vizinhas compartilharem a mesma "forma".
+  // Antes o sorteio do chunk dependia apenas de (chunkX, chunkZ), então duas world seeds diferentes
+  // percorriam a mesma sequência aleatória e só divergiam indiretamente por causa do terreno/bioma.
+  const worldSeed = terrainGen.getSeed?.() ?? 0x51f15e5d;
+  const chunkSeed01 = PRNG.hash2D(chunkX, chunkZ, (worldSeed ^ 0x85ebca6b) >>> 0);
+  const chunkSeed = Math.max(1, Math.floor(chunkSeed01 * 0xffffffff));
+  const prng = new PRNG(chunkSeed);
+
+  // Flora rasteira usa outra sequência: ativá-la/desativá-la não desloca a sequência estrutural.
+  const floraSeed01 = PRNG.hash2D(chunkX, chunkZ, (worldSeed ^ 0x27d4eb2d) >>> 0);
+  const flora = new PRNG(Math.max(1, Math.floor(floraSeed01 * 0xffffffff)));
 
   // Listas de instâncias: Adultas, Mudas (Saplings) e Variantes
   const oakItems: TreeTransformItem[] = [];
@@ -79,6 +89,91 @@ export function planChunkVegetation(
   const reedTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
 
   const dummy = new THREE.Object3D();
+
+  /**
+   * Microcenas procedurais em volta de árvores.
+   * Reutiliza as geometrias instanciadas já existentes, aumentando composição sem criar
+   * um objeto THREE separado para cada detalhe.
+   */
+  const addTreeDressing = (centerX: number, centerZ: number, basePt: TerrainPoint, seed: number, beach = false): void => {
+    if (!enableDetailFlora) return;
+
+    const rng = new PRNG((seed ^ 0x6c8e9cf5) >>> 0 || 1);
+    const type = basePt.biome.type;
+    const forest =
+      type === BiomeType.TEMPERATE_FOREST ||
+      type === BiomeType.AUTUMN_FOREST ||
+      type === BiomeType.TROPICAL_RAINFOREST ||
+      type === BiomeType.BOREAL_TAIGA;
+    const meadow = type === BiomeType.COASTAL_MEADOW;
+    const mangrove = type === BiomeType.MANGROVE_SWAMP;
+
+    let count = 0;
+    if (forest) count = rng.rangeInt(1, 3);
+    else if (meadow || mangrove) count = rng.rangeInt(1, 2);
+    else if (beach && rng.chance(0.55)) count = 1;
+
+    for (let i = 0; i < count; i++) {
+      const angle = rng.range(0, Math.PI * 2);
+      const radius = rng.range(1.4, forest ? 4.8 : 3.8);
+      const x = centerX + Math.cos(angle) * radius;
+      const z = centerZ + Math.sin(angle) * radius;
+      const p = terrainGen.getPointFast ? terrainGen.getPointFast(x, z) : terrainGen.getPoint(x, z);
+      if (p.isWater || p.isLava || p.slope > 0.46 || Math.abs(p.height - basePt.height) > 1.8) continue;
+
+      dummy.position.set(x, p.height + 0.015, z);
+      dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
+
+      if (forest && rng.chance(0.68)) {
+        const s = rng.range(0.65, 1.25);
+        dummy.scale.set(s, s * rng.range(0.85, 1.18), s);
+        dummy.updateMatrix();
+        fernTransforms.push({
+          matrix: dummy.matrix.clone(),
+          tint: new THREE.Color(type === BiomeType.AUTUMN_FOREST ? 0x5f9f2c : 0x42b828)
+        });
+      } else if ((meadow || type === BiomeType.AUTUMN_FOREST) && rng.chance(0.72)) {
+        const s = rng.range(0.70, 1.20);
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        wildflowerTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0xffffff) });
+      } else if (mangrove && rng.chance(0.65)) {
+        const s = rng.range(0.70, 1.15);
+        dummy.scale.set(s, s * 1.15, s);
+        dummy.updateMatrix();
+        reedTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x3f7f31) });
+      } else {
+        const s = rng.range(0.32, 0.72);
+        dummy.position.y = p.height - 0.05 * s;
+        dummy.scale.set(s * rng.range(0.9, 1.2), s * rng.range(0.55, 0.82), s);
+        dummy.updateMatrix();
+        (forest ? rockMossyTransforms : rockPebblesTransforms).push({
+          matrix: dummy.matrix.clone(),
+          tint: new THREE.Color(beach ? 0x726b5d : 0x7b8178)
+        });
+      }
+    }
+
+    if (forest && rng.chance(0.16)) {
+      const angle = rng.range(0, Math.PI * 2);
+      const radius = rng.range(2.0, 3.6);
+      const x = centerX + Math.cos(angle) * radius;
+      const z = centerZ + Math.sin(angle) * radius;
+      const p = terrainGen.getPointFast ? terrainGen.getPointFast(x, z) : terrainGen.getPoint(x, z);
+      if (!p.isWater && !p.isLava && p.slope < 0.42) {
+        const s = rng.range(0.45, 0.85);
+        dummy.position.set(x, p.height - 0.08 * s, z);
+        dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
+        dummy.scale.set(s * 1.2, s * 0.72, s);
+        dummy.updateMatrix();
+        rockMossyTransforms.push({
+          matrix: dummy.matrix.clone(),
+          tint: new THREE.Color(0x768078).multiplyScalar(rng.range(0.92, 1.06))
+        });
+      }
+    }
+  };
+
   const halfSize = chunkSize / 2;
   const startX = chunkX * chunkSize - halfSize;
   const startZ = chunkZ * chunkSize - halfSize;
@@ -169,23 +264,34 @@ export function planChunkVegetation(
         continue;
       }
 
+      const densityScale = CONFIG.VEGETATION_DENSITY_SCALE;
       const canTree = pt.slope <= CONFIG.VEGETATION.MAX_SLOPE_FOR_TREES;
-      const treeChance = canTree ? biome.vegetationDensity * 0.75 : 0;
-      const shrubChance = (!isBeach && pt.slope < 0.52) ? biome.shrubDensity * 0.22 : 0;
+      const treeChance = canTree ? biome.vegetationDensity * 0.75 * densityScale : 0;
+      const shrubChance = (!isBeach && pt.slope < 0.52) ? biome.shrubDensity * 0.22 * densityScale : 0;
       const maxRockSlope = pt.height > 45.0 ? 0.38 : 0.50;
       const canRock = pt.slope <= maxRockSlope;
-      const rockChance = canRock ? biome.rockDensity * 0.16 : 0;
-      const logChance = pt.slope < 0.35 ? biome.fallenLogDensity * 0.08 : 0;
+      // Rochas são muito mais baratas que as árvores Pixel_Tree, então caem menos agressivamente.
+      const rockChance = canRock ? biome.rockDensity * 0.16 * Math.max(0.72, densityScale) : 0;
+      const logChance = pt.slope < 0.35 ? biome.fallenLogDensity * 0.08 * densityScale : 0;
 
       const roll = prng.next();
 
       if (roll < treeChance) {
+        // Cada candidato de árvore recebe sua própria sub-seed derivada da posição e da world seed.
+        // Assim pequenas mudanças em outra árvore não "empurram" a sequência aleatória das próximas.
+        const treeSeed01 = PRNG.hash2D(
+          Math.round(wx * 8),
+          Math.round(wz * 8),
+          (worldSeed ^ 0x9e3779b9) >>> 0
+        );
+        const treeSeed = Math.max(1, Math.floor(treeSeed01 * 0xffffffff));
+        const treePrng = new PRNG(treeSeed);
         // REGRA DA PRAIA: Apenas coqueiros (adulto ou muda)
         if (isBeach) {
-          const isSapling = prng.chance(0.28); // 28% de mudas jovens na praia
+          const isSapling = treePrng.chance(0.28); // 28% de mudas jovens na praia
           if (isSapling) {
-            const sScale = prng.range(0.85, 1.2);
-            const yaw = prng.range(0, Math.PI * 2);
+            const sScale = treePrng.range(0.72, 1.28);
+            const yaw = treePrng.range(0, Math.PI * 2);
             dummy.position.set(wx, pt.height - 0.05, wz);
             dummy.rotation.set(0, yaw, 0);
             dummy.scale.set(sScale, sScale, sScale);
@@ -196,10 +302,10 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x76c22c)
             });
           } else {
-            const palmHeightScale = prng.range(0.92, 1.25);
-            const palmWidthScale = prng.range(0.92, 1.15);
-            const palmTilt = prng.range(0.08, 0.20);
-            const palmYaw = prng.range(0, Math.PI * 2);
+            const palmHeightScale = treePrng.range(0.78, 1.38);
+            const palmWidthScale = treePrng.range(0.84, 1.22);
+            const palmTilt = treePrng.range(0.04, 0.24);
+            const palmYaw = treePrng.range(0, Math.PI * 2);
 
             dummy.position.set(wx, pt.height - 0.08, wz);
             dummy.rotation.set(Math.sin(palmYaw) * palmTilt, palmYaw, Math.cos(palmYaw) * palmTilt);
@@ -212,18 +318,21 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x4cb828)
             });
           }
+          addTreeDressing(wx, wz, pt, treeSeed, true);
           continue;
         }
 
         // VEGETAÇÃO DO INTERIOR
-        const isSapling = prng.chance(0.24);
-        const heightScale = prng.range(0.90, 1.22);
-        const widthScale = prng.range(0.90, 1.18);
-        const yaw = prng.range(0, Math.PI * 2);
+        const isSapling = treePrng.chance(0.24);
+        const heightScale = treePrng.range(0.78, 1.34);
+        const widthScale = treePrng.range(0.82, 1.24);
+        const yaw = treePrng.range(0, Math.PI * 2);
 
         const treeEmbed = Math.max(0.06, pt.slope * 0.15);
         dummy.position.set(wx, pt.height - treeEmbed, wz);
-        dummy.rotation.set(0, yaw, 0);
+        const lean = isSapling ? treePrng.range(0.0, 0.025) : treePrng.range(0.0, 0.065);
+        const leanDir = treePrng.range(0, Math.PI * 2);
+        dummy.rotation.set(Math.cos(leanDir) * lean, yaw, Math.sin(leanDir) * lean);
 
         const dist = biome.treeTypeDistribution;
         const totalWeight =
@@ -240,7 +349,7 @@ export function planChunkVegetation(
           (dist.cactus || 0);
 
         if (totalWeight <= 0) continue;
-        const normType = prng.next() * totalWeight;
+        const normType = treePrng.next() * totalWeight;
         let acc = 0;
 
         if ((acc += (dist.oak || 0)) && normType < acc) {
@@ -254,7 +363,7 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x68c434)
             });
           } else {
-            const isBroad = prng.chance(0.32);
+            const isBroad = treePrng.chance(0.32);
             if (isBroad) {
               dummy.scale.set(widthScale * 1.12, heightScale * 0.95, widthScale * 1.12);
               dummy.updateMatrix();
@@ -303,7 +412,7 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x7ed638)
             });
           } else {
-            const isTwin = prng.chance(0.28);
+            const isTwin = treePrng.chance(0.28);
             if (isTwin) {
               dummy.scale.set(widthScale * 0.95, heightScale * 0.95, widthScale * 0.95);
               dummy.updateMatrix();
@@ -354,7 +463,7 @@ export function planChunkVegetation(
           // Bordo Outonal
           dummy.scale.set(widthScale * 1.02, heightScale, widthScale * 1.02);
           dummy.updateMatrix();
-          const mapleRoll = prng.next();
+          const mapleRoll = treePrng.next();
           let leafTint: THREE.Color;
           if (mapleRoll < 0.38) {
             leafTint = new THREE.Color(0xd44022);
@@ -431,6 +540,8 @@ export function planChunkVegetation(
             });
           }
         }
+
+        addTreeDressing(wx, wz, pt, treeSeed, false);
       } else if (roll < treeChance + shrubChance) {
         // 2. ARBUSTOS (Folhoso vs Frutífero)
         const isArctic = biome.type === BiomeType.FROZEN_TUNDRA || (pt.iceInfluence || 0) > 0.15;
