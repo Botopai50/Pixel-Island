@@ -41,6 +41,12 @@ struct HorizonTileCpu {
     std::vector<uint16_t> indices;
 };
 
+struct WaterBiomeCpu {
+    float originX=0,originZ=0,span=1536;
+    uint32_t width=128,height=128;
+    std::vector<uint8_t> rgba;
+};
+
 struct VegetationCpu {
     int cx=0,cz=0;
     bool detail=false;
@@ -56,7 +62,7 @@ struct ImpostorBlockCpu {
     std::vector<uint32_t> indices;
 };
 
-using ExactStreamPayload=std::variant<ExactChunkCpu,HorizonTileCpu,ImpostorBlockCpu,VegetationCpu>;
+using ExactStreamPayload=std::variant<ExactChunkCpu,HorizonTileCpu,ImpostorBlockCpu,VegetationCpu,WaterBiomeCpu>;
 
 struct ExactStreamResult {
     std::string key;
@@ -81,6 +87,10 @@ public:
         int cx,int cz,bool detail,double priority,uint64_t generation
     );
 
+    void requestWaterBiome(
+        float centerX,float centerZ,double priority,uint64_t generation
+    );
+
     void requestHorizon(
         int level,int tx,int tz,float minX,float minZ,float size,int segments,float lower,
         double priority,uint64_t generation
@@ -96,7 +106,7 @@ public:
     size_t pendingCount() const;
 
 private:
-    enum class Kind{Chunk,Vegetation,Horizon,Impostors};
+    enum class Kind{Chunk,Vegetation,WaterBiome,Horizon,Impostors};
     struct Request {
         Kind kind=Kind::Chunk;
         std::string key;
