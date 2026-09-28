@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <windowsx.h>
 #include <vulkan/vulkan.h>
 #include "js_world.hpp"
 #include "exact_streaming.hpp"
@@ -2044,69 +2045,216 @@ private:
     }
 
     Vec3 observerEye() const {
-        const float horizontal=observerSize_*0.72f;
+        const float viewDistance=std::max(800.0f,observerFrustumSize_*1.15f);
+        const float sinP=std::sin(observerPitch_);
+        const float cosP=std::cos(observerPitch_);
+        const float sinY=std::sin(observerYaw_);
+        const float cosY=std::cos(observerYaw_);
         return {
-            focus_.x + std::sin(observerYaw_)*horizontal,
-            std::max(heightAt(focus_.x,focus_.z)+35.0f, observerSize_*0.62f),
-            focus_.z + std::cos(observerYaw_)*horizontal
+            focus_.x+viewDistance*sinY*cosP,
+            focus_.y+viewDistance*sinP,
+            focus_.z+viewDistance*cosY*cosP
         };
     }
 
-    void updateCamera(float dt) {
-        const bool tabNow=(GetAsyncKeyState(VK_TAB)&0x8000)!=0;
-        if(tabNow&&!tabDown_) {
-            observerMode_=!observerMode_;
-            if(observerMode_) {
-                focus_={camera_.x,heightAt(camera_.x,camera_.z),camera_.z};
-            } else {
-                camera_={focus_.x,heightAt(focus_.x,focus_.z)+1.75f,focus_.z};
-                yaw_=observerYaw_+PI;
-                pitch_=-0.05f;
+    bool keyPressed(int vk) const {
+        return input_.key(vk);
+    }
+
+    void enterFirstPersonAtFocus() {
+        if(!observerMode_)return;
+        observerMode_=false;
+        camera_={focus_.x,std::max(heightAt(focus_.x,focus_.z),0.0f)+1.75f,focus_.z};
+        yaw_=observerYaw_+PI*0.75f;
+        pitch_=-0.05f;
+        fpsVelX_=fpsVelZ_=0.0f;
+        fpsBobTimer_=fpsBob_=0.0f;
+        planExactStreaming(camera_.x,camera_.z,true);
+        logLine("CAMERA: primeira pessoa");
+    }
+
+    void exitFirstPersonToObserver() {
+        if(observerMode_)return;
+        observerMode_=true;
+        focus_.x=camera_.x;
+        focus_.z=camera_.z;
+        focus_.y=0.0f;
+        observerVelX_=observerVelZ_=0.0f;
+        planExactStreaming(focus_.x,focus_.z,true);
+        logLine("CAMERA: observador");
+    }
+
+    void updateObserverControls(float dt) {
+        // Wheel zoom: ObserverCamera.applyWheelZoom().
+        if(input_.wheelDelta!=0.0f){
+            const float zoomFactor=std::exp(input_.wheelDelta*0.0014f);
+            observerTargetFrustumSize_=std::clamp(
+                observerTargetFrustumSize_*zoomFactor,
+                22.0f,1400.0f
+            );
+        }
+
+        // Botão direito: rotação horizontal, mesma sensibilidade do original.
+        if(input_.rotateDeltaX!=0.0f)
+            observerTargetYaw_-=input_.rotateDeltaX*0.0048f;
+
+        // Suavização do zoom e yaw exatamente como ObserverCamera.
+        observerFrustumSize_ += (observerTargetFrustumSize_-observerFrustumSize_)
+            * std::min(dt*9.0f,1.0f);
+        observerYaw_ += (observerTargetYaw_-observerYaw_)
+            * std::min(dt*14.0f,1.0f);
+
+        // Teclado normalizado: WASD + setas.
+        float ix=0.0f,iy=0.0f;
+        if(keyPressed('W')||keyPressed(VK_UP))iy+=1.0f;
+        if(keyPressed('S')||keyPressed(VK_DOWN))iy-=1.0f;
+        if(keyPressed('A')||keyPressed(VK_LEFT))ix-=1.0f;
+        if(keyPressed('D')||keyPressed(VK_RIGHT))ix+=1.0f;
+        const float il=std::hypot(ix,iy);
+        if(il>0.0f){ix/=il;iy/=il;}
+
+        const float forwardX=-std::sin(observerYaw_);
+        const float forwardZ=-std::cos(observerYaw_);
+        const float rightX=std::cos(observerYaw_);
+        const float rightZ=-std::sin(observerYaw_);
+        float dirX=forwardX*iy+rightX*ix;
+        float dirZ=forwardZ*iy+rightZ*ix;
+        const float dl=std::hypot(dirX,dirZ);
+        if(dl>0.0001f){dirX/=dl;dirZ/=dl;}
+
+        const float zoomRatio=observerFrustumSize_/160.0f;
+        const float speed=45.0f*std::pow(zoomRatio,0.95f);
+        if(dl>0.0001f){
+            observerVelX_+=dirX*speed*12.0f*dt;
+            observerVelZ_+=dirZ*speed*12.0f*dt;
+        }
+        const float vel=std::hypot(observerVelX_,observerVelZ_);
+        const float maxV=speed*1.5f;
+        if(vel>maxV&&vel>0.0001f){
+            observerVelX_=observerVelX_/vel*maxV;
+            observerVelZ_=observerVelZ_/vel*maxV;
+        }
+        const float damping=std::exp(-7.0f*dt);
+        observerVelX_*=damping;
+        observerVelZ_*=damping;
+        focus_.x+=observerVelX_*dt;
+        focus_.z+=observerVelZ_*dt;
+
+        // Pan com esquerdo/meio, mesma projeção de PlayerMovement.
+        if(input_.panDeltaX!=0.0f||input_.panDeltaY!=0.0f){
+            RECT rc{};GetClientRect(hwnd_,&rc);
+            const float h=std::max(1L,rc.bottom-rc.top);
+            const float panFactor=(observerFrustumSize_/h)*1.1f;
+            const float cosY=std::cos(observerYaw_);
+            const float sinY=std::sin(observerYaw_);
+            const float moveX=(-input_.panDeltaX*cosY-input_.panDeltaY*sinY)*panFactor;
+            const float moveZ=( input_.panDeltaX*sinY-input_.panDeltaY*cosY)*panFactor;
+            focus_.x+=moveX;
+            focus_.z+=moveZ;
+        }
+        focus_.y=0.0f;
+        camera_=observerEye();
+    }
+
+    void updateFirstPersonControls(float dt) {
+        // Mouse look do FirstPersonController: arrasto esquerdo.
+        if(input_.lookDeltaX!=0.0f||input_.lookDeltaY!=0.0f){
+            yaw_-=input_.lookDeltaX*0.0026f;
+            pitch_-=input_.lookDeltaY*0.0026f;
+            pitch_=std::clamp(pitch_,-1.46f,1.46f);
+        }
+
+        float ix=0.0f,iy=0.0f;
+        if(keyPressed('W')||keyPressed(VK_UP))iy+=1.0f;
+        if(keyPressed('S')||keyPressed(VK_DOWN))iy-=1.0f;
+        if(keyPressed('A')||keyPressed(VK_LEFT))ix-=1.0f;
+        if(keyPressed('D')||keyPressed(VK_RIGHT))ix+=1.0f;
+        const float il=std::hypot(ix,iy);
+        if(il>0.0f){ix/=il;iy/=il;}
+
+        const float forwardX=-std::sin(yaw_);
+        const float forwardZ=-std::cos(yaw_);
+        const float rightX=std::cos(yaw_);
+        const float rightZ=-std::sin(yaw_);
+        float dirX=forwardX*iy+rightX*ix;
+        float dirZ=forwardZ*iy+rightZ*ix;
+        const float len=std::hypot(dirX,dirZ);
+        if(len>0.0001f){dirX/=len;dirZ/=len;}
+
+        const bool sprint=keyPressed(VK_SHIFT);
+        const float baseSpeed=sprint?13.0f:6.5f;
+        const float targetSpeed=len>0.0f?baseSpeed*std::min(1.0f,len):0.0f;
+        const float tvx=dirX*targetSpeed,tvz=dirZ*targetSpeed;
+        const float blend=std::min(dt*(len>0.0f?18.0f:9.0f),1.0f);
+        fpsVelX_+=(tvx-fpsVelX_)*blend;
+        fpsVelZ_+=(tvz-fpsVelZ_)*blend;
+
+        // Mesmo anti-penetração em encostas do original.
+        float stepDx=fpsVelX_*dt,stepDz=fpsVelZ_*dt;
+        const float stepDist=std::hypot(stepDx,stepDz);
+        if(stepDist>0.0001f){
+            const float currentH=heightAt(camera_.x,camera_.z);
+            const float probeDist=std::max(stepDist,0.45f);
+            const float dirPX=stepDx/stepDist,dirPZ=stepDz/stepDist;
+            const float probeH=heightAt(camera_.x+dirPX*probeDist,camera_.z+dirPZ*probeDist);
+            const float slope=(probeH-currentH)/probeDist;
+            if(slope>0.85f){
+                const float eps=0.4f;
+                const float hL=heightAt(camera_.x-eps,camera_.z);
+                const float hR=heightAt(camera_.x+eps,camera_.z);
+                const float hD=heightAt(camera_.x,camera_.z-eps);
+                const float hU=heightAt(camera_.x,camera_.z+eps);
+                const float gx=(hR-hL)/(2.0f*eps),gz=(hU-hD)/(2.0f*eps);
+                const float gl=std::hypot(gx,gz);
+                if(gl>0.001f){
+                    const float tx=-gz/gl,tz=gx/gl;
+                    const float d=fpsVelX_*tx+fpsVelZ_*tz;
+                    fpsVelX_=tx*d*0.65f;fpsVelZ_=tz*d*0.65f;
+                }else{
+                    fpsVelX_=fpsVelZ_=0.0f;
+                }
             }
         }
-        tabDown_=tabNow;
 
-        // presets rápidos para medir a Intel UHD
-        if(GetAsyncKeyState('1')&0x8000) fogFar_=520.0f;
-        if(GetAsyncKeyState('2')&0x8000) fogFar_=720.0f;
-        if(GetAsyncKeyState('3')&0x8000) fogFar_=980.0f;
+        camera_.x+=fpsVelX_*dt;
+        camera_.z+=fpsVelZ_*dt;
 
-        if(observerMode_) {
-            const float turn=1.30f*dt;
-            if(GetAsyncKeyState(VK_LEFT)&0x8000) observerYaw_-=turn;
-            if(GetAsyncKeyState(VK_RIGHT)&0x8000) observerYaw_+=turn;
-            if(GetAsyncKeyState('Q')&0x8000) observerSize_=std::min(760.0f,observerSize_*(1.0f+1.5f*dt));
-            if(GetAsyncKeyState('E')&0x8000) observerSize_=std::max(38.0f,observerSize_*(1.0f-1.5f*dt));
-
-            Vec3 flat{std::sin(observerYaw_+PI),0,std::cos(observerYaw_+PI)};
-            Vec3 right=normalize(cross({0,1,0},flat));
-            const float speed=(GetAsyncKeyState(VK_SHIFT)&0x8000)?180.0f:75.0f;
-            if(GetAsyncKeyState('W')&0x8000) focus_=focus_+flat*(speed*dt);
-            if(GetAsyncKeyState('S')&0x8000) focus_=focus_-flat*(speed*dt);
-            if(GetAsyncKeyState('D')&0x8000) focus_=focus_+right*(speed*dt);
-            if(GetAsyncKeyState('A')&0x8000) focus_=focus_-right*(speed*dt);
-            focus_.y=heightAt(focus_.x,focus_.z);
-            camera_=observerEye();
-        } else {
-            const float turn=1.65f*dt;
-            if(GetAsyncKeyState(VK_LEFT)&0x8000) yaw_-=turn;
-            if(GetAsyncKeyState(VK_RIGHT)&0x8000) yaw_+=turn;
-            if(GetAsyncKeyState(VK_UP)&0x8000) pitch_+=turn*0.75f;
-            if(GetAsyncKeyState(VK_DOWN)&0x8000) pitch_-=turn*0.75f;
-            pitch_=std::clamp(pitch_,-1.05f,0.82f);
-
-            Vec3 forward{std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)};
-            Vec3 flat=normalize({forward.x,0,forward.z});
-            Vec3 right=normalize(cross({0,1,0},flat));
-            const float speed=(GetAsyncKeyState(VK_SHIFT)&0x8000)?42.0f:12.5f;
-            if(GetAsyncKeyState('W')&0x8000) camera_=camera_+flat*(speed*dt);
-            if(GetAsyncKeyState('S')&0x8000) camera_=camera_-flat*(speed*dt);
-            if(GetAsyncKeyState('D')&0x8000) camera_=camera_+right*(speed*dt);
-            if(GetAsyncKeyState('A')&0x8000) camera_=camera_-right*(speed*dt);
-            camera_.y=heightAt(camera_.x,camera_.z)+1.75f;
+        const float targetY=std::max(heightAt(camera_.x,camera_.z),-0.3f)+1.75f;
+        if(camera_.y<targetY)camera_.y=targetY;
+        else{
+            camera_.y+=(targetY-camera_.y)*std::min(dt*15.0f,1.0f);
+            if(camera_.y<targetY)camera_.y=targetY;
         }
 
-        if(GetAsyncKeyState(VK_ESCAPE)&0x8000) PostMessageW(hwnd_,WM_CLOSE,0,0);
+        // Head bob original.
+        const float currentSpeed=std::hypot(fpsVelX_,fpsVelZ_);
+        if(currentSpeed>0.5f){
+            fpsBobTimer_+=dt*(sprint?12.5f:8.5f);
+            const float bobTarget=std::sin(fpsBobTimer_)*0.045f*(currentSpeed/6.5f);
+            fpsBob_+=(bobTarget-fpsBob_)*std::min(dt*15.0f,1.0f);
+        }else{
+            fpsBob_+=(0.0f-fpsBob_)*std::min(dt*8.0f,1.0f);
+        }
+    }
+
+    void updateCamera(float dt) {
+        const bool tabNow=keyPressed(VK_TAB);
+        const bool fNow=keyPressed('F');
+        const bool modeNow=tabNow||fNow;
+        if(modeNow&&!tabDown_){
+            if(observerMode_)enterFirstPersonAtFocus();
+            else exitFirstPersonToObserver();
+        }
+        tabDown_=modeNow;
+
+        const bool escNow=keyPressed(VK_ESCAPE);
+        if(escNow&&!escapeDown_&&!observerMode_)exitFirstPersonToObserver();
+        escapeDown_=escNow;
+
+        if(observerMode_)updateObserverControls(dt);
+        else updateFirstPersonControls(dt);
+
+        input_.clearTransient();
     }
 
     static std::string chunkKey(int cx,int cz) {
@@ -2655,8 +2803,20 @@ private:
     bool observerMode_=true;
     bool worldReady_=false;
     bool tabDown_=false;
+    bool escapeDown_=false;
+
+    // ObserverCamera + PlayerMovement originais.
+    float observerPitch_=50.0f*PI/180.0f;
     float observerYaw_=42.0f*PI/180.0f;
-    float observerSize_=220.0f;
+    float observerTargetYaw_=42.0f*PI/180.0f;
+    float observerFrustumSize_=160.0f;
+    float observerTargetFrustumSize_=160.0f;
+    float observerVelX_=0.0f,observerVelZ_=0.0f;
+
+    // FirstPersonController original.
+    float fpsVelX_=0.0f,fpsVelZ_=0.0f;
+    float fpsBobTimer_=0.0f,fpsBob_=0.0f;
+
     float fogFar_=720.0f;
     float time_=0.0f;
     int worldCenterX_=0,worldCenterZ_=0;
