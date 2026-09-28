@@ -837,6 +837,11 @@ export class VegetationManager {
     this.instances.remove(owner);
   }
 
+  /** Mantém a biblioteca do Pixel_Tree sincronizada com a seed estrutural do mundo. */
+  public setWorldSeed(seed: number): void {
+    this.pixelTrees.ensureWorldSeed(seed);
+  }
+
   /**
    * Atlas de impostores das árvores distantes: cada espécie (na ordem de IMPOSTOR_TYPES) é
    * desenhada de lado, uma vez, com a geometria, a textura e a tinta originais, numa célula
@@ -845,73 +850,96 @@ export class VegetationManager {
    * info: por tipo (lado do quadrado S, centro x, centro y) em metros, escala 1.
    */
   public buildTreeImpostors(renderer: THREE.WebGLRenderer): { texture: THREE.Texture; info: THREE.Vector3[]; cols: number; rows: number } {
-    VegetationGeometries.init();
-    const G = VegetationGeometries;
-    // [geometria do tronco/corpo, da copa (ou null), materiais, tinta do tronco, da copa]
-    const specs: [THREE.BufferGeometry, THREE.BufferGeometry | null, THREE.Material, THREE.Material | null, number, number][] = [
-      [G.oakTrunk, G.oakLeaves, this.trunkMaterial, this.foliageMaterial, 0x5c422d, 0x48aa32],
-      [G.broadOakTrunk, G.broadOakLeaves, this.trunkMaterial, this.foliageMaterial, 0x563e2a, 0x429c2c],
-      [G.pineTrunk, G.pineLeaves, this.trunkMaterial, this.foliageMaterial, 0x4a3424, 0x2a7238],
-      [G.birchTrunk, G.birchLeaves, this.birchTrunkMaterial, this.foliageMaterial, 0xf0f0ea, 0x6ec430],
-      [G.palmTrunk, G.palmLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, 0xa68252, 0x4cb828],
-      [G.acaciaTrunk, G.acaciaLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3826, 0x6e9c2e],
-      [G.mapleTrunk, G.mapleLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3828, 0xd44022],
-      [G.mapleTrunk, G.mapleLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3828, 0xe87a1a],
-      [G.mapleTrunk, G.mapleLeaves, this.trunkMaterial, this.foliageMaterial, 0x4c3828, 0xe8b824],
-      [G.mangroveTrunk, G.mangroveLeaves, this.trunkMaterial, this.foliageMaterial, 0x3e2d1f, 0x348c2c],
-      [G.snowPineTrunk, G.snowPineLeaves, this.trunkMaterial, this.snowPineFoliageMaterial, 0x3c2c22, 0xffffff],
-      [G.arcticWillowTrunk, G.arcticWillowLeaves, this.trunkMaterial, this.foliageMaterial, 0x44362a, 0x72927c],
-      [G.deadTrunk, null, this.deadTreeMaterial, null, 0x22201e, 0x22201e],
-      [G.cactusBody, null, this.cactusMaterial, null, 0x4e8e42, 0x4e8e42],
-      [G.cactusSaplingBody, null, this.cactusMaterial, null, 0x5ca850, 0x5ca850],
+    // A ordem precisa continuar idêntica a IMPOSTOR_TYPES em horizonGeometry.ts.
+    const specs: PixelTreePresetKey[] = [
+      'hyrule_oak',
+      'korok_ancient',
+      'hebra_pine',
+      'akkala_birch',
+      'faron_palm',
+      'savanna_acacia',
+      'maple_red',
+      'maple_orange',
+      'maple_yellow',
+      'swamp_mangrove',
+      'hebra_pine_snowy',
+      'arctic_willow',
+      'dry_withered',
+      'gerudo_cactus',
+      'gerudo_cactus_sapling',
     ];
-    const CELL = 128, cols = 4, rows = Math.ceil(specs.length / cols);
+
+    const CELL = 160;
+    const cols = 4;
+    const rows = Math.ceil(specs.length / cols);
     const rt = new THREE.WebGLRenderTarget(CELL * cols, CELL * rows, {
-      minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.NearestFilter, generateMipmaps: true,
-      colorSpace: THREE.SRGBColorSpace, depthBuffer: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
+      magFilter: THREE.NearestFilter,
+      generateMipmaps: true,
+      colorSpace: THREE.SRGBColorSpace,
+      depthBuffer: true,
     });
+
     const scene = new THREE.Scene();
-    scene.add(new THREE.AmbientLight(0xffffff, Math.PI));
-    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+    scene.add(new THREE.AmbientLight(0xffffff, Math.PI * 0.75));
+    const sun = new THREE.DirectionalLight(0xffffff, Math.PI * 1.2);
+    sun.position.set(4, 8, 6);
+    scene.add(sun);
+
+    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 300);
     const prevTarget = renderer.getRenderTarget();
     const prevColor = renderer.getClearColor(new THREE.Color());
     const prevAlpha = renderer.getClearAlpha();
     const prevAutoClear = renderer.autoClear;
+
     renderer.autoClear = false;
     rt.scissorTest = true;
+
     const info: THREE.Vector3[] = [];
-    const box = new THREE.Box3(), tmp = new THREE.Box3();
-    specs.forEach(([tg, lg, tm, lm, tc, lc], i) => {
-      tg.computeBoundingBox();
-      box.copy(tg.boundingBox!);
-      if (lg) { lg.computeBoundingBox(); box.union(tmp.copy(lg.boundingBox!)); }
-      const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
-      const S = Math.max(w, h) * 1.04;
-      const cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
-      info.push(new THREE.Vector3(S, cx, cy));
-      cam.left = -S / 2; cam.right = S / 2; cam.top = S / 2; cam.bottom = -S / 2;
-      cam.position.set(cx, cy, 100); cam.lookAt(cx, cy, 0);
-      cam.updateProjectionMatrix();
-      const meshes = [new THREE.InstancedMesh(tg, tm, 1)];
-      meshes[0].setMatrixAt(0, new THREE.Matrix4()); meshes[0].setColorAt(0, new THREE.Color(tc));
-      if (lg && lm) {
-        meshes.push(new THREE.InstancedMesh(lg, lm, 1));
-        meshes[1].setMatrixAt(0, new THREE.Matrix4()); meshes[1].setColorAt(0, new THREE.Color(lc));
+    const box = new THREE.Box3();
+
+    specs.forEach((preset, i) => {
+      const model = this.pixelTrees.createPreviewObject(preset, 0);
+      model.updateMatrixWorld(true);
+      box.setFromObject(model);
+
+      if (box.isEmpty()) {
+        info.push(new THREE.Vector3(1, 0, 0.5));
+        return;
       }
-      for (const m of meshes) { m.frustumCulled = false; scene.add(m); }
-      const x = (i % cols) * CELL, y = Math.floor(i / cols) * CELL;
+
+      const w = Math.max(0.5, box.max.x - box.min.x);
+      const h = Math.max(0.5, box.max.y - box.min.y);
+      const S = Math.max(w, h) * 1.08;
+      const cx = (box.min.x + box.max.x) * 0.5;
+      const cy = (box.min.y + box.max.y) * 0.5;
+      info.push(new THREE.Vector3(S, cx, cy));
+
+      cam.left = -S / 2;
+      cam.right = S / 2;
+      cam.top = S / 2;
+      cam.bottom = -S / 2;
+      cam.position.set(cx, cy, 100);
+      cam.lookAt(cx, cy, 0);
+      cam.updateProjectionMatrix();
+
+      scene.add(model);
+      const x = (i % cols) * CELL;
+      const y = Math.floor(i / cols) * CELL;
       rt.viewport.set(x, y, CELL, CELL);
       rt.scissor.set(x, y, CELL, CELL);
       renderer.setRenderTarget(rt);
-      // fundo transparente com a cor da copa (as bordas filtradas não escurecem)
-      renderer.setClearColor(new THREE.Color(lc).multiplyScalar(0.55), 0);
+      renderer.setClearColor(0x000000, 0);
       renderer.clear(true, true, false);
       renderer.render(scene, cam);
-      for (const m of meshes) { scene.remove(m); m.dispose(); }
+      scene.remove(model);
     });
+
     renderer.setRenderTarget(prevTarget);
     renderer.setClearColor(prevColor, prevAlpha);
     renderer.autoClear = prevAutoClear;
+
     return { texture: rt.texture, info, cols, rows };
   }
+
 }
