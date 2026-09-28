@@ -2388,6 +2388,7 @@ private:
             const int planType=static_cast<int>(std::round(src.data[o]));
             ObjectSeed obj{};
             obj.kind=nativeKindForPlanType(planType);
+            obj.planType=planType;
             for(int k=0;k<16;k++)obj.matrix[k]=src.data[o+1+k];
             obj.exactMatrix=true;
             obj.x=obj.matrix[12];obj.y=obj.matrix[13];obj.z=obj.matrix[14];
