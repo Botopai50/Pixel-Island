@@ -775,6 +775,14 @@ export class VegetationManager {
     this.pixelTrees.update(this.windTime.value);
   }
 
+  public syncPixelTreeLighting(
+    sunDirection: THREE.Vector3,
+    sunColor: THREE.Color,
+    ambientColor: THREE.Color
+  ): void {
+    this.pixelTrees.syncLighting(sunDirection, sunColor, ambientColor);
+  }
+
   /**
    * Planta os tufos de grama 3D de um chunk (dados do worker: x, y, z, escala, bioma, dh/dx,
    * dh/dz). Cada tufo gira para acompanhar a inclinação do chão (base encostada dos dois lados)
