@@ -6,7 +6,7 @@
 
 int main(int argc,char** argv){
     if(argc<2) throw std::runtime_error("Uso: PixelIslandWorldSmoke <world.bundle.js>");
-    JsWorldRuntime js(std::filesystem::path(argv[1]));
+    JsWorldRuntime js{std::filesystem::path(argv[1])};
 
     auto terrain=js.generateTerrain("Avalon",0.0,0.0,16,64.0);
     const size_t expected=17u*17u*12u;
