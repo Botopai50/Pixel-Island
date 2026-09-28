@@ -1,3 +1,4 @@
+import { CONFIG } from '../src/config.ts';
 import { PRNG } from '../src/generation/math/prng.ts';
 import { TerrainGenerator } from '../src/generation/terrain/terrainGenerator.ts';
 import { planChunkVegetation } from '../src/generation/vegetation/vegetationPlanner.ts';
