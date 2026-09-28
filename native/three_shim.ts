@@ -104,3 +104,32 @@ export class Object3D {
   constructor(){this.rotation=new Euler(this);}
   updateMatrix(){this.matrix.compose(this.position,this.quaternion,this.scale);}
 }
+
+
+export const RedFormat = 1028;
+export const RGBAFormat = 1023;
+export const NearestFilter = 1003;
+export const LinearFilter = 1006;
+export const LinearMipmapLinearFilter = 1008;
+export const NearestMipmapLinearFilter = 1005;
+export const NoColorSpace = '';
+export const SRGBColorSpace = 'srgb';
+export const RepeatWrapping = 1000;
+export const ClampToEdgeWrapping = 1001;
+
+export class DataTexture {
+  image:any;
+  magFilter:any;
+  minFilter:any;
+  generateMipmaps=false;
+  colorSpace:any;
+  wrapS:any;
+  wrapT:any;
+  anisotropy=1;
+  needsUpdate=false;
+  onUpdate:any;
+  constructor(data:any,width:number,height:number,format:any){
+    this.image={data,width,height};
+  }
+  dispose(){}
+}
