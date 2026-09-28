@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>html,body{margin:0;background:transparent}canvas{display:block}</style></head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { VegetationManager } from '../src/generation/vegetation/vegetationManager.ts';
+import { PRNG } from '../src/generation/math/prng.ts';
+
+const renderer=new THREE.WebGLRenderer({
+  antialias:false,
+  powerPreference:'high-performance',
+  alpha:true,
+  preserveDrawingBuffer:true,
+});
+renderer.setSize(640,640,false);
+renderer.setPixelRatio(1);
+renderer.localClippingEnabled=true;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.05;
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const vegetation=new VegetationManager();
+vegetation.setWorldSeed(PRNG.hashString('Avalon'));
+const atlas=vegetation.buildTreeImpostors(renderer);
+
+// Blit 1:1 para o framebuffer padrão. A textura é o próprio atlas que HorizonTerrain recebe.
+const scene=new THREE.Scene();
+const camera=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+const mat=new THREE.MeshBasicMaterial({
+  map:atlas.texture,
+  transparent:true,
+  depthTest:false,
+  depthWrite:false,
+  toneMapped:false,
+});
+scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2,2),mat));
+renderer.setRenderTarget(null);
+renderer.setClearColor(0x000000,0);
+renderer.clear(true,true,true);
+renderer.render(scene,camera);
+
+await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+window.__IMPOSTOR_EXPORT__={
+  png:renderer.domElement.toDataURL('image/png'),
+  cols:atlas.cols,
+  rows:atlas.rows,
+  info:atlas.info.map(v=>[v.x,v.y,v.z]),
+  width:640,
+  height:640,
+};
+</script>
+</body>
+</html>
