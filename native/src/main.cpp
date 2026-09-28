@@ -2378,18 +2378,21 @@ private:
 
     void updateTitle(double fps,double ms) {
         size_t visibleTotal=0;
-        int draws=1;
-        for(const auto& v:visible_){visibleTotal+=v.size();if(!v.empty())draws++;}
+        int propDraws=0;
+        for(const auto& v:visible_){visibleTotal+=v.size();if(!v.empty())propDraws++;}
         std::wostringstream ss;
-        ss<<L"Pixel Island Native Full | Vulkan | "
+        ss<<L"Pixel Island Native | Vulkan | "
           <<deviceProps_.deviceName
           <<L" | "<<static_cast<int>(fps)<<L" FPS"
           <<L" | "<<static_cast<int>(ms*10.0)/10.0<<L" ms"
           <<L" | "<<(observerMode_?L"OBSERVADOR":L"FPS")
-          <<L" | Objetos "<<objects_.size()<<L"/"<<visibleTotal
-          <<L" | Trees LOD "<<visible_[TREE_LOD0].size()<<L"/"<<visible_[TREE_LOD1].size()<<L"/"<<visible_[TREE_LOD2].size()
-          <<L" | Draws "<<draws
-          <<L" | TAB modo | 1/2/3 qualidade";
+          <<L" | Chunks "<<exactChunks_.size()
+          <<L" | Horizon "<<horizonTiles_.size()
+          <<L" | Fila "<<(exactStreamer_?exactStreamer_->pendingCount():0)
+          <<L"/"<<(horizonStreamer_?horizonStreamer_->pendingCount():0)
+          <<L" | Props "<<visibleTotal
+          <<L" | Draws "<<(exactChunks_.size()+horizonTiles_.size()+propDraws)
+          <<L" | TAB modo";
         SetWindowTextW(hwnd_,ss.str().c_str());
     }
 
@@ -2415,7 +2418,17 @@ private:
             float dt=std::chrono::duration<float>(now-prev).count();
             prev=now;dt=std::min(dt,0.05f);
 
+            // Mesmo durante a tela de carregamento os workers continuam entregando chunks.
+            updateStreaming();
+            if(!worldReady_) {
+                SetWindowTextW(hwnd_,L"Pixel Island Native | Gerando chunk central...");
+                InvalidateRect(hwnd_,nullptr,FALSE);
+                Sleep(8);
+                continue;
+            }
+
             updateCamera(dt);
+            // A câmera pode ter cruzado a borda de um chunk neste mesmo quadro.
             updateStreaming();
             updateVisibleObjects();
             time_+=dt;
@@ -2465,6 +2478,11 @@ private:
 
     void cleanup() {
         if(device_!=VK_NULL_HANDLE) {
+            for(auto& [k,ch]:exactChunks_)destroyExactChunk(ch);
+            exactChunks_.clear();
+            for(auto& [k,h]:horizonTiles_)destroyHorizon(h);
+            horizonTiles_.clear();
+
             for(int i=0;i<MESH_KIND_COUNT;i++){destroyMesh(meshes_[i]);destroyBuffer(instanceBuffers_[i]);}
             destroyBuffer(dummyInstance_);
             destroyBuffer(terrainVB_);destroyBuffer(terrainIB_);
@@ -2473,6 +2491,8 @@ private:
                 if(renderFinished_[i])vkDestroySemaphore(device_,renderFinished_[i],nullptr);
                 if(inFlight_[i])vkDestroyFence(device_,inFlight_[i],nullptr);
             }
+            destroyTexture(fallbackTexture_);
+            destroyTexture(wallTexture_);
             if(terrainTextureSampler_)vkDestroySampler(device_,terrainTextureSampler_,nullptr);
             if(terrainTextureView_)vkDestroyImageView(device_,terrainTextureView_,nullptr);
             if(terrainTextureImage_)vkDestroyImage(device_,terrainTextureImage_,nullptr);
@@ -2524,6 +2544,8 @@ private:
     VkDeviceMemory terrainTextureMemory_=VK_NULL_HANDLE;
     VkImageView terrainTextureView_=VK_NULL_HANDLE;
     VkSampler terrainTextureSampler_=VK_NULL_HANDLE;
+    TextureGpu fallbackTexture_{};
+    TextureGpu wallTexture_{};
     bool terrainTextureInitialized_=false;
     float terrainTextureOriginX_=0.0f;
     float terrainTextureOriginZ_=0.0f;
