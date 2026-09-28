@@ -347,6 +347,7 @@ struct Vertex {
     float wallX=99,wallY=99,wallZ=0;
     float morph=0;
     float u=0,v=0;
+    float treeX=0,treeY=0,treeType=0,treeScale=0;
 };
 
 struct InstanceGPU {
@@ -1091,6 +1092,16 @@ struct HorizonGpu {
     GpuMesh mesh;
 };
 
+struct ImpostorBlockGpu {
+    int tx=0,tz=0;
+    float minX=0,minZ=0,size=0;
+    GpuMesh mesh;
+};
+
+struct alignas(16) ImpostorInfoGpu {
+    float v[16][4]{};
+};
+
 struct PixelTreePartGpu {
     std::string name;
     GpuMesh mesh;
@@ -1534,7 +1545,7 @@ private:
         binds[0]={0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
         binds[1]={1,sizeof(InstanceGPU),VK_VERTEX_INPUT_RATE_INSTANCE};
 
-        std::array<VkVertexInputAttributeDescription,11> attrs{};
+        std::array<VkVertexInputAttributeDescription,12> attrs{};
         attrs[0]={0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,px)};
         attrs[1]={1,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,nx)};
         attrs[2]={2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,r)};
@@ -1546,6 +1557,7 @@ private:
         attrs[8]={8,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,wallX)};
         attrs[9]={9,0,VK_FORMAT_R32_SFLOAT,offsetof(Vertex,morph)};
         attrs[10]={10,0,VK_FORMAT_R32G32_SFLOAT,offsetof(Vertex,u)};
+        attrs[11]={11,0,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(Vertex,treeX)};
 
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vi.vertexBindingDescriptionCount=2; vi.pVertexBindingDescriptions=binds;
