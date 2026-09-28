@@ -10,6 +10,7 @@ import { GlacialIceManager } from './ice/glacialIceManager.ts';
 import { CaveFeatureManager } from './caves/caveFeatureManager.ts';
 import { LavaFluidManager } from './volcanology/lavaFluidManager.ts';
 import { InlandWaterManager } from './hydrology/inlandWaterManager.ts';
+import { LandmarkManager } from './landmarks/landmarkManager.ts';
 import { createTerrainMaterial } from './shaders/terrainShader.ts';
 import { createWaterMaterial, WATER_PRESETS } from './shaders/waterShader.ts';
 import { createSeamlessCascadedWaterGeometry } from './waterGeometry.ts';
@@ -47,6 +48,7 @@ export class WorldEngine {
   public caveFeatureMgr: CaveFeatureManager;
   public lavaFluidMgr: LavaFluidManager;
   public inlandWaterMgr: InlandWaterManager;
+  public landmarkMgr: LandmarkManager;
 
   // Grupo e malhas de água: malha local de alta densidade para ondas físicas 3D + saia oceânica para o horizonte
   private waterGroup: THREE.Group;
@@ -101,6 +103,7 @@ export class WorldEngine {
     this.caveFeatureMgr = new CaveFeatureManager(this.scene, numericSeed, this.terrainGen);
     this.lavaFluidMgr = new LavaFluidManager(this.scene, this.terrainGen.getVolcanoGenerator());
     this.inlandWaterMgr = new InlandWaterManager(this.scene, this.terrainGen.getHydrology());
+    this.landmarkMgr = new LandmarkManager(this.scene, numericSeed, this.terrainGen);
 
     // Grupo de água dedicado para controle no passe de renderização
     this.waterGroup = new THREE.Group();
@@ -173,6 +176,7 @@ export class WorldEngine {
     // o horizonte começa um pouco antes dos chunks começarem a sumir (fica por baixo deles)
     this.horizon.update(x, z, chunkEnd - 120);
     this.chunkMgr.update(x, z);
+    this.landmarkMgr.update(x, z);
     // Move a malha de água com snap na grade de 8m (tamanho exato dos quads centrais).
     // Isso mantém os vértices 100% estáticos no espaço de mundo durante a caminhada,
     // eliminando qualquer deslizamento de triângulos e a trepidação nas margens.
@@ -272,6 +276,7 @@ export class WorldEngine {
     this.geothermalMgr.reseed(newSeed);
     this.lavaFluidMgr.rebuild(this.terrainGen.getVolcanoGenerator());
     this.inlandWaterMgr.rebuild(this.terrainGen.getHydrology());
+    this.landmarkMgr.reseed(newSeed);
     
     this.forge.dispose();
     this.forge = new TerrainTextureForge(newSeed);
@@ -281,6 +286,7 @@ export class WorldEngine {
 
     const spawn = this.getSpawnCoordinate();
     this.chunkMgr.update(spawn.x, spawn.z, true);
+    this.landmarkMgr.update(spawn.x, spawn.z, true);
     this.localWater.position.x = spawn.x;
     this.localWater.position.z = spawn.z;
     this.globalOcean.position.x = spawn.x;
