@@ -14,12 +14,13 @@
     "test": "npx tsx src/test/verifyProcedural.ts"
   },
   "dependencies": {
-    "three": "^0.170.0"
+    "pixel-tree": "github:Botopai50/Pixel_Tree#main",
+    "three": "^0.186.0"
   },
   "devDependencies": {
-    "@types/three": "^0.170.0",
+    "@types/three": "^0.185.4",
     "puppeteer-core": "^25.10.0",
-    "typescript": "^5.6.3",
-    "vite": "^6.0.0"
+    "typescript": "^5.8.3",
+    "vite": "^6.2.3"
   }
 }
