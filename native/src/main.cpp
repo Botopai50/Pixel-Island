@@ -1550,15 +1550,117 @@ private:
         endOneTimeCommands(cmd);
     }
 
-    void createTerrainTextureResources() {
-        constexpr VkFormat format=VK_FORMAT_R8G8B8A8_SRGB;
-        createImage(
-            TERRAIN_ATLAS_SIZE_PX,TERRAIN_ATLAS_SIZE_PX,format,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
-            terrainTextureImage_,terrainTextureMemory_
-        );
-        terrainTextureView_=createColorImageView(terrainTextureImage_,format);
+    void transitionImage(VkImage image,VkImageLayout oldLayout,VkImageLayout newLayout) {
+        VkCommandBuffer cmd=beginOneTimeCommands();
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout=oldLayout;b.newLayout=newLayout;
+        b.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        b.image=image;
+        b.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount=1;b.subresourceRange.layerCount=1;
 
+        VkPipelineStageFlags srcStage=VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        VkPipelineStageFlags dstStage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+        if(oldLayout==VK_IMAGE_LAYOUT_UNDEFINED&&newLayout==VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL){
+            b.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+        }else if(oldLayout==VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL&&newLayout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL){
+            b.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            srcStage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+            dstStage=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }else{
+            throw std::runtime_error("Transicao generica de imagem nao suportada.");
+        }
+        vkCmdPipelineBarrier(cmd,srcStage,dstStage,0,0,nullptr,0,nullptr,1,&b);
+        endOneTimeCommands(cmd);
+    }
+
+    TextureGpu createTextureRgba(const std::vector<uint8_t>& pixels,uint32_t width,uint32_t height) {
+        if(pixels.size()!=static_cast<size_t>(width)*height*4u)
+            throw std::runtime_error("Texture RGBA possui tamanho invalido.");
+
+        TextureGpu t{};
+        t.width=width;t.height=height;
+        constexpr VkFormat fmt=VK_FORMAT_R8G8B8A8_SRGB;
+        createImage(width,height,fmt,VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,t.image,t.memory);
+        t.view=createColorImageView(t.image,fmt);
+
+        Buffer staging=createBuffer(static_cast<VkDeviceSize>(pixels.size()),VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        std::memcpy(staging.mapped,pixels.data(),pixels.size());
+
+        transitionImage(t.image,VK_IMAGE_LAYOUT_UNDEFINED,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        VkCommandBuffer cmd=beginOneTimeCommands();
+        VkBufferImageCopy region{};
+        region.imageSubresource.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount=1;
+        region.imageExtent={width,height,1};
+        vkCmdCopyBufferToImage(cmd,staging.buffer,t.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region);
+        endOneTimeCommands(cmd);
+        transitionImage(t.image,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        destroyBuffer(staging);
+        return t;
+    }
+
+    void destroyTexture(TextureGpu& t) {
+        if(t.view)vkDestroyImageView(device_,t.view,nullptr);
+        if(t.image)vkDestroyImage(device_,t.image,nullptr);
+        if(t.memory)vkFreeMemory(device_,t.memory,nullptr);
+        t={};
+    }
+
+    VkDescriptorSet allocateTerrainDescriptor(const TextureGpu& chunkTexture) {
+        VkDescriptorSet set=VK_NULL_HANDLE;
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool=descriptorPool_;
+        ai.descriptorSetCount=1;
+        ai.pSetLayouts=&descriptorSetLayout_;
+        check(vkAllocateDescriptorSets(device_,&ai,&set),"vkAllocateDescriptorSets(chunk)");
+
+        VkDescriptorImageInfo infos[2]{};
+        infos[0].sampler=terrainTextureSampler_;
+        infos[0].imageView=chunkTexture.view;
+        infos[0].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        infos[1].sampler=terrainTextureSampler_;
+        infos[1].imageView=wallTexture_.view;
+        infos[1].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkWriteDescriptorSet writes[2]{};
+        for(uint32_t i=0;i<2;i++){
+            writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet=set;
+            writes[i].dstBinding=i;
+            writes[i].descriptorCount=1;
+            writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo=&infos[i];
+        }
+        vkUpdateDescriptorSets(device_,2,writes,0,nullptr);
+        return set;
+    }
+
+    std::vector<uint8_t> loadWallAtlasPixels() {
+        const std::wstring path=executableDir()+L"\\forge_globals.bin";
+        auto raw=readBinary(path);
+        if(raw.size()<32)throw std::runtime_error("forge_globals.bin ausente ou invalido.");
+        auto rd=[&](size_t o){uint32_t v=0;std::memcpy(&v,raw.data()+o,4);return v;};
+        if(rd(0)!=0x50494647u||rd(4)!=1u)throw std::runtime_error("forge_globals.bin magic/version invalido.");
+        const uint32_t wallW=rd(8),wallH=rd(12);
+        if(wallW!=256u||wallH!=1024u)throw std::runtime_error("Dimensao inesperada dos atlas de parede.");
+        const size_t one=static_cast<size_t>(wallW)*wallH*4u;
+        if(raw.size()<32+one*4)throw std::runtime_error("forge_globals.bin truncado.");
+
+        std::vector<uint8_t> atlas(1024u*1024u*4u,0);
+        for(uint32_t which=0;which<4;which++){
+            const uint8_t* src=reinterpret_cast<const uint8_t*>(raw.data()+32+one*which);
+            for(uint32_t y=0;y<1024;y++){
+                uint8_t* dst=atlas.data()+(static_cast<size_t>(y)*1024u+which*256u)*4u;
+                std::memcpy(dst,src+static_cast<size_t>(y)*256u*4u,256u*4u);
+            }
+        }
+        return atlas;
+    }
+
+    void createTerrainTextureResources() {
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         sci.magFilter=VK_FILTER_LINEAR;
         sci.minFilter=VK_FILTER_LINEAR;
@@ -1568,35 +1670,22 @@ private:
         sci.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.maxAnisotropy=1.0f;
         sci.borderColor=VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-        sci.unnormalizedCoordinates=VK_FALSE;
         check(vkCreateSampler(device_,&sci,nullptr,&terrainTextureSampler_),"vkCreateSampler(terrain)");
 
         VkDescriptorPoolSize ps{};
         ps.type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ps.descriptorCount=1;
+        ps.descriptorCount=1024;
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pci.maxSets=1;
+        pci.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        pci.maxSets=512;
         pci.poolSizeCount=1;
         pci.pPoolSizes=&ps;
         check(vkCreateDescriptorPool(device_,&pci,nullptr,&descriptorPool_),"vkCreateDescriptorPool");
 
-        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        ai.descriptorPool=descriptorPool_;
-        ai.descriptorSetCount=1;
-        ai.pSetLayouts=&descriptorSetLayout_;
-        check(vkAllocateDescriptorSets(device_,&ai,&descriptorSet_),"vkAllocateDescriptorSets");
-
-        VkDescriptorImageInfo ii{};
-        ii.sampler=terrainTextureSampler_;
-        ii.imageView=terrainTextureView_;
-        ii.imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet=descriptorSet_;
-        write.dstBinding=0;
-        write.descriptorCount=1;
-        write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo=&ii;
-        vkUpdateDescriptorSets(device_,1,&write,0,nullptr);
+        std::vector<uint8_t> white(256u*128u*4u,255);
+        fallbackTexture_=createTextureRgba(white,256,128);
+        wallTexture_=createTextureRgba(loadWallAtlasPixels(),1024,1024);
+        descriptorSet_=allocateTerrainDescriptor(fallbackTexture_);
     }
 
     void uploadTerrainTexture(const std::vector<uint8_t>& pixels) {
