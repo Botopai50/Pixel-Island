@@ -32,6 +32,8 @@ jobs:
           glslangValidator -V --target-env vulkan1.0 native/shaders/world.frag -o native/compiled-shaders/world.frag.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/water.vert -o native/compiled-shaders/water.vert.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/water.frag -o native/compiled-shaders/water.frag.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/blit.vert -o native/compiled-shaders/blit.vert.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/blit.frag -o native/compiled-shaders/blit.frag.spv
 
       - uses: actions/upload-artifact@v4
         with:
