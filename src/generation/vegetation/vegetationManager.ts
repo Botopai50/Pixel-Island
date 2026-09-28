@@ -295,10 +295,24 @@ export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg'
         float d01 = compareDepth + dot(uv01 - uv, dz_duv);
         float d11 = compareDepth + dot(uv11 - uv, dz_duv);
 
-        float s00 = texture2DCompare(shadowMap, uv00, d00);
-        float s10 = texture2DCompare(shadowMap, uv10, d10);
-        float s01 = texture2DCompare(shadowMap, uv01, d01);
-        float s11 = texture2DCompare(shadowMap, uv11, d11);
+        // Three.js r186 + BasicShadowMap usa sampler2D comum.
+        // texture2DCompare não existe mais nesse caminho; fazemos a comparação manual.
+        float z00 = texture2D(shadowMap, uv00).r;
+        float z10 = texture2D(shadowMap, uv10).r;
+        float z01 = texture2D(shadowMap, uv01).r;
+        float z11 = texture2D(shadowMap, uv11).r;
+
+        #ifdef USE_REVERSED_DEPTH_BUFFER
+          float s00 = step(z00, d00);
+          float s10 = step(z10, d10);
+          float s01 = step(z01, d01);
+          float s11 = step(z11, d11);
+        #else
+          float s00 = step(d00, z00);
+          float s10 = step(d10, z10);
+          float s01 = step(d01, z01);
+          float s11 = step(d11, z11);
+        #endif
 
         // Se todos os 4 texels concordam, não há silhueta na célula
         if (s00 == s10 && s10 == s01 && s01 == s11) {
