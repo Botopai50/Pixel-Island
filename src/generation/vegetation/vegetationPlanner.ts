@@ -264,13 +264,15 @@ export function planChunkVegetation(
         continue;
       }
 
+      const densityScale = CONFIG.VEGETATION_DENSITY_SCALE;
       const canTree = pt.slope <= CONFIG.VEGETATION.MAX_SLOPE_FOR_TREES;
-      const treeChance = canTree ? biome.vegetationDensity * 0.75 : 0;
-      const shrubChance = (!isBeach && pt.slope < 0.52) ? biome.shrubDensity * 0.22 : 0;
+      const treeChance = canTree ? biome.vegetationDensity * 0.75 * densityScale : 0;
+      const shrubChance = (!isBeach && pt.slope < 0.52) ? biome.shrubDensity * 0.22 * densityScale : 0;
       const maxRockSlope = pt.height > 45.0 ? 0.38 : 0.50;
       const canRock = pt.slope <= maxRockSlope;
-      const rockChance = canRock ? biome.rockDensity * 0.16 : 0;
-      const logChance = pt.slope < 0.35 ? biome.fallenLogDensity * 0.08 : 0;
+      // Rochas são muito mais baratas que as árvores Pixel_Tree, então caem menos agressivamente.
+      const rockChance = canRock ? biome.rockDensity * 0.16 * Math.max(0.72, densityScale) : 0;
+      const logChance = pt.slope < 0.35 ? biome.fallenLogDensity * 0.08 * densityScale : 0;
 
       const roll = prng.next();
 
