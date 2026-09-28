@@ -27,6 +27,9 @@ target_link_libraries(PixelIslandNative PRIVATE
 )
 
 if(MSVC)
+    set_property(TARGET PixelIslandNative PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
     target_compile_options(PixelIslandNative PRIVATE /W4 /O2 /permissive-)
     target_link_options(PixelIslandNative PRIVATE /SUBSYSTEM:WINDOWS)
 else()
