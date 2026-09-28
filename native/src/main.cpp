@@ -106,6 +106,37 @@ Mat4 multiply(const Mat4& a, const Mat4& b) {
     return r;
 }
 
+Mat4 identity4() {
+    Mat4 r{};
+    r.m[0]=r.m[5]=r.m[10]=r.m[15]=1.0f;
+    return r;
+}
+
+Mat4 waterModelMatrix(float x,float z) {
+    Mat4 r{};
+    // Mesma transformação do original: Plane XY + rotation.x=-PI/2 + translate no nível do mar.
+    r.m[0]=1.0f;
+    r.m[6]=-1.0f;
+    r.m[9]=1.0f;
+    r.m[12]=x;
+    r.m[13]=0.0f;
+    r.m[14]=z;
+    r.m[15]=1.0f;
+    return r;
+}
+
+Mat4 textureBiasMatrix() {
+    Mat4 r{};
+    r.m[0]=0.5f;
+    r.m[5]=0.5f;
+    r.m[10]=0.5f;
+    r.m[12]=0.5f;
+    r.m[13]=0.5f;
+    r.m[14]=0.5f;
+    r.m[15]=1.0f;
+    return r;
+}
+
 Mat4 lookAt(const Vec3& eye, const Vec3& center, const Vec3& up) {
     const Vec3 f = normalize(center - eye);
     const Vec3 s = normalize(cross(f, up));
