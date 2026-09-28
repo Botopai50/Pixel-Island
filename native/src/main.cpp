@@ -378,6 +378,11 @@ struct ObjectSeed {
     bool exactMatrix=false;
 };
 
+struct ChunkVegetationNative {
+    bool detail=false;
+    std::vector<ObjectSeed> objects;
+};
+
 struct WorldData {
     std::vector<Vertex> terrainVertices;
     std::vector<uint32_t> terrainIndices;
@@ -2348,6 +2353,39 @@ private:
     static std::string chunkKey(int cx,int cz) {
         return std::to_string(cx)+":"+std::to_string(cz);
     }
+
+    std::vector<ObjectSeed> decodeVegetationObjects(const VegetationCpu& src) {
+        constexpr size_t stride=23;
+        if(src.data.size()%stride!=0) throw std::runtime_error("Vegetation stream stride invalido.");
+        std::vector<ObjectSeed> out;
+        out.reserve(src.data.size()/stride);
+        for(size_t o=0;o<src.data.size();o+=stride){
+            const int planType=static_cast<int>(std::round(src.data[o]));
+            ObjectSeed obj{};
+            obj.kind=nativeKindForPlanType(planType);
+            for(int k=0;k<16;k++)obj.matrix[k]=src.data[o+1+k];
+            obj.exactMatrix=true;
+            obj.x=obj.matrix[12];obj.y=obj.matrix[13];obj.z=obj.matrix[14];
+            const bool treePlan=planType>=0&&planType<=16;
+            const size_t tintOff=17,leafOff=20;
+            const size_t colOff=treePlan?leafOff:tintOff;
+            obj.r=src.data[o+colOff+0];
+            obj.g=src.data[o+colOff+1];
+            obj.b=src.data[o+colOff+2];
+            out.push_back(obj);
+        }
+        return out;
+    }
+
+    void rebuildObjectsFromVegetation() {
+        size_t total=0;
+        for(const auto& [k,v]:chunkVegetation_)total+=v.objects.size();
+        objects_.clear();
+        objects_.reserve(total);
+        for(const auto& [k,v]:chunkVegetation_)
+            objects_.insert(objects_.end(),v.objects.begin(),v.objects.end());
+    }
+
     static std::string horizonKey(int level,int tx,int tz) {
         return std::to_string(level)+":"+std::to_string(tx)+":"+std::to_string(tz);
     }
@@ -2376,6 +2414,33 @@ private:
                     exactStreamer_->requestChunk(ccx,ccz,density,segments,walls,static_cast<double>(d2),streamGeneration_);
                 }
             }
+
+            // Vegetação original: raio 3; flora detalhada: raio 1.
+            for(int dz=-3;dz<=3;dz++){
+                for(int dx=-3;dx<=3;dx++){
+                    const int d2=dx*dx+dz*dz;
+                    if(d2>9)continue;
+                    const int vcx=cx+dx,vcz=cz+dz;
+                    const bool detail=d2<=1;
+                    const std::string vkey=chunkKey(vcx,vcz);
+                    auto vit=chunkVegetation_.find(vkey);
+                    if(vit==chunkVegetation_.end()||vit->second.detail!=detail)
+                        exactStreamer_->requestVegetation(vcx,vcz,detail,static_cast<double>(d2)+0.35,streamGeneration_);
+                }
+            }
+
+            bool vegRemoved=false;
+            for(auto it=chunkVegetation_.begin();it!=chunkVegetation_.end();){
+                // parseia coordenadas guardadas no próprio primeiro objeto quando possível; para
+                // chunks vazios usa a chave cx:cz.
+                const auto colon=it->first.find(':');
+                const int vcx=std::stoi(it->first.substr(0,colon));
+                const int vcz=std::stoi(it->first.substr(colon+1));
+                const int dx=vcx-cx,dz=vcz-cz;
+                if(dx*dx+dz*dz>9){it=chunkVegetation_.erase(it);vegRemoved=true;}
+                else ++it;
+            }
+            if(vegRemoved)rebuildObjectsFromVegetation();
 
             // Retenção igual à ideia do ChunkManager: margem de dois chunks para não regenerar
             // a cada pequena travessia de borda.
@@ -2441,7 +2506,16 @@ private:
         // No máximo um upload pesado de chunk por quadro para não criar hitch.
         ExactStreamResult r;
         if(exactStreamer_->take(r)){
-            if(auto* cpu=std::get_if<ExactChunkCpu>(&r.payload)){
+            if(auto* veg=std::get_if<VegetationCpu>(&r.payload)){
+                const int dx=veg->cx-exactCenterCx_,dz=veg->cz-exactCenterCz_;
+                if(dx*dx+dz*dz<=9){
+                    ChunkVegetationNative entry{};
+                    entry.detail=veg->detail;
+                    entry.objects=decodeVegetationObjects(*veg);
+                    chunkVegetation_[chunkKey(veg->cx,veg->cz)]=std::move(entry);
+                    rebuildObjectsFromVegetation();
+                }
+            } else if(auto* cpu=std::get_if<ExactChunkCpu>(&r.payload)){
                 const int dx=cpu->cx-exactCenterCx_,dz=cpu->cz-exactCenterCz_;
                 const int keep=activeViewRadius()+2;
                 if(dx*dx+dz*dz<=keep*keep){
@@ -2928,6 +3002,7 @@ private:
     std::unique_ptr<ExactStreamingWorker> exactStreamer_;
     std::unique_ptr<ExactStreamingWorker> horizonStreamer_;
     std::unordered_map<std::string,ExactChunkGpu> exactChunks_;
+    std::unordered_map<std::string,ChunkVegetationNative> chunkVegetation_;
     std::unordered_map<std::string,HorizonGpu> horizonTiles_;
     std::unordered_set<std::string> wantedHorizon_;
     int exactCenterCx_=999999,exactCenterCz_=999999;
