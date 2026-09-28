@@ -862,7 +862,14 @@ public:
         createWindow(hInstance);
         initVulkan();
         createGpuWorldResources();
-        uploadWorld(generateWorld(0,0));
+
+        const std::filesystem::path bundle = std::filesystem::path(executableDir()) / L"world.bundle.js";
+        JsWorldRuntime initialWorld(bundle);
+        uploadWorld(generateWorldExact(initialWorld,0,0));
+        focus_={0,heightAt(0,0),0};
+        camera_=observerEye();
+        streamer_=std::make_unique<WorldStreamer>(bundle);
+
         mainLoop();
         vkDeviceWaitIdle(device_);
     }
@@ -948,7 +955,6 @@ private:
         createCommandBuffers();
         createSyncObjects();
 
-        streamer_=std::make_unique<WorldStreamer>();
     }
 
     void check(VkResult r,const char* what) {
@@ -1162,14 +1168,15 @@ private:
         binds[0]={0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
         binds[1]={1,sizeof(InstanceGPU),VK_VERTEX_INPUT_RATE_INSTANCE};
 
-        std::array<VkVertexInputAttributeDescription,7> attrs{};
+        std::array<VkVertexInputAttributeDescription,8> attrs{};
         attrs[0]={0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,px)};
         attrs[1]={1,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,nx)};
         attrs[2]={2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,r)};
-        attrs[3]={3,1,VK_FORMAT_R32G32B32_SFLOAT,offsetof(InstanceGPU,x)};
-        attrs[4]={4,1,VK_FORMAT_R32_SFLOAT,offsetof(InstanceGPU,scale)};
-        attrs[5]={5,1,VK_FORMAT_R32_SFLOAT,offsetof(InstanceGPU,rotation)};
-        attrs[6]={6,1,VK_FORMAT_R32G32B32_SFLOAT,offsetof(InstanceGPU,r)};
+        attrs[3]={3,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,m)+sizeof(float)*0};
+        attrs[4]={4,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,m)+sizeof(float)*4};
+        attrs[5]={5,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,m)+sizeof(float)*8};
+        attrs[6]={6,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,m)+sizeof(float)*12};
+        attrs[7]={7,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,r)};
 
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vi.vertexBindingDescriptionCount=2; vi.pVertexBindingDescriptions=binds;
@@ -1325,7 +1332,9 @@ private:
         terrainIB_=createBuffer(sizeof(uint32_t)*static_cast<size_t>(TERRAIN_SEGMENTS)*TERRAIN_SEGMENTS*6,VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 
         dummyInstance_=createBuffer(sizeof(InstanceGPU),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        InstanceGPU d{0,0,0,1,0,1,1,1};
+        InstanceGPU d{};
+        d.m[0]=d.m[5]=d.m[10]=d.m[15]=1.0f;
+        d.r=d.g=d.b=d.a=1.0f;
         std::memcpy(dummyInstance_.mapped,&d,sizeof(d));
 
         for(int i=0;i<MESH_KIND_COUNT;i++) {
@@ -1343,16 +1352,34 @@ private:
         std::memcpy(terrainVB_.mapped,w.terrainVertices.data(),vbBytes);
         std::memcpy(terrainIB_.mapped,w.terrainIndices.data(),ibBytes);
         terrainIndexCount_=static_cast<uint32_t>(w.terrainIndices.size());
+        terrainHeights_.resize(w.terrainVertices.size());
+        for(size_t i=0;i<w.terrainVertices.size();++i) terrainHeights_[i]=w.terrainVertices[i].py;
         objects_=std::move(w.objects);
         worldCenterX_=w.centerX; worldCenterZ_=w.centerZ;
         requestedCenterX_=worldCenterX_; requestedCenterZ_=worldCenterZ_;
+    }
+
+    float heightAt(float x,float z) const {
+        if(terrainHeights_.empty()) return 0.0f;
+        const float step=TERRAIN_SIZE/static_cast<float>(TERRAIN_SEGMENTS);
+        const float x0=static_cast<float>(worldCenterX_)-TERRAIN_SIZE*0.5f;
+        const float z0=static_cast<float>(worldCenterZ_)-TERRAIN_SIZE*0.5f;
+        float u=(x-x0)/step,v=(z-z0)/step;
+        u=std::clamp(u,0.0f,static_cast<float>(TERRAIN_SEGMENTS)-0.001f);
+        v=std::clamp(v,0.0f,static_cast<float>(TERRAIN_SEGMENTS)-0.001f);
+        const int ix=static_cast<int>(std::floor(u)),iz=static_cast<int>(std::floor(v));
+        const float fu=u-ix,fv=v-iz;
+        const int side=TERRAIN_SEGMENTS+1;
+        const float a=terrainHeights_[iz*side+ix],b=terrainHeights_[iz*side+ix+1];
+        const float cc=terrainHeights_[(iz+1)*side+ix],d=terrainHeights_[(iz+1)*side+ix+1];
+        return (a+(b-a)*fu)*(1-fv)+(cc+(d-cc)*fu)*fv;
     }
 
     Vec3 observerEye() const {
         const float horizontal=observerSize_*0.72f;
         return {
             focus_.x + std::sin(observerYaw_)*horizontal,
-            std::max(terrainHeight(focus_.x,focus_.z)+35.0f, observerSize_*0.62f),
+            std::max(heightAt(focus_.x,focus_.z)+35.0f, observerSize_*0.62f),
             focus_.z + std::cos(observerYaw_)*horizontal
         };
     }
@@ -1362,9 +1389,9 @@ private:
         if(tabNow&&!tabDown_) {
             observerMode_=!observerMode_;
             if(observerMode_) {
-                focus_={camera_.x,terrainHeight(camera_.x,camera_.z),camera_.z};
+                focus_={camera_.x,heightAt(camera_.x,camera_.z),camera_.z};
             } else {
-                camera_={focus_.x,terrainHeight(focus_.x,focus_.z)+1.75f,focus_.z};
+                camera_={focus_.x,heightAt(focus_.x,focus_.z)+1.75f,focus_.z};
                 yaw_=observerYaw_+PI;
                 pitch_=-0.05f;
             }
@@ -1390,7 +1417,7 @@ private:
             if(GetAsyncKeyState('S')&0x8000) focus_=focus_-flat*(speed*dt);
             if(GetAsyncKeyState('D')&0x8000) focus_=focus_+right*(speed*dt);
             if(GetAsyncKeyState('A')&0x8000) focus_=focus_-right*(speed*dt);
-            focus_.y=terrainHeight(focus_.x,focus_.z);
+            focus_.y=heightAt(focus_.x,focus_.z);
             camera_=observerEye();
         } else {
             const float turn=1.65f*dt;
@@ -1408,7 +1435,7 @@ private:
             if(GetAsyncKeyState('S')&0x8000) camera_=camera_-flat*(speed*dt);
             if(GetAsyncKeyState('D')&0x8000) camera_=camera_+right*(speed*dt);
             if(GetAsyncKeyState('A')&0x8000) camera_=camera_-right*(speed*dt);
-            camera_.y=terrainHeight(camera_.x,camera_.z)+1.75f;
+            camera_.y=heightAt(camera_.x,camera_.z)+1.75f;
         }
 
         if(GetAsyncKeyState(VK_ESCAPE)&0x8000) PostMessageW(hwnd_,WM_CLOSE,0,0);
@@ -1471,7 +1498,18 @@ private:
             }
 
             if(visible_[kind].size()>=MAX_INSTANCES_PER_MESH) continue;
-            visible_[kind].push_back({o.x,o.y,o.z,o.scale,o.rotation,o.r,o.g,o.b});
+            InstanceGPU inst{};
+            if(o.exactMatrix){
+                std::memcpy(inst.m,o.matrix.data(),sizeof(inst.m));
+            }else{
+                const float cs=std::cos(o.rotation),sn=std::sin(o.rotation),s=o.scale;
+                inst.m[0]=cs*s; inst.m[1]=0; inst.m[2]=sn*s; inst.m[3]=0;
+                inst.m[4]=0; inst.m[5]=s; inst.m[6]=0; inst.m[7]=0;
+                inst.m[8]=-sn*s; inst.m[9]=0; inst.m[10]=cs*s; inst.m[11]=0;
+                inst.m[12]=o.x;inst.m[13]=o.y;inst.m[14]=o.z;inst.m[15]=1;
+            }
+            inst.r=o.r;inst.g=o.g;inst.b=o.b;inst.a=1.0f;
+            visible_[kind].push_back(inst);
         }
 
         for(int i=0;i<MESH_KIND_COUNT;i++) {
@@ -1719,9 +1757,10 @@ private:
     std::array<Buffer,MESH_KIND_COUNT> instanceBuffers_{};
     std::array<std::vector<InstanceGPU>,MESH_KIND_COUNT> visible_{};
     std::vector<ObjectSeed> objects_;
+    std::vector<float> terrainHeights_;
 
-    Vec3 camera_{0,terrainHeight(0,-160)+1.75f,-160};
-    Vec3 focus_{0,terrainHeight(0,0),0};
+    Vec3 camera_{0,20,-160};
+    Vec3 focus_{0,0,0};
     float yaw_=0.0f,pitch_=-0.05f;
     bool observerMode_=true;
     bool tabDown_=false;
