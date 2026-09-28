@@ -3208,6 +3208,16 @@ private:
             }
         }
 
+        // WaterBiomeMap original: rebuild quando a câmera sai de 20% do span (307.2m).
+        if(worldReady_ && (
+            !waterBiomeReady_ ||
+            std::hypot(x-waterBiomeRequestedX_,z-waterBiomeRequestedZ_)>1536.0f*0.20f
+        )){
+            waterBiomeRequestedX_=x;
+            waterBiomeRequestedZ_=z;
+            exactStreamer_->requestWaterBiome(x,z,4.0,streamGeneration_);
+        }
+
         // Distant Horizons original, nível 0. O preset "integrada fraca" mantém 1 nível a 55%.
         if(worldReady_&&(force||std::hypot(x-lastHorizonPlanX_,z-lastHorizonPlanZ_)>=200.0f)){
             lastHorizonPlanX_=x;lastHorizonPlanZ_=z;
@@ -3289,7 +3299,19 @@ private:
         // No máximo um upload pesado de chunk por quadro para não criar hitch.
         ExactStreamResult r;
         if(exactStreamer_->take(r)){
-            if(auto* veg=std::get_if<VegetationCpu>(&r.payload)){
+            if(auto* wb=std::get_if<WaterBiomeCpu>(&r.payload)){
+                vkDeviceWaitIdle(device_);
+                TextureGpu fresh=createTextureRgba(wb->rgba,wb->width,wb->height);
+                destroyTexture(waterBiomeTexture_);
+                waterBiomeTexture_=std::move(fresh);
+                waterBiomeOriginX_=wb->originX;
+                waterBiomeOriginZ_=wb->originZ;
+                waterBiomeSpan_=wb->span;
+                waterBiomeCenterX_=wb->originX+wb->span*0.5f;
+                waterBiomeCenterZ_=wb->originZ+wb->span*0.5f;
+                waterBiomeReady_=true;
+                updateWaterDescriptor();
+            } else if(auto* veg=std::get_if<VegetationCpu>(&r.payload)){
                 const int dx=veg->cx-exactCenterCx_,dz=veg->cz-exactCenterCz_;
                 if(dx*dx+dz*dz<=9){
                     ChunkVegetationNative entry{};
@@ -3924,6 +3946,7 @@ private:
     bool waterBiomeReady_=false;
     float waterBiomeOriginX_=0.0f,waterBiomeOriginZ_=0.0f,waterBiomeSpan_=1536.0f;
     float waterBiomeCenterX_=1e9f,waterBiomeCenterZ_=1e9f;
+    float waterBiomeRequestedX_=1e9f,waterBiomeRequestedZ_=1e9f;
     VkSampler postLinearSampler_=VK_NULL_HANDLE;
     VkSampler waterDepthSampler_=VK_NULL_HANDLE;
     VkDescriptorPool postDescriptorPool_=VK_NULL_HANDLE;
