@@ -2019,6 +2019,51 @@ private:
             vkDestroyShaderModule(device_,wvs,nullptr);
         }
 
+        // CartoonSkybox original convertido automaticamente para Vulkan.
+        {
+            VkShaderModule svs=shaderModule(dir+L"sky.vert.spv");
+            VkShaderModule sfs=shaderModule(dir+L"sky.frag.spv");
+            VkPipelineShaderStageCreateInfo sst[2]{};
+            sst[0]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            sst[0].stage=VK_SHADER_STAGE_VERTEX_BIT;sst[0].module=svs;sst[0].pName="main";
+            sst[1]={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            sst[1].stage=VK_SHADER_STAGE_FRAGMENT_BIT;sst[1].module=sfs;sst[1].pName="main";
+
+            VkVertexInputBindingDescription sb{0,sizeof(SkyVertex),VK_VERTEX_INPUT_RATE_VERTEX};
+            VkVertexInputAttributeDescription sa{0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(SkyVertex,x)};
+            VkPipelineVertexInputStateCreateInfo svi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+            svi.vertexBindingDescriptionCount=1;
+            svi.pVertexBindingDescriptions=&sb;
+            svi.vertexAttributeDescriptionCount=1;
+            svi.pVertexAttributeDescriptions=&sa;
+
+            VkPipelineRasterizationStateCreateInfo srs=rs;
+            srs.cullMode=VK_CULL_MODE_FRONT_BIT;
+
+            VkPipelineDepthStencilStateCreateInfo sds{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+            sds.depthTestEnable=VK_TRUE;
+            sds.depthWriteEnable=VK_FALSE;
+            sds.depthCompareOp=VK_COMPARE_OP_LESS_OR_EQUAL;
+
+            if(skyPipelineLayout_==VK_NULL_HANDLE){
+                VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+                lci.setLayoutCount=1;
+                lci.pSetLayouts=&skyDescriptorSetLayout_;
+                check(vkCreatePipelineLayout(device_,&lci,nullptr,&skyPipelineLayout_),"vkCreatePipelineLayout(sky)");
+            }
+
+            VkGraphicsPipelineCreateInfo pci=ci;
+            pci.pStages=sst;
+            pci.pVertexInputState=&svi;
+            pci.pRasterizationState=&srs;
+            pci.pDepthStencilState=&sds;
+            pci.layout=skyPipelineLayout_;
+            pci.renderPass=renderPass_;
+            check(vkCreateGraphicsPipelines(device_,VK_NULL_HANDLE,1,&pci,nullptr,&skyPipeline_),"vkCreateGraphicsPipelines(sky)");
+            vkDestroyShaderModule(device_,sfs,nullptr);
+            vkDestroyShaderModule(device_,svs,nullptr);
+        }
+
         vkDestroyShaderModule(device_,fs,nullptr);
         vkDestroyShaderModule(device_,vs,nullptr);
     }
