@@ -910,6 +910,7 @@ struct PushConstants {
     float cameraFog[4];
     float sunAmbient[4];
     float environment[4];
+    float terrainAtlas[4];
 };
 
 class VulkanApp {
@@ -1002,6 +1003,7 @@ private:
 
         pickPhysicalDevice();
         createLogicalDevice();
+        createDescriptorSetLayout();
         createSwapchain();
         createRenderPass();
         createPipeline();
@@ -1098,6 +1100,19 @@ private:
         check(vkCreateDevice(physicalDevice_,&ci,nullptr,&device_),"vkCreateDevice");
         vkGetDeviceQueue(device_,*queues_.graphics,0,&graphicsQueue_);
         vkGetDeviceQueue(device_,*queues_.present,0,&presentQueue_);
+    }
+
+    void createDescriptorSetLayout() {
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding=0;
+        binding.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount=1;
+        binding.stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+
+        VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        ci.bindingCount=1;
+        ci.pBindings=&binding;
+        check(vkCreateDescriptorSetLayout(device_,&ci,nullptr,&descriptorSetLayout_),"vkCreateDescriptorSetLayout");
     }
 
     VkSurfaceFormatKHR chooseFormat(const std::vector<VkSurfaceFormatKHR>& f) {
@@ -1268,7 +1283,10 @@ private:
             range.stageFlags=VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT;
             range.offset=0; range.size=sizeof(PushConstants);
             VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-            lci.pushConstantRangeCount=1; lci.pPushConstantRanges=&range;
+            lci.setLayoutCount=1;
+            lci.pSetLayouts=&descriptorSetLayout_;
+            lci.pushConstantRangeCount=1;
+            lci.pPushConstantRanges=&range;
             check(vkCreatePipelineLayout(device_,&lci,nullptr,&pipelineLayout_),"vkCreatePipelineLayout");
         }
 
