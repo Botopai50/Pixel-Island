@@ -122,6 +122,10 @@ export class SkyAtmosphere {
   private ambientLight: THREE.AmbientLight;
   private fogNear = 200;
   private fogFar = 2400;
+  private qualityFogFirstNear = 20;
+  private qualityFogFirstFar = 11000;
+  private qualityFogObserverMinFar = 2400;
+  private qualityFogObserverExtra = 2200;
   private skybox: CartoonSkybox;
   private currentPreset: TimePreset = TIME_PRESETS.NOON;
   private currentSunDir: THREE.Vector3 = new THREE.Vector3(0.5, 0.8, 0.35).normalize();
@@ -182,14 +186,28 @@ export class SkyAtmosphere {
    * ~30% lavado de azul-claro. Aqui ela começa um pouco depois do ponto focado.
    */
   public setFocusDistance(focusDistance: number, firstPerson: boolean = false): void {
-    // Em primeira pessoa a paisagem vai até o horizonte (~12km): a névoa (atmosphericFog.ts)
-    // começa logo, cresce com a distância e fecha antes do fim do horizonte
-    this.fogNear = firstPerson ? 20 : Math.max(200, focusDistance + 150);
-    this.fogFar = firstPerson ? 11000 : Math.max(2400, focusDistance + 2200);
+    // O preset de qualidade decide quanto do mundo realmente precisa permanecer legível.
+    // Em hardware fraco a neblina fecha cedo e esconde a troca para horizonte/impostores.
+    this.fogNear = firstPerson ? this.qualityFogFirstNear : Math.max(180, focusDistance + 120);
+    this.fogFar = firstPerson
+      ? this.qualityFogFirstFar
+      : Math.max(this.qualityFogObserverMinFar, focusDistance + this.qualityFogObserverExtra);
     if (this.scene.fog instanceof THREE.Fog) {
       this.scene.fog.near = this.fogNear;
       this.scene.fog.far = this.fogFar;
     }
+  }
+
+  public setQualityFog(
+    firstPersonNear: number,
+    firstPersonFar: number,
+    observerMinFar: number,
+    observerExtra: number
+  ): void {
+    this.qualityFogFirstNear = firstPersonNear;
+    this.qualityFogFirstFar = firstPersonFar;
+    this.qualityFogObserverMinFar = observerMinFar;
+    this.qualityFogObserverExtra = observerExtra;
   }
 
   public getFogRange(): [number, number] {
