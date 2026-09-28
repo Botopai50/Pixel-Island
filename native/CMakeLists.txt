@@ -6,9 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
+find_package(qjs CONFIG REQUIRED)
 
 add_executable(PixelIslandNative WIN32
     src/main.cpp
+    src/js_world.cpp
 )
 
 add_executable(PixelIslandParity
@@ -25,6 +27,7 @@ target_compile_definitions(PixelIslandNative PRIVATE
 
 target_link_libraries(PixelIslandNative PRIVATE
     Vulkan::Vulkan
+    qjs
     user32
     gdi32
     shell32
