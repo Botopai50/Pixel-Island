@@ -232,3 +232,8 @@ std::vector<uint8_t> JsWorldRuntime::generateImpostorBlock(
         { minX, minZ, size, originX, originZ }
     );
 }
+
+
+std::vector<uint8_t> JsWorldRuntime::getForgeGlobals(const std::string& seed) {
+    return callByteBuffer("pixelGetForgeGlobals", { seed }, {});
+}
