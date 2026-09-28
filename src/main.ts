@@ -288,9 +288,8 @@ class App {
       this.pegmanWidget.onModeChange(mode);
       this.touchControlsWidget.onModeChange(mode);
       if (mode === CameraMode.FIRST_PERSON) {
-        // Em primeira pessoa: 11 chunks (~700m) de terreno detalhado; além disso o horizonte (malha
-        // grossa até ~12km) continua a paisagem
-        this.worldEngine.setViewRadius(11);
+        const level = QUALITY_LEVELS[this.quality.level];
+        this.worldEngine.setViewRadius(level.firstPersonRadius);
       } else if (mode === CameraMode.OBSERVER) {
         // No modo aéreo panorâmico, restaura o raio amplo para visualização continental completa
         this.worldEngine.setViewRadius(CONFIG.VIEW_RADIUS_CHUNKS);
@@ -375,13 +374,37 @@ class App {
     this.reflectionRenderTarget.setSize(level.reflectionSize, level.reflectionSize);
     this.reflectionIntervalMs = 1000 / Math.max(1, level.reflectionFps);
     this.atmosphere.getShadowClipmap().setMapSize(level.shadowMapSize);
+
     CONFIG.MAX_VIEW_RADIUS_CHUNKS = level.maxViewRadius;
     CONFIG.VIEW_RADIUS_CHUNKS = level.baseViewRadius;
     CONFIG.VEGETATION_RADIUS_CHUNKS = level.vegetationRadius;
+    CONFIG.GRASS_RADIUS_CHUNKS = level.grassRadius;
+    CONFIG.VEGETATION_DENSITY_SCALE = level.vegetationDensityScale;
+    CONFIG.CHUNK_SEGMENTS = level.chunkSegments;
     CONFIG.TEXTURE_DENSITY_CAP = level.textureDensityCap;
+    CONFIG.NEAR_TEXTURE_DENSITY_CAP = level.nearTextureDensityCap;
+    CONFIG.FXAA = level.fxaa;
+
+    this.atmosphere.setQualityFog(
+      level.fogFirstPersonNear,
+      level.fogFirstPersonFar,
+      level.fogObserverMinFar,
+      level.fogObserverExtra
+    );
+    this.worldEngine.setHorizonQuality(level.horizonLevels, level.horizonScale);
+
+    const currentMode = this.playerController?.getMode?.();
+    this.worldEngine.setViewRadius(
+      currentMode === CameraMode.FIRST_PERSON ? level.firstPersonRadius : level.baseViewRadius
+    );
+
     this.shadowStepSq = level.shadowStep * level.shadowStep;
     this.shadowsNeedUpdate = true;
-    console.info(`[qualidade] ${level.name}: resolução ${Math.round(level.renderScale * 100)}%, sombras ${level.shadowMapSize}px, alcance ${level.maxViewRadius} chunks`);
+    console.info(
+      `[qualidade] ${level.name}: resolução ${Math.round(level.renderScale * 100)}%, ` +
+      `chunks ${level.baseViewRadius}/${level.firstPersonRadius}, vegetação ${level.vegetationRadius}, ` +
+      `grama ${level.grassRadius}, terreno ${level.chunkSegments} seg, horizonte ${level.horizonLevels} nível(is)`
+    );
   }
 
   private onWindowResize(): void {
