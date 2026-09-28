@@ -12,6 +12,7 @@ add_executable(PixelIslandNative WIN32
     src/main.cpp
     src/js_world.cpp
     src/exact_streaming.cpp
+    src/pixel_tree_native.cpp
 )
 
 add_executable(PixelIslandParity
