@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { createTree } from 'pixel-tree/src/services/treeGenerator.ts';
 import { TREE_PRESETS } from 'pixel-tree/src/constants/presets.ts';
+import {
+  getPixelLeafColorAtlas,
+  getPixelSingleLeafTexture,
+} from 'pixel-tree/src/services/pixelArtTextureSystem.ts';
 import { PRNG } from '../math/prng.ts';
 import type { VegetationInstancePool } from './instancePool.ts';
 
@@ -169,66 +173,6 @@ function finishColorTexture(canvas: HTMLCanvasElement, repeat = false): THREE.Ca
 }
 
 /**
- * O Pixel_Tree armazena a pintura das folhas em duas texturas:
- *  - structure: índice da paleta + máscara alpha
- *  - palette: as cores finais
- *
- * Aqui as duas são "assadas" em uma textura RGB normal. Depois disso a textura
- * não contém iluminação: ela é apenas albedo e passa pela iluminação Lambert/SMSR
- * do Pixel-Island exatamente como qualquer outro objeto da cena.
- */
-function bakeFoliageAlbedo(
-  source: THREE.Material,
-  ownedTextures: THREE.Texture[]
-): THREE.Texture | null {
-  const structure = getTexture(source, 'uStruct');
-  const palette = getTexture(source, 'uPalette');
-  const steps = Number(getUniform<number>(source, 'uPaletteSteps') ?? 0);
-  if (!structure || !palette || steps <= 1) return null;
-
-  const s = canvasPixels(structure);
-  const p = canvasPixels(palette);
-  if (!s || !p) return null;
-
-  const accentAmount = Number(getUniform<number>(source, 'uAccentAmount') ?? 0);
-  const out = new Uint8ClampedArray(s.width * s.height * 4);
-
-  for (let i = 0; i < s.width * s.height; i++) {
-    const si = i * 4;
-    const tone01 = s.data[si] / 255;
-    const clump = s.data[si + 1] / 255;
-
-    // O shader original do Pixel_Tree trata a máscara como cutout, não como translucência.
-    // Converte qualquer cobertura válida em alpha 255 e o restante em 0.
-    const alphaThreshold = Math.round(
-      THREE.MathUtils.clamp(Number(getUniform<number>(source, 'uAlphaTest') ?? 0.45), 0.05, 0.95) * 255
-    );
-    const alpha = s.data[si + 3] >= alphaThreshold ? 255 : 0;
-
-    const tone = Math.max(0, Math.min(steps - 1, Math.round(tone01 * (steps - 1))));
-    // Canvas row 0 = main ramp, row 1 = accent.
-    const accent = clump < accentAmount * 0.20 ? 1 : 0;
-    const px = Math.min(p.width - 1, tone);
-    const py = Math.min(p.height - 1, accent);
-    const pi = (py * p.width + px) * 4;
-
-    out[si] = p.data[pi];
-    out[si + 1] = p.data[pi + 1];
-    out[si + 2] = p.data[pi + 2];
-    out[si + 3] = alpha;
-  }
-
-  const canvas = document.createElement('canvas');
-  canvas.width = s.width;
-  canvas.height = s.height;
-  canvas.getContext('2d')!.putImageData(new ImageData(out, s.width, s.height), 0, 0);
-
-  const tex = finishColorTexture(canvas, false);
-  ownedTextures.push(tex);
-  return tex;
-}
-
-/**
  * Converte a paleta procedural do Pixel_Tree em uma textura de albedo simples
  * para troncos/cactos/partes que eram pintadas inteiramente no fragment shader.
  * O padrão só mantém variação pixel-art; a luz vem 100% do Pixel-Island.
@@ -283,6 +227,21 @@ function bakePalettePattern(
  * Leaf cards originally use uv 0..1 plus aAtlasIndex to choose one of 8 tiles.
  * MeshLambert does not know aAtlasIndex, so bake that selection directly into UV.
  */
+function cloneResolvedColorTexture(
+  source: THREE.Texture,
+  ownedTextures: THREE.Texture[]
+): THREE.Texture {
+  const tex = source.clone();
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.premultiplyAlpha = false;
+  tex.needsUpdate = true;
+  ownedTextures.push(tex);
+  return tex;
+}
+
 function bakeLeafAtlasUv(geometry: THREE.BufferGeometry): void {
   const uv = geometry.getAttribute('uv') as THREE.BufferAttribute | undefined;
   const atlas = geometry.getAttribute('aAtlasIndex') as THREE.BufferAttribute | undefined;
@@ -346,25 +305,38 @@ function buildPixelIslandMaterial(
   let map: THREE.Texture | null = null;
   let alphaTest = 0;
 
-  // Legacy coloured atlas, when a generator path provides one.
-  const atlas = getTexture(source, 'uAtlas');
-  if (foliage && atlas) {
-    map = atlas;
-    alphaTest = Number(getUniform<number>(source, 'uAlphaTest') ?? 0.35);
-    bakeLeafAtlasUv(geometry);
-  } else if (foliage) {
-    // Normal Pixel_Tree path: structure + palette -> ordinary colour/albedo atlas.
-    map = bakeFoliageAlbedo(source, ownedTextures);
-    if (map) {
-      alphaTest = Number(getUniform<number>(source, 'uAlphaTest') ?? 0.45);
-      bakeLeafAtlasUv(geometry);
+  if (foliage) {
+    const cfg = TREE_PRESETS[preset] as any;
+    const hasStructAtlas = !!getTexture(source, 'uStruct');
+    const legacyAtlas = getTexture(source, 'uAtlas');
+    const hasAtlasIndex = !!geometry.getAttribute('aAtlasIndex');
+
+    if (hasStructAtlas) {
+      // Usa o atlas COLORIDO oficial do Pixel_Tree. Ele já resolve:
+      // estrutura procedural + paleta + silhueta + buracos internos.
+      // Nenhuma iluminação do shader do gerador é preservada.
+      const resolved = getPixelLeafColorAtlas(cfg);
+      map = cloneResolvedColorTexture(resolved, ownedTextures);
+      alphaTest = 0.5;
+
+      // Broadleaf cards armazenam o tile em aAtlasIndex. Coníferas já trazem UV de atlas.
+      if (hasAtlasIndex) bakeLeafAtlasUv(geometry);
+    } else if (legacyAtlas) {
+      map = cloneResolvedColorTexture(legacyAtlas, ownedTextures);
+      alphaTest = Math.max(0.3, Number(getUniform<number>(source, 'uAlphaTest') ?? 0.5));
+      if (hasAtlasIndex) bakeLeafAtlasUv(geometry);
+    } else if (getTexture(source, 'uPalette')) {
+      // Mudas/folhas isoladas usam uma única silhueta 0..1.
+      const single = getPixelSingleLeafTexture(cfg, Math.abs(seed) % 8);
+      map = cloneResolvedColorTexture(single, ownedTextures);
+      alphaTest = 0.5;
     }
   }
 
   if (!map) {
     const sourceMap = (source as any).map;
     if (sourceMap?.isTexture) {
-      map = sourceMap;
+      map = cloneResolvedColorTexture(sourceMap, ownedTextures);
       alphaTest = Number((source as any).alphaTest ?? 0);
     } else {
       map = bakePalettePattern(source, baseColor, seed, ownedTextures);
