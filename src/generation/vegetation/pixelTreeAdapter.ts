@@ -107,6 +107,24 @@ function bakeMesh(mesh: THREE.Mesh): THREE.BufferGeometry {
   return g;
 }
 
+function injectBeforeMainEnd(shader: string, code: string): string {
+  const mainIndex = shader.indexOf('void main');
+  if (mainIndex < 0) return shader;
+  const open = shader.indexOf('{', mainIndex);
+  if (open < 0) return shader;
+
+  let depth = 0;
+  for (let i = open; i < shader.length; i++) {
+    const ch = shader[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return shader.slice(0, i) + '\n' + code + '\n' + shader.slice(i);
+    }
+  }
+  return shader;
+}
+
 function injectStandardFade(material: THREE.Material, fade: FadeMode): void {
   if (fade === 'none') return;
   const previous = material.onBeforeCompile;
@@ -210,10 +228,31 @@ function cloneForPixelIsland(
   bakedInternalInstancing: boolean
 ): THREE.Material {
   if ((material as any).isShaderMaterial) {
-    return patchShaderMaterial(material as THREE.ShaderMaterial, fade, bakedInternalInstancing);
+    const shader = patchShaderMaterial(material as THREE.ShaderMaterial, fade, bakedInternalInstancing);
+
+    // O Pixel_Tree foi desenhado para uma cena própria e possui rim light/SSS/highlights
+    // bastante fortes. Dentro do Pixel-Island isso fazia as copas parecerem autoiluminadas.
+    if (shader.uniforms.uRimIntensity && typeof shader.uniforms.uRimIntensity.value === 'number') {
+      shader.uniforms.uRimIntensity.value = Math.min(shader.uniforms.uRimIntensity.value * 0.32, 0.28);
+    }
+    if (shader.uniforms.uHighlightAmount && typeof shader.uniforms.uHighlightAmount.value === 'number') {
+      shader.uniforms.uHighlightAmount.value *= 0.58;
+    }
+
+    shader.uniforms.uPixelIslandBrightness = { value: 0.74 };
+    shader.fragmentShader =
+      'uniform float uPixelIslandBrightness;\n' +
+      injectBeforeMainEnd(
+        shader.fragmentShader,
+        'gl_FragColor.rgb *= uPixelIslandBrightness;'
+      );
+    shader.needsUpdate = true;
+    return shader;
   }
 
-  const clone = material.clone();
+  const clone = material.clone() as any;
+  // Materiais Toon/Standard auxiliares do gerador também trazem emissive pensado para o preview.
+  if (clone.emissive?.isColor) clone.emissive.multiplyScalar(0.12);
   injectStandardFade(clone, fade);
   clone.needsUpdate = true;
   return clone;
@@ -423,6 +462,34 @@ export class PixelTreeAssetLibrary {
 
   public update(time: number): void {
     for (const asset of this.cache.values()) asset.update(time);
+  }
+
+  /**
+   * Sincroniza os shaders do Pixel_Tree com a iluminação real do Pixel-Island.
+   * uTexLightDir continua fixo porque faz parte da pintura procedural das texturas;
+   * uLightDir, por outro lado, deve acompanhar o sol da cena.
+   */
+  public syncLighting(
+    sunDirection: THREE.Vector3,
+    sunColor: THREE.Color,
+    ambientColor: THREE.Color
+  ): void {
+    const sunLum = sunColor.r * 0.2126 + sunColor.g * 0.7152 + sunColor.b * 0.0722;
+    const ambientLum = ambientColor.r * 0.2126 + ambientColor.g * 0.7152 + ambientColor.b * 0.0722;
+    const brightness = THREE.MathUtils.clamp(0.45 + ambientLum * 0.20 + sunLum * 0.10, 0.42, 0.76);
+
+    for (const asset of this.cache.values()) {
+      for (const material of asset.materials) {
+        const uniforms = (material as any).uniforms;
+        if (!uniforms) continue;
+        if (uniforms.uLightDir?.value?.isVector3) {
+          uniforms.uLightDir.value.copy(sunDirection).normalize();
+        }
+        if (uniforms.uPixelIslandBrightness) {
+          uniforms.uPixelIslandBrightness.value = brightness;
+        }
+      }
+    }
   }
 
   public dispose(): void {
