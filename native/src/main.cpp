@@ -48,6 +48,23 @@ struct Vec3 {
     float x = 0, y = 0, z = 0;
 };
 
+struct NativeInput {
+    std::array<bool,256> keys{};
+    bool leftDown=false;
+    bool middleDown=false;
+    bool rightDown=false;
+    int mouseX=0,mouseY=0;
+    float rotateDeltaX=0;
+    float panDeltaX=0,panDeltaY=0;
+    float lookDeltaX=0,lookDeltaY=0;
+    float wheelDelta=0;
+
+    bool key(int vk) const { return vk>=0&&vk<256?keys[static_cast<size_t>(vk)]:false; }
+    void clearTransient(){
+        rotateDeltaX=panDeltaX=panDeltaY=lookDeltaX=lookDeltaY=wheelDelta=0;
+    }
+};
+
 Vec3 operator+(const Vec3& a, const Vec3& b) { return {a.x+b.x, a.y+b.y, a.z+b.z}; }
 Vec3 operator-(const Vec3& a, const Vec3& b) { return {a.x-b.x, a.y-b.y, a.z-b.z}; }
 Vec3 operator*(const Vec3& a, float s) { return {a.x*s, a.y*s, a.z*s}; }
@@ -1044,6 +1061,66 @@ private:
             app=reinterpret_cast<VulkanApp*>(GetWindowLongPtrW(hwnd,GWLP_USERDATA));
         }
         switch(msg) {
+            case WM_KEYDOWN:
+            case WM_SYSKEYDOWN:
+                if(app && wp<256) app->input_.keys[static_cast<size_t>(wp)]=true;
+                return 0;
+            case WM_KEYUP:
+            case WM_SYSKEYUP:
+                if(app && wp<256) app->input_.keys[static_cast<size_t>(wp)]=false;
+                return 0;
+            case WM_MOUSEWHEEL:
+                if(app) app->input_.wheelDelta += -static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) * (100.0f/120.0f);
+                return 0;
+            case WM_LBUTTONDOWN:
+            case WM_MBUTTONDOWN:
+            case WM_RBUTTONDOWN:
+                if(app){
+                    SetCapture(hwnd);
+                    const int x=GET_X_LPARAM(lp),y=GET_Y_LPARAM(lp);
+                    app->input_.mouseX=x;app->input_.mouseY=y;
+                    if(msg==WM_LBUTTONDOWN)app->input_.leftDown=true;
+                    if(msg==WM_MBUTTONDOWN)app->input_.middleDown=true;
+                    if(msg==WM_RBUTTONDOWN)app->input_.rightDown=true;
+                }
+                return 0;
+            case WM_LBUTTONUP:
+            case WM_MBUTTONUP:
+            case WM_RBUTTONUP:
+                if(app){
+                    if(msg==WM_LBUTTONUP)app->input_.leftDown=false;
+                    if(msg==WM_MBUTTONUP)app->input_.middleDown=false;
+                    if(msg==WM_RBUTTONUP)app->input_.rightDown=false;
+                    if(!app->input_.leftDown&&!app->input_.middleDown&&!app->input_.rightDown)ReleaseCapture();
+                }
+                return 0;
+            case WM_MOUSEMOVE:
+                if(app){
+                    const int x=GET_X_LPARAM(lp),y=GET_Y_LPARAM(lp);
+                    const int dx=x-app->input_.mouseX,dy=y-app->input_.mouseY;
+                    app->input_.mouseX=x;app->input_.mouseY=y;
+                    if(app->observerMode_){
+                        if(app->input_.rightDown)app->input_.rotateDeltaX+=static_cast<float>(dx);
+                        if(app->input_.leftDown||app->input_.middleDown){
+                            app->input_.panDeltaX+=static_cast<float>(dx);
+                            app->input_.panDeltaY+=static_cast<float>(dy);
+                        }
+                    }else{
+                        if(app->input_.leftDown){
+                            app->input_.lookDeltaX+=static_cast<float>(dx);
+                            app->input_.lookDeltaY+=static_cast<float>(dy);
+                        }
+                    }
+                }
+                return 0;
+            case WM_KILLFOCUS:
+                if(app){
+                    app->input_.keys.fill(false);
+                    app->input_.leftDown=app->input_.middleDown=app->input_.rightDown=false;
+                    app->input_.clearTransient();
+                    ReleaseCapture();
+                }
+                return 0;
             case WM_SIZE:
                 if(app) app->framebufferResized_=true;
                 return 0;
@@ -2520,6 +2597,7 @@ private:
 
 private:
     HWND hwnd_=nullptr;
+    NativeInput input_{};
     bool framebufferResized_=false;
 
     VkInstance instance_=VK_NULL_HANDLE;
