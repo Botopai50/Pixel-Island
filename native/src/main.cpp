@@ -2554,6 +2554,21 @@ private:
         destroyBuffer(m.vb);destroyBuffer(m.ib);m.indexCount=0;
     }
 
+    SkyMeshGpu uploadSkyMesh(const SkyMeshCpu& m){
+        SkyMeshGpu g{};
+        if(m.vertices.empty()||m.indices.empty())return g;
+        g.vb=createBuffer(sizeof(SkyVertex)*m.vertices.size(),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        g.ib=createBuffer(sizeof(uint32_t)*m.indices.size(),VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+        std::memcpy(g.vb.mapped,m.vertices.data(),sizeof(SkyVertex)*m.vertices.size());
+        std::memcpy(g.ib.mapped,m.indices.data(),sizeof(uint32_t)*m.indices.size());
+        g.indexCount=static_cast<uint32_t>(m.indices.size());
+        return g;
+    }
+
+    void destroySkyMesh(SkyMeshGpu& m){
+        destroyBuffer(m.vb);destroyBuffer(m.ib);m.indexCount=0;
+    }
+
     GpuMesh uploadMesh(const CpuMesh& m) {
         GpuMesh g{};
         g.vb=createBuffer(sizeof(Vertex)*m.vertices.size(),VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
