@@ -1568,7 +1568,9 @@ private:
     }
 
     VkSurfaceFormatKHR chooseFormat(const std::vector<VkSurfaceFormatKHR>& f) {
-        for(auto x:f) if(x.format==VK_FORMAT_B8G8R8A8_SRGB&&x.colorSpace==VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return x;
+        // O blit original já escreve sRGB explicitamente; UNORM evita uma segunda conversão.
+        for(auto x:f) if(x.format==VK_FORMAT_B8G8R8A8_UNORM&&x.colorSpace==VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return x;
+        for(auto x:f) if(x.format==VK_FORMAT_R8G8B8A8_UNORM&&x.colorSpace==VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) return x;
         return f[0];
     }
 
