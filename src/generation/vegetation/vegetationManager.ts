@@ -5,6 +5,7 @@ import { BotanicalGeometryFactory } from './botanicalGeometryFactory.ts';
 import { VegetationInstancePool } from './instancePool.ts';
 import { FADE, FADE_GLSL } from '../shaders/fadeDither.ts';
 import { planChunkVegetation, ITerrainQueryable, TreeTransformItem } from './vegetationPlanner.ts';
+import { PixelTreeAssetLibrary, type PixelTreePresetKey } from './pixelTreeAdapter.ts';
 
 export type { ITerrainQueryable, TreeTransformItem } from './vegetationPlanner.ts';
 
@@ -468,6 +469,7 @@ export class VegetationManager {
 
   /** Instâncias de todos os chunks, agrupadas por (geometria, material). Adicione `instances.root` à cena. */
   public readonly instances = new VegetationInstancePool();
+  private readonly pixelTrees = new PixelTreeAssetLibrary();
 
   constructor() {
     VegetationGeometries.init();
@@ -581,75 +583,83 @@ export class VegetationManager {
   ): void {
     const { oakItems, broadOakItems, oakSaplingItems, pineItems, pineSaplingItems, birchItems, twinBirchItems, birchSaplingItems, palmItems, palmSaplingItems, acaciaItems, acaciaSaplingItems, mapleItems, mangroveItems, mangroveSaplingItems, snowPineItems, arcticWillowItems, deadTreeTransforms, cactusTransforms, cactusSaplingTransforms, shrubLushTransforms, shrubBerryTransforms, rockBoulderTransforms, rockSlateTransforms, rockPebblesTransforms, rockSpireTransforms, rockMossyTransforms, logHollowTransforms, logRootedTransforms, logStumpTransforms, logStraightTransforms, fernTransforms, wildflowerTransforms, reedTransforms } = planChunkVegetation(chunkX, chunkZ, chunkSize, terrainGen, enableDetailFlora);
 
-    // Instanciação em Pares de Árvores (Adultas, Mudas e Variantes)
-    this.createInstancedPair(VegetationGeometries.oakTrunk, VegetationGeometries.oakLeaves, this.trunkMaterial, this.foliageMaterial, oakItems, owner);
-    this.createInstancedPair(VegetationGeometries.broadOakTrunk, VegetationGeometries.broadOakLeaves, this.trunkMaterial, this.foliageMaterial, broadOakItems, owner);
-    this.createInstancedPair(VegetationGeometries.oakSaplingTrunk, VegetationGeometries.oakSaplingLeaves, this.trunkMaterial, this.foliageMaterial, oakSaplingItems, owner);
+    // Pixel_Tree agora é a fonte oficial de árvores, mudas, arbustos, troncos e flora.
+    // O Pixel-Island conserva apenas o streaming/instancing/culling/LOD ao redor desses modelos.
+    this.pixelTrees.ensureWorldSeed(terrainGen.getSeed?.() ?? 0);
 
-    this.createInstancedPair(VegetationGeometries.pineTrunk, VegetationGeometries.pineLeaves, this.trunkMaterial, this.foliageMaterial, pineItems, owner);
-    this.createInstancedPair(VegetationGeometries.pineSaplingTrunk, VegetationGeometries.pineSaplingLeaves, this.trunkMaterial, this.foliageMaterial, pineSaplingItems, owner);
+    const addGenerated = (
+      preset: PixelTreePresetKey,
+      list: { matrix: THREE.Matrix4 }[],
+      fade: 'tree' | 'veg',
+      name: string
+    ) => this.pixelTrees.addInstances(this.instances, owner, preset, list, fade, name);
 
-    this.createInstancedPair(VegetationGeometries.birchTrunk, VegetationGeometries.birchLeaves, this.birchTrunkMaterial, this.foliageMaterial, birchItems, owner);
-    this.createInstancedPair(VegetationGeometries.twinBirchTrunk, VegetationGeometries.twinBirchLeaves, this.birchTrunkMaterial, this.foliageMaterial, twinBirchItems, owner);
-    this.createInstancedPair(VegetationGeometries.birchSaplingTrunk, VegetationGeometries.birchSaplingLeaves, this.birchTrunkMaterial, this.foliageMaterial, birchSaplingItems, owner);
+    addGenerated('hyrule_oak', oakItems, 'tree', 'pixelTree_oak');
+    // A antiga variante "broad oak" vira a árvore antiga do próprio gerador, dando uma
+    // silhueta realmente diferente sem aumentar a densidade de árvores.
+    addGenerated('korok_ancient', broadOakItems, 'tree', 'pixelTree_ancient');
+    addGenerated('hyrule_oak_sapling', oakSaplingItems, 'tree', 'pixelTree_oakSapling');
 
-    this.createInstancedPair(VegetationGeometries.palmTrunk, VegetationGeometries.palmLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, palmItems, owner);
-    this.createInstancedPair(VegetationGeometries.palmSaplingTrunk, VegetationGeometries.palmSaplingLeaves, this.palmTrunkMaterial, this.palmFrondMaterial, palmSaplingItems, owner);
+    addGenerated('hebra_pine', pineItems, 'tree', 'pixelTree_pine');
+    addGenerated('hebra_pine_sapling', pineSaplingItems, 'tree', 'pixelTree_pineSapling');
 
-    this.createInstancedPair(VegetationGeometries.acaciaTrunk, VegetationGeometries.acaciaLeaves, this.trunkMaterial, this.foliageMaterial, acaciaItems, owner);
-    this.createInstancedPair(VegetationGeometries.acaciaSaplingTrunk, VegetationGeometries.acaciaSaplingLeaves, this.trunkMaterial, this.foliageMaterial, acaciaSaplingItems, owner);
+    addGenerated('akkala_birch', birchItems, 'tree', 'pixelTree_birch');
+    addGenerated('akkala_birch', twinBirchItems, 'tree', 'pixelTree_birchVariant');
+    addGenerated('akkala_birch_sapling', birchSaplingItems, 'tree', 'pixelTree_birchSapling');
 
-    this.createInstancedPair(VegetationGeometries.mapleTrunk, VegetationGeometries.mapleLeaves, this.trunkMaterial, this.foliageMaterial, mapleItems, owner);
+    addGenerated('faron_palm', palmItems, 'tree', 'pixelTree_palm');
+    addGenerated('faron_palm_sapling', palmSaplingItems, 'tree', 'pixelTree_palmSapling');
 
-    this.createInstancedPair(VegetationGeometries.mangroveTrunk, VegetationGeometries.mangroveLeaves, this.trunkMaterial, this.foliageMaterial, mangroveItems, owner);
-    this.createInstancedPair(VegetationGeometries.mangroveSaplingTrunk, VegetationGeometries.mangroveSaplingLeaves, this.trunkMaterial, this.foliageMaterial, mangroveSaplingItems, owner);
+    addGenerated('savanna_acacia', acaciaItems, 'tree', 'pixelTree_acacia');
+    addGenerated('savanna_acacia_sapling', acaciaSaplingItems, 'tree', 'pixelTree_acaciaSapling');
 
-    this.createInstancedPair(VegetationGeometries.snowPineTrunk, VegetationGeometries.snowPineLeaves, this.trunkMaterial, this.snowPineFoliageMaterial, snowPineItems, owner);
-    this.createInstancedPair(VegetationGeometries.arcticWillowTrunk, VegetationGeometries.arcticWillowLeaves, this.trunkMaterial, this.foliageMaterial, arcticWillowItems, owner);
+    // O planner já guarda a cor de cada bordo; ela agora seleciona o preset correspondente
+    // do Pixel_Tree, em vez de apenas tingir a mesma malha três vezes.
+    const mapleRed = mapleItems.filter((it) => it.leafTint.getHex() === 0xd44022);
+    const mapleOrange = mapleItems.filter((it) => it.leafTint.getHex() === 0xe87a1a);
+    const mapleYellow = mapleItems.filter((it) => it.leafTint.getHex() === 0xe8b824);
+    addGenerated('maple_red', mapleRed, 'tree', 'pixelTree_mapleRed');
+    addGenerated('maple_orange', mapleOrange, 'tree', 'pixelTree_mapleOrange');
+    addGenerated('maple_yellow', mapleYellow, 'tree', 'pixelTree_mapleYellow');
 
-    // Instanciação de Meshes Individuais
-    const createSingle = (geo: THREE.BufferGeometry, mat: THREE.Material, list: { matrix: THREE.Matrix4; tint: THREE.Color }[], name?: string) => {
+    addGenerated('swamp_mangrove', mangroveItems, 'tree', 'pixelTree_mangrove');
+    addGenerated('swamp_mangrove_sapling', mangroveSaplingItems, 'tree', 'pixelTree_mangroveSapling');
+    addGenerated('hebra_pine_snowy', snowPineItems, 'tree', 'pixelTree_snowPine');
+    addGenerated('arctic_willow', arcticWillowItems, 'tree', 'pixelTree_arcticWillow');
+
+    addGenerated('dry_withered', deadTreeTransforms, 'tree', 'pixelTree_deadwood');
+    addGenerated('gerudo_cactus', cactusTransforms, 'tree', 'pixelTree_cactus');
+    addGenerated('gerudo_cactus_sapling', cactusSaplingTransforms, 'tree', 'pixelTree_cactusSapling');
+
+    addGenerated('hyrule_shrub', shrubLushTransforms, 'veg', 'pixelTree_shrub');
+    addGenerated('berry_shrub', shrubBerryTransforms, 'veg', 'pixelTree_berryShrub');
+
+    addGenerated('hollow_log', logHollowTransforms, 'veg', 'pixelTree_hollowLog');
+    addGenerated('rooted_log', logRootedTransforms, 'veg', 'pixelTree_rootedLog');
+    addGenerated('tree_stump', logStumpTransforms, 'veg', 'pixelTree_stump');
+    addGenerated('fallen_log', logStraightTransforms, 'veg', 'pixelTree_fallenLog');
+
+    addGenerated('fern_plant', fernTransforms, 'veg', 'pixelTree_fern');
+    addGenerated('wildflower_patch', wildflowerTransforms, 'veg', 'pixelTree_wildflowers');
+    addGenerated('reed_clump', reedTransforms, 'veg', 'pixelTree_reeds');
+
+    // As rochas continuam no pool leve existente: o Pixel_Tree possui rochas de cenário,
+    // mas não as expõe como presets independentes como faz com árvores/plantas/troncos.
+    const createSingle = (
+      geo: THREE.BufferGeometry,
+      mat: THREE.Material,
+      list: { matrix: THREE.Matrix4; tint: THREE.Color }[],
+      name?: string
+    ) => {
       if (list.length === 0) return;
       this.instances.add(owner, geo, mat, list.map((it) => it.matrix), list.map((it) => it.tint), name);
     };
 
-    createSingle(VegetationGeometries.deadTrunk, this.deadTreeMaterial, deadTreeTransforms, 'deadTrunk');
-    createSingle(VegetationGeometries.cactusBody, this.cactusMaterial, cactusTransforms, 'cactusBody');
-    createSingle(VegetationGeometries.cactusSaplingBody, this.cactusMaterial, cactusSaplingTransforms, 'cactusSapling');
-    createSingle(VegetationGeometries.shrubLush, this.shrubMaterial, shrubLushTransforms, 'shrubLush');
-    createSingle(VegetationGeometries.shrubBerry, this.shrubMaterial, shrubBerryTransforms, 'shrubBerry');
-
-    // Rochas variadas (5 Formatos)
     createSingle(VegetationGeometries.rockBoulder, this.rockMaterial, rockBoulderTransforms, 'rockBoulder');
     createSingle(VegetationGeometries.rockSlate, this.rockMaterial, rockSlateTransforms, 'rockSlate');
     createSingle(VegetationGeometries.rockPebbles, this.rockMaterial, rockPebblesTransforms, 'rockPebbles');
     createSingle(VegetationGeometries.rockSpire, this.rockMaterial, rockSpireTransforms, 'rockSpire');
     createSingle(VegetationGeometries.rockMossy, this.rockMaterial, rockMossyTransforms, 'rockMossy');
-
-    // Madeira caída variada (4 Formatos)
-    createSingle(VegetationGeometries.logHollow, this.logMaterial, logHollowTransforms);
-    createSingle(VegetationGeometries.logRooted, this.logMaterial, logRootedTransforms);
-    createSingle(VegetationGeometries.logStump, this.logMaterial, logStumpTransforms);
-    createSingle(VegetationGeometries.fallenLog, this.logMaterial, logStraightTransforms);
-
-    // Sub-bosque e flora rasteira
-    createSingle(VegetationGeometries.groundFern, this.groundFloraMaterial, fernTransforms);
-    createSingle(VegetationGeometries.wildflowers, this.groundFloraMaterial, wildflowerTransforms);
-    createSingle(VegetationGeometries.reeds, this.groundFloraMaterial, reedTransforms);
-  }
-
-  private createInstancedPair(
-    trunkGeo: THREE.BufferGeometry,
-    leafGeo: THREE.BufferGeometry,
-    trunkMat: THREE.Material,
-    leafMat: THREE.Material,
-    items: TreeTransformItem[],
-    owner: number
-  ): void {
-    if (items.length === 0) return;
-    const matrices = items.map((it) => it.matrix);
-    this.instances.add(owner, trunkGeo, trunkMat, matrices, items.map((it) => it.trunkTint));
-    this.instances.add(owner, leafGeo, leafMat, matrices, items.map((it) => it.leafTint));
   }
 
   /** Material dos tufos de grama: luz toon da vegetação + vento + abertura ao passar do personagem. */
@@ -762,6 +772,7 @@ export class VegetationManager {
   /** Avança o vento da grama. */
   public update(dt: number): void {
     this.windTime.value += dt;
+    this.pixelTrees.update(this.windTime.value);
   }
 
   /**
