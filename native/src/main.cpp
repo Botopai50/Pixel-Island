@@ -1009,22 +1009,23 @@ public:
     void run(HINSTANCE hInstance) {
         logLine("APP: criando janela");
         createWindow(hInstance);
-        SetWindowTextW(hwnd_,L"Pixel Island Native | Carregando mundo original...");
+        SetWindowTextW(hwnd_,L"Pixel Island Native | Carregando chunk central...");
         logLine("APP: inicializando Vulkan");
         initVulkan();
         logLine("APP: criando recursos GPU");
         createGpuWorldResources();
 
-        const std::filesystem::path bundle = std::filesystem::path(executableDir()) / L"world.bundle.js";
-        logLine("APP: iniciando worker do mundo");
-        streamer_=std::make_unique<WorldStreamer>(bundle);
-        streamer_->request(0,0);
+        const std::filesystem::path bundle=std::filesystem::path(executableDir())/L"world.bundle.js";
+        logLine("APP: iniciando streaming exato de chunks/horizon");
+        exactStreamer_=std::make_unique<ExactStreamingWorker>(bundle);
+        planExactStreaming(0.0f,0.0f,true);
 
         mainLoop();
         vkDeviceWaitIdle(device_);
     }
 
     ~VulkanApp() {
+        exactStreamer_.reset();
         streamer_.reset();
         if(device_!=VK_NULL_HANDLE) vkDeviceWaitIdle(device_);
         cleanup();
@@ -1936,19 +1937,26 @@ private:
     }
 
     float heightAt(float x,float z) const {
-        if(terrainHeights_.empty()) return 0.0f;
-        const float step=TERRAIN_SIZE/static_cast<float>(TERRAIN_SEGMENTS);
-        const float x0=static_cast<float>(worldCenterX_)-TERRAIN_SIZE*0.5f;
-        const float z0=static_cast<float>(worldCenterZ_)-TERRAIN_SIZE*0.5f;
-        float u=(x-x0)/step,v=(z-z0)/step;
-        u=std::clamp(u,0.0f,static_cast<float>(TERRAIN_SEGMENTS)-0.001f);
-        v=std::clamp(v,0.0f,static_cast<float>(TERRAIN_SEGMENTS)-0.001f);
+        const int cx=static_cast<int>(std::floor((x+32.0f)/64.0f));
+        const int cz=static_cast<int>(std::floor((z+32.0f)/64.0f));
+        const std::string key=std::to_string(cx)+":"+std::to_string(cz);
+        auto it=exactChunks_.find(key);
+        if(it==exactChunks_.end()||it->second.heights.empty()) return worldReady_?focus_.y:0.0f;
+        const auto& ch=it->second;
+        const int seg=ch.segments,grid=seg+1;
+        const float minX=cx*64.0f-32.0f,minZ=cz*64.0f-32.0f;
+        float u=(x-minX)/64.0f*seg,v=(z-minZ)/64.0f*seg;
+        u=std::clamp(u,0.0f,static_cast<float>(seg)-0.001f);
+        v=std::clamp(v,0.0f,static_cast<float>(seg)-0.001f);
         const int ix=static_cast<int>(std::floor(u)),iz=static_cast<int>(std::floor(v));
         const float fu=u-ix,fv=v-iz;
-        const int side=TERRAIN_SEGMENTS+1;
-        const float a=terrainHeights_[iz*side+ix],b=terrainHeights_[iz*side+ix+1];
-        const float cc=terrainHeights_[(iz+1)*side+ix],d=terrainHeights_[(iz+1)*side+ix+1];
-        return (a+(b-a)*fu)*(1-fv)+(cc+(d-cc)*fu)*fv;
+        const float a=ch.heights[iz*grid+ix];
+        const float b=ch.heights[iz*grid+ix+1];
+        const float cc=ch.heights[(iz+1)*grid+ix];
+        const float d=ch.heights[(iz+1)*grid+ix+1];
+        // A malha original usa diagonal b-d; usar a mesma triangulação evita câmera flutuando.
+        if(fu+fv<=1.0f) return a+(b-a)*fu+(cc-a)*fv;
+        return d+(cc-d)*(1.0f-fu)+(b-d)*(1.0f-fv);
     }
 
     Vec3 observerEye() const {
@@ -2383,7 +2391,14 @@ private:
     float time_=0.0f;
     int worldCenterX_=0,worldCenterZ_=0;
     int requestedCenterX_=0,requestedCenterZ_=0;
-    std::unique_ptr<WorldStreamer> streamer_;
+    std::unique_ptr<WorldStreamer> streamer_; // legado, não usado pelo pipeline exato
+    std::unique_ptr<ExactStreamingWorker> exactStreamer_;
+    std::unordered_map<std::string,ExactChunkGpu> exactChunks_;
+    std::unordered_map<std::string,HorizonGpu> horizonTiles_;
+    std::unordered_set<std::string> wantedHorizon_;
+    int exactCenterCx_=999999,exactCenterCz_=999999;
+    float lastHorizonPlanX_=1e9f,lastHorizonPlanZ_=1e9f;
+    uint64_t streamGeneration_=1;
 };
 
 } // namespace
