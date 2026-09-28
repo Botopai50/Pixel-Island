@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <vulkan/vulkan.h>
 #include "js_world.hpp"
+#include "exact_streaming.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -310,9 +313,11 @@ Vec3 terrainNormal(float x,float z){
 Vec3 terrainColor(float, const Vec3&, float x,float z){ return sampleWorld(x,z).color; }
 
 struct Vertex {
-    float px,py,pz;
-    float nx,ny,nz;
-    float r,g,b;
+    float px=0,py=0,pz=0;
+    float nx=0,ny=1,nz=0;
+    float r=1,g=1,b=1;
+    float wallX=99,wallY=99,wallZ=0;
+    float morph=0;
 };
 
 struct InstanceGPU {
