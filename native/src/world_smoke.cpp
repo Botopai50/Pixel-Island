@@ -40,10 +40,33 @@ int main(int argc,char** argv){
     }
     if(!hasVariation) throw std::runtime_error("Terrain Texture Forge retornou textura uniforme.");
 
+
+    auto chunk=js.generateExactChunk("Avalon",0,0,64.0,1.75,16,true);
+    if(chunk.size()<40u) throw std::runtime_error("Exact chunk pack vazio.");
+    const uint32_t* ch=reinterpret_cast<const uint32_t*>(chunk.data());
+    if(ch[0]!=0x50494348u || ch[1]!=1u) throw std::runtime_error("Exact chunk magic/version invalido.");
+    if(ch[2]!=16u || ch[3]==0u || ch[4]==0u || ch[5]!=112u || ch[6]!=112u)
+        throw std::runtime_error("Exact chunk header invalido.");
+
+    auto horizon=js.generateHorizonTile("Avalon",-512.0,-512.0,1024.0,64);
+    if(horizon.size()<24u) throw std::runtime_error("Horizon pack vazio.");
+    const uint32_t* hz=reinterpret_cast<const uint32_t*>(horizon.data());
+    if(hz[0]!=0x5049485au || hz[1]!=1u || hz[2]==0u || hz[3]==0u)
+        throw std::runtime_error("Horizon pack invalido.");
+
+    auto imp=js.generateImpostorBlock("Avalon",-128.0,-128.0,256.0,0.0,0.0);
+    if(imp.size()<20u) throw std::runtime_error("Impostor pack vazio.");
+    const uint32_t* im=reinterpret_cast<const uint32_t*>(imp.data());
+    if(im[0]!=0x5049494du || im[1]!=1u)
+        throw std::runtime_error("Impostor pack invalido.");
+
     std::cout<<"OK terrainFloats="<<terrain.size()
              <<" height=["<<minH<<","<<maxH<<"]"
              <<" vegetationInstances="<<(vegetation.size()/23u)
              <<" textureBytes="<<texture.size()
+             <<" exactChunkBytes="<<chunk.size()
+             <<" horizonBytes="<<horizon.size()
+             <<" impostorBytes="<<imp.size()
              <<"\n";
     return 0;
 }
