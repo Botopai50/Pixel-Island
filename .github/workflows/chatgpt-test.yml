@@ -29,6 +29,78 @@ jobs:
       - name: Procedural tests
         run: npm test
 
+      - name: WebGL runtime smoke test
+        shell: bash
+        run: |
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo "Chrome/Chromium not found on runner"
+            exit 1
+          fi
+
+          npm run dev -- --host 127.0.0.1 > /tmp/pixel-island-vite.log 2>&1 &
+          VITE_PID=$!
+          trap 'kill $VITE_PID 2>/dev/null || true' EXIT
+
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:5173/ >/dev/null; then break; fi
+            sleep 1
+          done
+
+          CHROME_PATH="$CHROME" node --input-type=module <<'NODE'
+          import puppeteer from 'puppeteer-core';
+
+          const errors = [];
+          const browser = await puppeteer.launch({
+            executablePath: process.env.CHROME_PATH,
+            headless: true,
+            args: [
+              '--no-sandbox',
+              '--disable-setuid-sandbox',
+              '--enable-webgl',
+              '--use-gl=angle',
+              '--use-angle=swiftshader',
+              '--ignore-gpu-blocklist',
+              '--window-size=1280,720'
+            ]
+          });
+
+          const page = await browser.newPage();
+          await page.setViewport({ width: 1280, height: 720 });
+
+          page.on('console', msg => {
+            const text = msg.text();
+            console.log('[browser]', text);
+            if (
+              /Shader Error|WebGLProgram|texture2DCompare|mergeGeometries\(\) failed|TypeError|ReferenceError/i.test(text)
+            ) errors.push(text);
+          });
+          page.on('pageerror', err => errors.push('pageerror: ' + err.message));
+
+          await page.goto('http://127.0.0.1:5173/?quality=potato', {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+          });
+          await new Promise(r => setTimeout(r, 8000));
+
+          const state = await page.evaluate(() => ({
+            world: !!window.__WORLD__,
+            player: !!window.__PLAYER__,
+            chunks: window.__WORLD__?.getChunkManager?.().getLoadedChunkCount?.() ?? -1
+          }));
+          console.log('Runtime state:', state);
+
+          await browser.close();
+
+          if (!state.world || state.chunks < 1) {
+            errors.push('World did not initialize or no chunks loaded');
+          }
+          if (errors.length) {
+            console.error('\nRuntime WebGL errors:\n' + errors.join('\n---\n'));
+            process.exit(1);
+          }
+          NODE
+
       - name: Build zero-dependency Windows package
         run: |
           rm -rf artifact standalone-build
