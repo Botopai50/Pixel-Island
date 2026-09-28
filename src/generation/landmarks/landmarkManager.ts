@@ -273,8 +273,14 @@ export class LandmarkManager {
     skull.translate(spineLength * 0.58, 0.75, 0);
     bones.push(skull);
 
-    const merged = BufferGeometryUtils.mergeGeometries(bones, false);
-    for (const g of bones) g.dispose();
+    const normalizedBones = bones.map((g) => {
+      if (!g.index) return g;
+      const n = g.toNonIndexed();
+      g.dispose();
+      return n;
+    });
+    const merged = BufferGeometryUtils.mergeGeometries(normalizedBones, false);
+    for (const g of normalizedBones) g.dispose();
     if (!merged) return group;
 
     merged.computeVertexNormals();
@@ -292,8 +298,18 @@ export class LandmarkManager {
     name: string
   ): THREE.Group {
     const group = new THREE.Group();
-    const merged = BufferGeometryUtils.mergeGeometries(geometries, false);
-    for (const g of geometries) g.dispose();
+
+    // Box/Cylinder costumam ser indexados; Dodecahedron/Polyhedron podem não ser.
+    // BufferGeometryUtils exige que TODAS sejam indexadas ou TODAS não-indexadas.
+    const normalized = geometries.map((g) => {
+      if (!g.index) return g;
+      const n = g.toNonIndexed();
+      g.dispose();
+      return n;
+    });
+
+    const merged = BufferGeometryUtils.mergeGeometries(normalized, false);
+    for (const g of normalized) g.dispose();
     if (!merged) return group;
 
     merged.computeVertexNormals();
