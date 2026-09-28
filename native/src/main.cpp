@@ -2750,6 +2750,68 @@ private:
         processExactStreaming();
     }
 
+    float objectFadeHash(float x,float z) const {
+        const float px=std::floor(x*4.0f);
+        const float pz=std::floor(z*4.0f);
+        const float v=std::sin(px*12.9898f+pz*78.233f)*43758.5453f;
+        return v-std::floor(v);
+    }
+
+    float smooth01(float a,float b,float x) const {
+        const float t=std::clamp((x-a)/(b-a),0.0f,1.0f);
+        return t*t*(3.0f-2.0f*t);
+    }
+
+    bool pixelTreeObjectVisible(const ObjectSeed& o,float planarDistance) const {
+        // WorldEngine.updateObserverPosition(): vegetation radius=3 -> vegEnd=(3-0.8)*64=140.8.
+        constexpr float vegEnd=(3.0f-0.8f)*64.0f;
+        const float h=objectFadeHash(o.x,o.z);
+
+        const bool treeFade=(o.planType>=0&&o.planType<=19);
+        if(treeFade){
+            constexpr float start=vegEnd-0.05f;
+            const float fade=smooth01(start,vegEnd,planarDistance);
+            return h<=1.0f-fade;
+        }
+
+        constexpr float start=vegEnd-90.0f;
+        const float fade=smooth01(start,vegEnd,planarDistance);
+        return h<=1.0f-fade;
+    }
+
+    int choosePixelTreeVariant(const ObjectSeed& o,int presetId) const {
+        int count=0;
+        while(pixelTreeAssets_.contains(pixelTreeAssetKey(presetId,count)))count++;
+        if(count<=1)return 0;
+
+        const uint32_t species=original::PRNG::hashString(PIXEL_TREE_PRESETS[static_cast<size_t>(presetId)]);
+        const int32_t hx=static_cast<int32_t>(std::lround(o.matrix[12]*8.0f));
+        const int32_t hz=static_cast<int32_t>(std::lround(o.matrix[14]*8.0f));
+        const double r=original::PRNG::hash2D(
+            hx,hz,
+            (pixelTreeWorldSeed_^species)
+        );
+        return std::min(count-1,static_cast<int>(std::floor(r*count)));
+    }
+
+    InstanceGPU instanceFromObject(const ObjectSeed& o,bool white=false) const {
+        InstanceGPU inst{};
+        if(o.exactMatrix){
+            std::memcpy(inst.m,o.matrix.data(),sizeof(inst.m));
+        }else{
+            const float cs=std::cos(o.rotation),sn=std::sin(o.rotation),s=o.scale;
+            inst.m[0]=cs*s; inst.m[1]=0; inst.m[2]=sn*s; inst.m[3]=0;
+            inst.m[4]=0; inst.m[5]=s; inst.m[6]=0; inst.m[7]=0;
+            inst.m[8]=-sn*s; inst.m[9]=0; inst.m[10]=cs*s; inst.m[11]=0;
+            inst.m[12]=o.x;inst.m[13]=o.y;inst.m[14]=o.z;inst.m[15]=1;
+        }
+        inst.r=white?1.0f:o.r;
+        inst.g=white?1.0f:o.g;
+        inst.b=white?1.0f:o.b;
+        inst.a=1.0f;
+        return inst;
+    }
+
     float maxDistanceForKind(int kind) const {
         const float base=observerMode_?std::min(fogFar_*1.05f,1100.0f):fogFar_;
         switch(kind){
@@ -2767,51 +2829,70 @@ private:
     }
 
     void updateVisibleObjects() {
-        for(auto& v:visible_) v.clear();
+        for(auto& v:visible_)v.clear();
+        for(auto& [key,a]:pixelTreeAssets_)a.visible.clear();
 
-        const Vec3 eye=observerMode_?observerEye():camera_;
-        Vec3 viewDir;
-        if(observerMode_) viewDir=normalize(focus_-eye);
-        else viewDir=normalize({-std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),-std::cos(yaw_)*std::cos(pitch_)});
+        Vec3 eye{};
+        Vec3 viewDir{};
+        Vec3 fadeCenter{};
+        if(transitionMode_!=0){
+            eye=transitionPos_;
+            viewDir=normalize(transitionLook_-transitionPos_);
+            fadeCenter=transitionLook_;
+        }else if(observerMode_){
+            eye=observerEye();
+            viewDir=normalize(focus_-eye);
+            fadeCenter=focus_;
+        }else{
+            eye={camera_.x,camera_.y+fpsBob_,camera_.z};
+            viewDir=normalize({
+                -std::sin(yaw_)*std::cos(pitch_),
+                 std::sin(pitch_),
+                -std::cos(yaw_)*std::cos(pitch_)
+            });
+            fadeCenter=camera_;
+        }
 
         for(const auto& o:objects_) {
             const float dx=o.x-eye.x,dy=o.y-eye.y,dz=o.z-eye.z;
-            const float d2=dx*dx+dy*dy+dz*dz;
-            const float d=std::sqrt(d2);
+            const float d=std::sqrt(dx*dx+dy*dy+dz*dz);
+            const float fdx=o.x-fadeCenter.x,fdz=o.z-fadeCenter.z;
+            const float planarDistance=std::hypot(fdx,fdz);
+
+            if(d>90.0f){
+                const Vec3 dir=normalize({dx,dy,dz});
+                if(dot(dir,viewDir)<-0.30f)continue;
+            }
+
+            const int presetId=pixelPresetForPlanType(o.planType,o.r,o.g,o.b);
+            if(presetId>=0){
+                if(!pixelTreeObjectVisible(o,planarDistance))continue;
+                const int variant=choosePixelTreeVariant(o,presetId);
+                auto it=pixelTreeAssets_.find(pixelTreeAssetKey(presetId,variant));
+                if(it==pixelTreeAssets_.end())continue;
+                auto& vis=it->second.visible;
+                if(vis.size()>=PIXEL_TREE_MAX_INSTANCES)continue;
+                // PixelTreeAssetLibrary usa WHITE para instanceColor: a cor final já está no asset.
+                vis.push_back(instanceFromObject(o,true));
+                continue;
+            }
 
             int kind=o.kind;
-            if(kind==TREE_LOD0) {
-                const float maxD=maxDistanceForKind(TREE_LOD0);
-                if(d>maxD) continue;
-                kind=d<105.0f?TREE_LOD0:(d<270.0f?TREE_LOD1:TREE_LOD2);
-            } else {
-                if(d>maxDistanceForKind(kind)) continue;
-            }
+            if(kind<0||kind>=MESH_KIND_COUNT)continue;
+            if(d>maxDistanceForKind(kind))continue;
 
-            // Frustum aproximado barato. Perto nunca corta; longe remove tudo claramente atrás.
-            if(d>90.0f) {
-                Vec3 dir=normalize({dx,dy,dz});
-                if(dot(dir,viewDir)<-0.30f) continue;
-            }
-
-            if(visible_[kind].size()>=MAX_INSTANCES_PER_MESH) continue;
-            InstanceGPU inst{};
-            if(o.exactMatrix){
-                std::memcpy(inst.m,o.matrix.data(),sizeof(inst.m));
-            }else{
-                const float cs=std::cos(o.rotation),sn=std::sin(o.rotation),s=o.scale;
-                inst.m[0]=cs*s; inst.m[1]=0; inst.m[2]=sn*s; inst.m[3]=0;
-                inst.m[4]=0; inst.m[5]=s; inst.m[6]=0; inst.m[7]=0;
-                inst.m[8]=-sn*s; inst.m[9]=0; inst.m[10]=cs*s; inst.m[11]=0;
-                inst.m[12]=o.x;inst.m[13]=o.y;inst.m[14]=o.z;inst.m[15]=1;
-            }
-            inst.r=o.r;inst.g=o.g;inst.b=o.b;inst.a=1.0f;
-            visible_[kind].push_back(inst);
+            if(visible_[kind].size()>=MAX_INSTANCES_PER_MESH)continue;
+            visible_[kind].push_back(instanceFromObject(o,false));
         }
 
-        for(int i=0;i<MESH_KIND_COUNT;i++) {
+        for(int i=0;i<MESH_KIND_COUNT;i++){
             if(!visible_[i].empty())
                 std::memcpy(instanceBuffers_[i].mapped,visible_[i].data(),visible_[i].size()*sizeof(InstanceGPU));
+        }
+
+        for(auto& [key,a]:pixelTreeAssets_){
+            if(!a.visible.empty())
+                std::memcpy(a.instanceBuffer.mapped,a.visible.data(),a.visible.size()*sizeof(InstanceGPU));
         }
     }
 
