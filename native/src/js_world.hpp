@@ -67,6 +67,8 @@ public:
         double originZ
     );
 
+    std::vector<uint8_t> getForgeGlobals(const std::string& seed);
+
 private:
     std::vector<uint8_t> callByteBuffer(
         const char* functionName,
