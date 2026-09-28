@@ -17,6 +17,12 @@ add_executable(PixelIslandParity
     src/parity.cpp
 )
 
+add_executable(PixelIslandWorldSmoke
+    src/world_smoke.cpp
+    src/js_world.cpp
+)
+target_link_libraries(PixelIslandWorldSmoke PRIVATE qjs)
+
 target_compile_definitions(PixelIslandNative PRIVATE
     VK_USE_PLATFORM_WIN32_KHR
     NOMINMAX
@@ -38,6 +44,9 @@ if(MSVC)
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     set_property(TARGET PixelIslandParity PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+    set_property(TARGET PixelIslandWorldSmoke PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     )
     target_compile_options(PixelIslandNative PRIVATE /W4 /O2 /permissive-)
