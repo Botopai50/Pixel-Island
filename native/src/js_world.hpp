@@ -69,6 +69,12 @@ public:
 
     std::vector<uint8_t> getForgeGlobals(const std::string& seed);
 
+    std::vector<uint8_t> generateWaterBiomeMap(
+        const std::string& seed,
+        double centerX,
+        double centerZ
+    );
+
 private:
     std::vector<uint8_t> callByteBuffer(
         const char* functionName,
