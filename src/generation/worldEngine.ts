@@ -463,7 +463,6 @@ export class WorldEngine {
 
   public setHorizonQuality(levels: number, distanceScale: number): void {
     this.horizon.setQuality(levels, distanceScale);
-    this.horizon.update(this.lastObserverX, this.lastObserverZ, Math.max(160, (this.chunkMgr.getViewRadius() - 0.8) * CONFIG.CHUNK_SIZE) - 120);
   }
 
   public setViewRadius(radius: number, retainRadius: number = 0): void {
