@@ -5,19 +5,20 @@ extern "C" {
 }
 
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
 
-static std::string readTextFile(const std::string& path) {
+static std::string readTextFile(const std::filesystem::path& path) {
     std::ifstream f(path, std::ios::binary);
-    if (!f) throw std::runtime_error("Nao foi possivel abrir world.bundle.js: " + path);
+    if (!f) throw std::runtime_error("Nao foi possivel abrir world.bundle.js.");
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
 }
 
-JsWorldRuntime::JsWorldRuntime(const std::string& scriptPath) {
+JsWorldRuntime::JsWorldRuntime(const std::filesystem::path& scriptPath) {
     rt_ = JS_NewRuntime();
     if (!rt_) throw std::runtime_error("JS_NewRuntime falhou.");
     ctx_ = JS_NewContext(rt_);
