@@ -33,6 +33,9 @@ constexpr float TERRAIN_SIZE = 832.0f; // raio 6: centros -6..+6, cobrindo borda
 constexpr float STREAM_STEP = 64.0f;
 constexpr float FOG_FAR = 720.0f;
 constexpr uint32_t MAX_INSTANCES_PER_MESH = 60000;
+constexpr uint32_t TERRAIN_ATLAS_GRID = 13;
+constexpr uint32_t TERRAIN_ATLAS_SLOT_PX = 112;
+constexpr uint32_t TERRAIN_ATLAS_SIZE_PX = TERRAIN_ATLAS_GRID * TERRAIN_ATLAS_SLOT_PX;
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 constexpr const char* WORLD_SEED_TEXT = "Avalon";
 constexpr uint32_t WORLD_SEED = 0x5EED1234u; // legado do protótipo; não é usado pelo gerador exato
@@ -1330,6 +1333,197 @@ private:
         if(b.buffer) vkDestroyBuffer(device_,b.buffer,nullptr);
         if(b.memory) vkFreeMemory(device_,b.memory,nullptr);
         b={};
+    }
+
+
+    void createImage(
+        uint32_t width,uint32_t height,VkFormat format,
+        VkImageUsageFlags usage,VkImage& image,VkDeviceMemory& memory
+    ) {
+        VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        ci.imageType=VK_IMAGE_TYPE_2D;
+        ci.extent={width,height,1};
+        ci.mipLevels=1;
+        ci.arrayLayers=1;
+        ci.format=format;
+        ci.tiling=VK_IMAGE_TILING_OPTIMAL;
+        ci.initialLayout=VK_IMAGE_LAYOUT_UNDEFINED;
+        ci.usage=usage;
+        ci.samples=VK_SAMPLE_COUNT_1_BIT;
+        ci.sharingMode=VK_SHARING_MODE_EXCLUSIVE;
+        check(vkCreateImage(device_,&ci,nullptr,&image),"vkCreateImage(texture)");
+
+        VkMemoryRequirements req{};
+        vkGetImageMemoryRequirements(device_,image,&req);
+        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        ai.allocationSize=req.size;
+        ai.memoryTypeIndex=memoryType(req.memoryTypeBits,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        check(vkAllocateMemory(device_,&ai,nullptr,&memory),"vkAllocateMemory(texture)");
+        check(vkBindImageMemory(device_,image,memory,0),"vkBindImageMemory(texture)");
+    }
+
+    VkImageView createColorImageView(VkImage image,VkFormat format) {
+        VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vi.image=image;
+        vi.viewType=VK_IMAGE_VIEW_TYPE_2D;
+        vi.format=format;
+        vi.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        vi.subresourceRange.baseMipLevel=0;
+        vi.subresourceRange.levelCount=1;
+        vi.subresourceRange.baseArrayLayer=0;
+        vi.subresourceRange.layerCount=1;
+        VkImageView view=VK_NULL_HANDLE;
+        check(vkCreateImageView(device_,&vi,nullptr,&view),"vkCreateImageView(texture)");
+        return view;
+    }
+
+    VkCommandBuffer beginOneTimeCommands() {
+        VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+        ai.commandPool=commandPool_;
+        ai.level=VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandBufferCount=1;
+        VkCommandBuffer cmd=VK_NULL_HANDLE;
+        check(vkAllocateCommandBuffers(device_,&ai,&cmd),"vkAllocateCommandBuffers(one-time)");
+
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        bi.flags=VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        check(vkBeginCommandBuffer(cmd,&bi),"vkBeginCommandBuffer(one-time)");
+        return cmd;
+    }
+
+    void endOneTimeCommands(VkCommandBuffer cmd) {
+        check(vkEndCommandBuffer(cmd),"vkEndCommandBuffer(one-time)");
+        VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        si.commandBufferCount=1;
+        si.pCommandBuffers=&cmd;
+        check(vkQueueSubmit(graphicsQueue_,1,&si,VK_NULL_HANDLE),"vkQueueSubmit(one-time)");
+        check(vkQueueWaitIdle(graphicsQueue_),"vkQueueWaitIdle(one-time)");
+        vkFreeCommandBuffers(device_,commandPool_,1,&cmd);
+    }
+
+    void transitionTerrainTexture(VkImageLayout oldLayout,VkImageLayout newLayout) {
+        VkCommandBuffer cmd=beginOneTimeCommands();
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.oldLayout=oldLayout;
+        b.newLayout=newLayout;
+        b.srcQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;
+        b.image=terrainTextureImage_;
+        b.subresourceRange.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount=1;
+        b.subresourceRange.layerCount=1;
+
+        VkPipelineStageFlags srcStage=VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+        VkPipelineStageFlags dstStage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+        if(oldLayout==VK_IMAGE_LAYOUT_UNDEFINED && newLayout==VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL){
+            b.srcAccessMask=0;
+            b.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+        }else if(oldLayout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL && newLayout==VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL){
+            b.srcAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            b.dstAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+            srcStage=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            dstStage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+        }else if(oldLayout==VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout==VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL){
+            b.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
+            srcStage=VK_PIPELINE_STAGE_TRANSFER_BIT;
+            dstStage=VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        }else{
+            throw std::runtime_error("Transicao de layout de textura nao suportada.");
+        }
+
+        vkCmdPipelineBarrier(cmd,srcStage,dstStage,0,0,nullptr,0,nullptr,1,&b);
+        endOneTimeCommands(cmd);
+    }
+
+    void createTerrainTextureResources() {
+        constexpr VkFormat format=VK_FORMAT_R8G8B8A8_SRGB;
+        createImage(
+            TERRAIN_ATLAS_SIZE_PX,TERRAIN_ATLAS_SIZE_PX,format,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_SAMPLED_BIT,
+            terrainTextureImage_,terrainTextureMemory_
+        );
+        terrainTextureView_=createColorImageView(terrainTextureImage_,format);
+
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter=VK_FILTER_LINEAR;
+        sci.minFilter=VK_FILTER_LINEAR;
+        sci.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.maxAnisotropy=1.0f;
+        sci.borderColor=VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+        sci.unnormalizedCoordinates=VK_FALSE;
+        check(vkCreateSampler(device_,&sci,nullptr,&terrainTextureSampler_),"vkCreateSampler(terrain)");
+
+        VkDescriptorPoolSize ps{};
+        ps.type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ps.descriptorCount=1;
+        VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pci.maxSets=1;
+        pci.poolSizeCount=1;
+        pci.pPoolSizes=&ps;
+        check(vkCreateDescriptorPool(device_,&pci,nullptr,&descriptorPool_),"vkCreateDescriptorPool");
+
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool=descriptorPool_;
+        ai.descriptorSetCount=1;
+        ai.pSetLayouts=&descriptorSetLayout_;
+        check(vkAllocateDescriptorSets(device_,&ai,&descriptorSet_),"vkAllocateDescriptorSets");
+
+        VkDescriptorImageInfo ii{};
+        ii.sampler=terrainTextureSampler_;
+        ii.imageView=terrainTextureView_;
+        ii.imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet=descriptorSet_;
+        write.dstBinding=0;
+        write.descriptorCount=1;
+        write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo=&ii;
+        vkUpdateDescriptorSets(device_,1,&write,0,nullptr);
+    }
+
+    void uploadTerrainTexture(const std::vector<uint8_t>& pixels) {
+        const size_t expected=static_cast<size_t>(TERRAIN_ATLAS_SIZE_PX)*TERRAIN_ATLAS_SIZE_PX*4u;
+        if(pixels.size()!=expected) throw std::runtime_error("Atlas de terreno com dimensao invalida.");
+
+        Buffer staging=createBuffer(
+            static_cast<VkDeviceSize>(pixels.size()),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+        );
+        std::memcpy(staging.mapped,pixels.data(),pixels.size());
+
+        transitionTerrainTexture(
+            terrainTextureInitialized_?VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+        );
+
+        VkCommandBuffer cmd=beginOneTimeCommands();
+        VkBufferImageCopy region{};
+        region.bufferOffset=0;
+        region.bufferRowLength=0;
+        region.bufferImageHeight=0;
+        region.imageSubresource.aspectMask=VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.mipLevel=0;
+        region.imageSubresource.baseArrayLayer=0;
+        region.imageSubresource.layerCount=1;
+        region.imageOffset={0,0,0};
+        region.imageExtent={TERRAIN_ATLAS_SIZE_PX,TERRAIN_ATLAS_SIZE_PX,1};
+        vkCmdCopyBufferToImage(
+            cmd,staging.buffer,terrainTextureImage_,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,1,&region
+        );
+        endOneTimeCommands(cmd);
+
+        transitionTerrainTexture(
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        );
+        terrainTextureInitialized_=true;
+        destroyBuffer(staging);
     }
 
     void createDepthResources() {
