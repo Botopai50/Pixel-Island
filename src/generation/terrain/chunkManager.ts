@@ -300,7 +300,10 @@ export class ChunkManager {
         if (d <= vegRadiusSq && d < bestD) { bestD = d; best = chunk; }
       }
       if (!best) { if (this.buildQueue.length === 0) this.initialVegetationDone = true; return; }
-      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16);
+      // Flora de detalhe só existe no raio de grama da qualidade atual. No preset fraco,
+      // isso limita samambaias/flores/juncos ao chunk imediatamente em volta do jogador.
+      const detailRadiusSq = Math.max(1, CONFIG.GRASS_RADIUS_CHUNKS) ** 2;
+      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= detailRadiusSq);
       if (performance.now() - startTime >= budget) return;
     }
   }
@@ -394,9 +397,13 @@ export class ChunkManager {
    */
   private textureDensityFor(dx: number, dz: number): number {
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
-    // O teto da qualidade (geração mais barata) não vale para os 9 chunks em volta do personagem:
-    // são poucos e é onde os pixels grandes mais aparecem. Até o anel 4 o teto é no mínimo 4.
-    const cap = ring <= 1 ? Infinity : ring <= 4 ? Math.max(4, CONFIG.TEXTURE_DENSITY_CAP) : CONFIG.TEXTURE_DENSITY_CAP;
+    // Em hardware forte os 3x3 chunks centrais continuam em qualidade total. Em hardware
+    // fraco NEAR_TEXTURE_DENSITY_CAP também limita o miolo, evitando atlas grandes justamente
+    // onde mais chunks são atualizados durante a caminhada.
+    const weakNearCap = CONFIG.NEAR_TEXTURE_DENSITY_CAP;
+    const cap = Number.isFinite(weakNearCap)
+      ? (ring <= 1 ? weakNearCap : CONFIG.TEXTURE_DENSITY_CAP)
+      : (ring <= 1 ? Infinity : ring <= 4 ? Math.max(4, CONFIG.TEXTURE_DENSITY_CAP) : CONFIG.TEXTURE_DENSITY_CAP);
     const base = Math.min(this.forge.density, cap);
     const factor = ring <= 1 ? 1.0 : ring <= 4 ? 0.5 : ring <= NEAR_RING ? 0.25 : 0.125;
     const floor = ring <= 4 ? 3.0 : ring <= NEAR_RING ? 2.0 : 1.0;
