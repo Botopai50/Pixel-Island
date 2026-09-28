@@ -60,6 +60,12 @@ int main(int argc,char** argv){
     if(im[0]!=0x5049494du || im[1]!=1u)
         throw std::runtime_error("Impostor pack invalido.");
 
+    auto forge=js.getForgeGlobals("Avalon");
+    if(forge.size()<32u) throw std::runtime_error("Forge globals pack vazio.");
+    const uint32_t* fg=reinterpret_cast<const uint32_t*>(forge.data());
+    if(fg[0]!=0x50494647u || fg[1]!=1u || fg[2]==0u || fg[3]==0u || fg[4]==0u)
+        throw std::runtime_error("Forge globals pack invalido.");
+
     std::cout<<"OK terrainFloats="<<terrain.size()
              <<" height=["<<minH<<","<<maxH<<"]"
              <<" vegetationInstances="<<(vegetation.size()/23u)
@@ -67,6 +73,7 @@ int main(int argc,char** argv){
              <<" exactChunkBytes="<<chunk.size()
              <<" horizonBytes="<<horizon.size()
              <<" impostorBytes="<<imp.size()
+             <<" forgeBytes="<<forge.size()
              <<"\n";
     return 0;
 }
