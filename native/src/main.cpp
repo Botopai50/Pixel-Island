@@ -974,6 +974,28 @@ struct GpuMesh {
     uint32_t indexCount=0;
 };
 
+struct TextureGpu {
+    VkImage image=VK_NULL_HANDLE;
+    VkDeviceMemory memory=VK_NULL_HANDLE;
+    VkImageView view=VK_NULL_HANDLE;
+    uint32_t width=0,height=0;
+};
+
+struct ExactChunkGpu {
+    int cx=0,cz=0,segments=0;
+    float density=1.0f;
+    GpuMesh mesh;
+    TextureGpu texture;
+    VkDescriptorSet descriptor=VK_NULL_HANDLE;
+    std::vector<float> heights;
+};
+
+struct HorizonGpu {
+    int level=0,tx=0,tz=0;
+    float inner=0,outer=0;
+    GpuMesh mesh;
+};
+
 struct PushConstants {
     Mat4 viewProj;
     float cameraFog[4];
