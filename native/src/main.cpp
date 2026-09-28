@@ -6,6 +6,8 @@
 #include <vulkan/vulkan.h>
 #include "js_world.hpp"
 #include "exact_streaming.hpp"
+#include "pixel_tree_native.hpp"
+#include "original_world.hpp"
 
 #include <algorithm>
 #include <array>
@@ -343,6 +345,7 @@ struct Vertex {
     float r=1,g=1,b=1;
     float wallX=99,wallY=99,wallZ=0;
     float morph=0;
+    float u=0,v=0;
 };
 
 struct InstanceGPU {
