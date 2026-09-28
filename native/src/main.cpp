@@ -39,6 +39,7 @@ constexpr float TERRAIN_SIZE = 832.0f; // raio 6: centros -6..+6, cobrindo borda
 constexpr float STREAM_STEP = 64.0f;
 constexpr float FOG_FAR = 720.0f;
 constexpr uint32_t MAX_INSTANCES_PER_MESH = 60000;
+constexpr uint32_t PIXEL_TREE_MAX_INSTANCES = 4096;
 constexpr uint32_t TERRAIN_ATLAS_GRID = 13;
 constexpr uint32_t TERRAIN_ATLAS_SLOT_PX = 112;
 constexpr uint32_t TERRAIN_ATLAS_SIZE_PX = TERRAIN_ATLAS_GRID * TERRAIN_ATLAS_SLOT_PX;
@@ -377,6 +378,7 @@ struct ObjectSeed {
     float x=0,y=0,z=0,scale=1,rotation=0;
     float r=1,g=1,b=1;
     int kind=TREE_LOD0;
+    int planType=-1;
     std::array<float,16> matrix{};
     bool exactMatrix=false;
 };
@@ -1027,6 +1029,25 @@ struct HorizonGpu {
     int level=0,tx=0,tz=0;
     float inner=0,outer=0;
     GpuMesh mesh;
+};
+
+struct PixelTreePartGpu {
+    std::string name;
+    GpuMesh mesh;
+    TextureGpu texture;
+    VkDescriptorSet descriptor=VK_NULL_HANDLE;
+    float repeatX=1.0f,repeatY=1.0f;
+    float alphaTest=0.0f;
+    bool flipY=false;
+    bool castShadow=false;
+};
+
+struct PixelTreeAssetGpu {
+    uint16_t presetId=0;
+    uint16_t variant=0;
+    std::vector<PixelTreePartGpu> parts;
+    Buffer instanceBuffer;
+    std::vector<InstanceGPU> visible;
 };
 
 struct PushConstants {
