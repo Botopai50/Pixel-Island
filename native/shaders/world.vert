@@ -15,11 +15,13 @@ layout(push_constant) uniform PushConstants {
     vec4 cameraFog;
     vec4 sunAmbient;
     vec4 environment;
+    vec4 terrainAtlas;
 } pc;
 
 layout(location = 0) out vec3 vColor;
 layout(location = 1) out float vDistance;
 layout(location = 2) out vec3 vWorldPos;
+layout(location = 3) out float vLight;
 
 void main() {
     mat4 instanceMatrix = mat4(instanceM0, instanceM1, instanceM2, instanceM3);
@@ -31,9 +33,9 @@ void main() {
     vec3 sunDir = normalize(pc.sunAmbient.xyz);
     float ndl = max(dot(worldNormal, sunDir), 0.0);
     float toon = ndl > 0.56 ? 1.0 : (ndl > 0.18 ? 0.72 : 0.46);
-    float light = mix(pc.sunAmbient.w, 1.0, toon);
 
-    vColor = inColor * instanceColor.rgb * light;
+    vLight = mix(pc.sunAmbient.w, 1.0, toon);
+    vColor = inColor * instanceColor.rgb;
     vDistance = distance(worldPos, pc.cameraFog.xyz);
     vWorldPos = worldPos;
 }
