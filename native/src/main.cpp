@@ -490,6 +490,7 @@ int nativeKindForPlanType(int type) {
 }
 
 WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
+    logLine("WORLD: inicio center="+std::to_string(centerX)+","+std::to_string(centerZ));
     WorldData w;
     w.centerX=centerX;
     w.centerZ=centerZ;
@@ -503,6 +504,7 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
         TERRAIN_SIZE
     );
 
+    logLine("WORLD: terreno/hidrologia/biomas concluido");
     const int side=TERRAIN_SEGMENTS+1;
     const size_t expected=static_cast<size_t>(side)*side*terrainStride;
     if(terrain.size()!=expected) throw std::runtime_error("Buffer de terreno original com tamanho inesperado.");
@@ -551,7 +553,9 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
     w.terrainTextureOriginX=static_cast<float>((centerCx-atlasRadius)*chunkSize-chunkSize*0.5);
     w.terrainTextureOriginZ=static_cast<float>((centerCz-atlasRadius)*chunkSize-chunkSize*0.5);
 
+    logLine("WORLD: iniciando Terrain Texture Forge 13x13");
     for(int gz=0;gz<atlasGrid;++gz){
+        logLine("WORLD: textura linha "+std::to_string(gz+1)+"/13");
         for(int gx=0;gx<atlasGrid;++gx){
             const int cx=centerCx-atlasRadius+gx;
             const int cz=centerCz-atlasRadius+gz;
@@ -577,6 +581,7 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
         }
     }
 
+    logLine("WORLD: Terrain Texture Forge concluido");
     // Mesmas coordenadas de chunk da versão original: centro = (cx,cz) * 64.
     const double half=TERRAIN_SIZE*0.5;
     const int minCx=static_cast<int>(std::ceil((centerX-half)/chunkSize));
@@ -587,6 +592,7 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
     constexpr int vegStride=23;
     w.objects.reserve(30000);
 
+    logLine("WORLD: iniciando VegetationPlanner");
     for(int cz=minCz;cz<=maxCz;++cz){
         for(int cx=minCx;cx<=maxCx;++cx){
             // Mesmo raio circular do ChunkManager do preset "integrada fraca":
@@ -620,6 +626,7 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
             }
         }
     }
+    logLine("WORLD: concluido; objetos="+std::to_string(w.objects.size()));
     return w;
 }
 
@@ -650,6 +657,14 @@ public:
         return true;
     }
 
+    bool takeError(std::string& out) {
+        std::lock_guard<std::mutex> lock(m_);
+        if (!error_) return false;
+        out=*error_;
+        error_.reset();
+        return true;
+    }
+
 private:
     void run() {
         for (;;) {
@@ -660,11 +675,21 @@ private:
                 if (stop_) return;
                 x=reqX_; z=reqZ_; requested_=false;
             }
-            if(!js_) js_=std::make_unique<JsWorldRuntime>(scriptPath_);
-            WorldData data = generateWorldExact(*js_,x,z);
-            {
+            try {
+                if(!js_) {
+                    logLine("WORKER: carregando world.bundle.js");
+                    js_=std::make_unique<JsWorldRuntime>(scriptPath_);
+                    logLine("WORKER: QuickJS pronto");
+                }
+                WorldData data = generateWorldExact(*js_,x,z);
+                {
+                    std::lock_guard<std::mutex> lock(m_);
+                    if (!requested_ || (x==reqX_ && z==reqZ_)) ready_ = std::move(data);
+                }
+            } catch(const std::exception& ex) {
+                logLine(std::string("WORKER ERRO: ")+ex.what());
                 std::lock_guard<std::mutex> lock(m_);
-                if (!requested_ || (x==reqX_ && z==reqZ_)) ready_ = std::move(data);
+                error_=ex.what();
             }
         }
     }
@@ -677,6 +702,7 @@ private:
     bool stop_=false, requested_=false;
     int reqX_=0, reqZ_=0;
     std::optional<WorldData> ready_;
+    std::optional<std::string> error_;
 };
 
 struct CpuMesh {
