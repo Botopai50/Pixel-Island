@@ -1193,15 +1193,17 @@ private:
     }
 
     void createDescriptorSetLayout() {
-        VkDescriptorSetLayoutBinding binding{};
-        binding.binding=0;
-        binding.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount=1;
-        binding.stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+        std::array<VkDescriptorSetLayoutBinding,2> bindings{};
+        for(uint32_t i=0;i<2;i++){
+            bindings[i].binding=i;
+            bindings[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[i].descriptorCount=1;
+            bindings[i].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
 
         VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        ci.bindingCount=1;
-        ci.pBindings=&binding;
+        ci.bindingCount=static_cast<uint32_t>(bindings.size());
+        ci.pBindings=bindings.data();
         check(vkCreateDescriptorSetLayout(device_,&ci,nullptr,&descriptorSetLayout_),"vkCreateDescriptorSetLayout");
     }
 
@@ -1329,7 +1331,7 @@ private:
         binds[0]={0,sizeof(Vertex),VK_VERTEX_INPUT_RATE_VERTEX};
         binds[1]={1,sizeof(InstanceGPU),VK_VERTEX_INPUT_RATE_INSTANCE};
 
-        std::array<VkVertexInputAttributeDescription,8> attrs{};
+        std::array<VkVertexInputAttributeDescription,10> attrs{};
         attrs[0]={0,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,px)};
         attrs[1]={1,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,nx)};
         attrs[2]={2,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,r)};
@@ -1338,6 +1340,8 @@ private:
         attrs[5]={5,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,m)+sizeof(float)*8};
         attrs[6]={6,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,m)+sizeof(float)*12};
         attrs[7]={7,1,VK_FORMAT_R32G32B32A32_SFLOAT,offsetof(InstanceGPU,r)};
+        attrs[8]={8,0,VK_FORMAT_R32G32B32_SFLOAT,offsetof(Vertex,wallX)};
+        attrs[9]={9,0,VK_FORMAT_R32_SFLOAT,offsetof(Vertex,morph)};
 
         VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
         vi.vertexBindingDescriptionCount=2; vi.pVertexBindingDescriptions=binds;
