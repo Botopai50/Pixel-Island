@@ -28,8 +28,8 @@ namespace {
 
 constexpr uint32_t WINDOW_WIDTH = 1280;
 constexpr uint32_t WINDOW_HEIGHT = 720;
-constexpr int TERRAIN_SEGMENTS = 192; // 4m por vértice: equivalente ao preset fraco (16 seg / 64m)
-constexpr float TERRAIN_SIZE = 768.0f;
+constexpr int TERRAIN_SEGMENTS = 208; // 13 chunks de 64m, 4m por vértice
+constexpr float TERRAIN_SIZE = 832.0f; // raio 6: centros -6..+6, cobrindo bordas completas
 constexpr float STREAM_STEP = 64.0f;
 constexpr float FOG_FAR = 720.0f;
 constexpr uint32_t MAX_INSTANCES_PER_MESH = 60000;
@@ -533,10 +533,13 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
 
     for(int cz=minCz;cz<=maxCz;++cz){
         for(int cx=minCx;cx<=maxCx;++cx){
-            // No preset fraco do projeto, flora pequena fica só perto do centro.
+            // Mesmo raio circular do ChunkManager do preset "integrada fraca":
+            // vegetação = 3 chunks; flora detalhada/grama = 1 chunk.
             const int dx=cx-static_cast<int>(std::round(centerX/chunkSize));
             const int dz=cz-static_cast<int>(std::round(centerZ/chunkSize));
-            const bool detail=(dx*dx+dz*dz)<=1;
+            const int distSq=dx*dx+dz*dz;
+            if(distSq>9) continue;
+            const bool detail=distSq<=1;
 
             const auto veg=js.generateVegetation(WORLD_SEED_TEXT,cx,cz,chunkSize,detail);
             if(veg.size()%vegStride!=0) throw std::runtime_error("Buffer de vegetacao original invalido.");
