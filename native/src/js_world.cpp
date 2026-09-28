@@ -72,7 +72,7 @@ JsWorldRuntime::~JsWorldRuntime() {
     throw std::runtime_error(text);
 }
 
-std::vector<float> JsWorldRuntime::callFloatBuffer(
+std::vector<uint8_t> JsWorldRuntime::callByteBuffer(
     const char* functionName,
     const std::vector<std::string>& stringArgs,
     const std::vector<double>& numberArgs
@@ -91,9 +91,7 @@ std::vector<float> JsWorldRuntime::callFloatBuffer(
     for (double n : numberArgs) args.push_back(JS_NewFloat64(ctx_, n));
 
     JSValue ret = JS_Call(
-        ctx_,
-        fn,
-        global,
+        ctx_, fn, global,
         static_cast<int>(args.size()),
         args.data()
     );
@@ -109,14 +107,28 @@ std::vector<float> JsWorldRuntime::callFloatBuffer(
 
     size_t byteSize = 0;
     uint8_t* bytes = JS_GetArrayBuffer(ctx_, &byteSize, ret);
-    if (!bytes || byteSize % sizeof(float) != 0) {
+    if (!bytes) {
         JS_FreeValue(ctx_, ret);
-        throw std::runtime_error(std::string(functionName) + " nao retornou Float32 ArrayBuffer.");
+        throw std::runtime_error(std::string(functionName) + " nao retornou ArrayBuffer.");
     }
 
-    std::vector<float> out(byteSize / sizeof(float));
-    std::memcpy(out.data(), bytes, byteSize);
+    std::vector<uint8_t> out(byteSize);
+    if (byteSize) std::memcpy(out.data(), bytes, byteSize);
     JS_FreeValue(ctx_, ret);
+    return out;
+}
+
+std::vector<float> JsWorldRuntime::callFloatBuffer(
+    const char* functionName,
+    const std::vector<std::string>& stringArgs,
+    const std::vector<double>& numberArgs
+) {
+    auto bytes = callByteBuffer(functionName, stringArgs, numberArgs);
+    if (bytes.size() % sizeof(float) != 0) {
+        throw std::runtime_error(std::string(functionName) + " retornou buffer Float32 invalido.");
+    }
+    std::vector<float> out(bytes.size() / sizeof(float));
+    if (!bytes.empty()) std::memcpy(out.data(), bytes.data(), bytes.size());
     return out;
 }
 
@@ -150,5 +162,20 @@ std::vector<float> JsWorldRuntime::generateVegetation(
             chunkSize,
             detail ? 1.0 : 0.0
         }
+    );
+}
+
+
+std::vector<uint8_t> JsWorldRuntime::generateChunkTexture(
+    const std::string& seed,
+    double minWorldX,
+    double minWorldZ,
+    double chunkSize,
+    double density
+) {
+    return callByteBuffer(
+        "pixelGenerateChunkTexture",
+        { seed },
+        { minWorldX, minWorldZ, chunkSize, density }
     );
 }
