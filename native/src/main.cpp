@@ -350,6 +350,43 @@ struct Vertex {
     float treeX=0,treeY=0,treeType=0,treeScale=0;
 };
 
+struct WaterVertex {
+    float x=0,y=0,z=0;
+    float u=0,v=0;
+};
+
+struct WaterMeshCpu {
+    std::vector<WaterVertex> vertices;
+    std::vector<uint32_t> indices;
+};
+
+struct WaterMeshGpu {
+    Buffer vb;
+    Buffer ib;
+    uint32_t indexCount=0;
+};
+
+struct alignas(16) WaterUniformsGpu {
+    Mat4 model{};
+    Mat4 viewProj{};
+    Mat4 reflectTextureMatrix{};
+    float cameraPosTime[4]{};
+    float waterParams0[4]{}; // waveHeight, frequency, speed, foamAmount
+    float waterParams1[4]{}; // flowSpeed, windAngle, opacity, foamDistance
+    float deepColor[4]{};
+    float shallowColor[4]{};
+    float foamColor[4]{};
+    float crestColor[4]{};
+    float lightDirMode[4]{}; // xyz + isOrthographic
+    float fogColorNear[4]{};
+    float fogSunColorFar[4]{};
+    float fogSunDirOn[4]{};
+    float resolutionTexel[4]{};
+    float biomeOriginSpanReady[4]{};
+    float cameraNearFarActive[4]{};
+    float ripples[8][4]{};
+};
+
 struct InstanceGPU {
     float m[16];
     float r,g,b,a;
