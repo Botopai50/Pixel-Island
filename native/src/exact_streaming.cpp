@@ -51,6 +51,15 @@ void ExactStreamingWorker::requestChunk(int cx,int cz,float density,int segments
     enqueue(std::move(r));
 }
 
+void ExactStreamingWorker::requestVegetation(int cx,int cz,bool detail,double priority,uint64_t generation){
+    Request r;
+    r.kind=Kind::Vegetation;
+    r.a=cx;r.b=cz;r.flag=detail;
+    r.priority=priority;r.generation=generation;
+    r.key="v:"+std::to_string(cx)+":"+std::to_string(cz)+":"+(detail?"1":"0");
+    enqueue(std::move(r));
+}
+
 void ExactStreamingWorker::requestHorizon(int level,int tx,int tz,float minX,float minZ,float size,int segments,float lower,double priority,uint64_t generation){
     Request r;
     r.kind=Kind::Horizon;
@@ -155,6 +164,11 @@ void ExactStreamingWorker::run(){
             if(r.kind==Kind::Chunk){
                 auto raw=js->generateExactChunk("Avalon",r.a,r.b,64.0,r.f0,r.c,r.flag);
                 result.payload=decodeChunk(r,raw);
+            }else if(r.kind==Kind::Vegetation){
+                VegetationCpu v{};
+                v.cx=r.a;v.cz=r.b;v.detail=r.flag;
+                v.data=js->generateVegetation("Avalon",r.a,r.b,64.0,r.flag);
+                result.payload=std::move(v);
             }else if(r.kind==Kind::Horizon){
                 auto raw=js->generateHorizonTile("Avalon",r.f0,r.f1,r.f2,static_cast<int>(r.f3));
                 result.payload=decodeHorizon(r,raw);
