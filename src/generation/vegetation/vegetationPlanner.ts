@@ -89,6 +89,91 @@ export function planChunkVegetation(
   const reedTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
 
   const dummy = new THREE.Object3D();
+
+  /**
+   * Microcenas procedurais em volta de árvores.
+   * Reutiliza as geometrias instanciadas já existentes, aumentando composição sem criar
+   * um objeto THREE separado para cada detalhe.
+   */
+  const addTreeDressing = (centerX: number, centerZ: number, basePt: TerrainPoint, seed: number, beach = false): void => {
+    if (!enableDetailFlora) return;
+
+    const rng = new PRNG((seed ^ 0x6c8e9cf5) >>> 0 || 1);
+    const type = basePt.biome.type;
+    const forest =
+      type === BiomeType.TEMPERATE_FOREST ||
+      type === BiomeType.AUTUMN_FOREST ||
+      type === BiomeType.TROPICAL_RAINFOREST ||
+      type === BiomeType.BOREAL_TAIGA;
+    const meadow = type === BiomeType.COASTAL_MEADOW;
+    const mangrove = type === BiomeType.MANGROVE_SWAMP;
+
+    let count = 0;
+    if (forest) count = rng.rangeInt(1, 3);
+    else if (meadow || mangrove) count = rng.rangeInt(1, 2);
+    else if (beach && rng.chance(0.55)) count = 1;
+
+    for (let i = 0; i < count; i++) {
+      const angle = rng.range(0, Math.PI * 2);
+      const radius = rng.range(1.4, forest ? 4.8 : 3.8);
+      const x = centerX + Math.cos(angle) * radius;
+      const z = centerZ + Math.sin(angle) * radius;
+      const p = terrainGen.getPointFast ? terrainGen.getPointFast(x, z) : terrainGen.getPoint(x, z);
+      if (p.isWater || p.isLava || p.slope > 0.46 || Math.abs(p.height - basePt.height) > 1.8) continue;
+
+      dummy.position.set(x, p.height + 0.015, z);
+      dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
+
+      if (forest && rng.chance(0.68)) {
+        const s = rng.range(0.65, 1.25);
+        dummy.scale.set(s, s * rng.range(0.85, 1.18), s);
+        dummy.updateMatrix();
+        fernTransforms.push({
+          matrix: dummy.matrix.clone(),
+          tint: new THREE.Color(type === BiomeType.AUTUMN_FOREST ? 0x5f9f2c : 0x42b828)
+        });
+      } else if ((meadow || type === BiomeType.AUTUMN_FOREST) && rng.chance(0.72)) {
+        const s = rng.range(0.70, 1.20);
+        dummy.scale.set(s, s, s);
+        dummy.updateMatrix();
+        wildflowerTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0xffffff) });
+      } else if (mangrove && rng.chance(0.65)) {
+        const s = rng.range(0.70, 1.15);
+        dummy.scale.set(s, s * 1.15, s);
+        dummy.updateMatrix();
+        reedTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x3f7f31) });
+      } else {
+        const s = rng.range(0.32, 0.72);
+        dummy.position.y = p.height - 0.05 * s;
+        dummy.scale.set(s * rng.range(0.9, 1.2), s * rng.range(0.55, 0.82), s);
+        dummy.updateMatrix();
+        (forest ? rockMossyTransforms : rockPebblesTransforms).push({
+          matrix: dummy.matrix.clone(),
+          tint: new THREE.Color(beach ? 0x726b5d : 0x7b8178)
+        });
+      }
+    }
+
+    if (forest && rng.chance(0.16)) {
+      const angle = rng.range(0, Math.PI * 2);
+      const radius = rng.range(2.0, 3.6);
+      const x = centerX + Math.cos(angle) * radius;
+      const z = centerZ + Math.sin(angle) * radius;
+      const p = terrainGen.getPointFast ? terrainGen.getPointFast(x, z) : terrainGen.getPoint(x, z);
+      if (!p.isWater && !p.isLava && p.slope < 0.42) {
+        const s = rng.range(0.45, 0.85);
+        dummy.position.set(x, p.height - 0.08 * s, z);
+        dummy.rotation.set(0, rng.range(0, Math.PI * 2), 0);
+        dummy.scale.set(s * 1.2, s * 0.72, s);
+        dummy.updateMatrix();
+        rockMossyTransforms.push({
+          matrix: dummy.matrix.clone(),
+          tint: new THREE.Color(0x768078).multiplyScalar(rng.range(0.92, 1.06))
+        });
+      }
+    }
+  };
+
   const halfSize = chunkSize / 2;
   const startX = chunkX * chunkSize - halfSize;
   const startZ = chunkZ * chunkSize - halfSize;
@@ -197,7 +282,8 @@ export function planChunkVegetation(
           Math.round(wz * 8),
           (worldSeed ^ 0x9e3779b9) >>> 0
         );
-        const treePrng = new PRNG(Math.max(1, Math.floor(treeSeed01 * 0xffffffff)));
+        const treeSeed = Math.max(1, Math.floor(treeSeed01 * 0xffffffff));
+        const treePrng = new PRNG(treeSeed);
         // REGRA DA PRAIA: Apenas coqueiros (adulto ou muda)
         if (isBeach) {
           const isSapling = treePrng.chance(0.28); // 28% de mudas jovens na praia
@@ -230,6 +316,7 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x4cb828)
             });
           }
+          addTreeDressing(wx, wz, pt, treeSeed, true);
           continue;
         }
 
@@ -450,7 +537,8 @@ export function planChunkVegetation(
               tint: new THREE.Color(0x4e8e42)
             });
           }
-        }
+        }        addTreeDressing(wx, wz, pt, treeSeed, false);
+
       } else if (roll < treeChance + shrubChance) {
         // 2. ARBUSTOS (Folhoso vs Frutífero)
         const isArctic = biome.type === BiomeType.FROZEN_TUNDRA || (pt.iceInfluence || 0) > 0.15;
