@@ -3691,33 +3691,21 @@ private:
         std::memcpy(waterUniformBuffer_.mapped,&w,sizeof(w));
     }
 
-    void record(VkCommandBuffer cmd,uint32_t imageIndex) {
-        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-        check(vkBeginCommandBuffer(cmd,&bi),"vkBeginCommandBuffer");
-
-        VkClearValue clear[2]{};
-        // skyColor NOON (#6aa8ea), em linear aproximado.
-        clear[0].color={{0.144f,0.394f,0.823f,1.0f}};
-        clear[1].depthStencil={1.0f,0};
-
-        VkRenderPassBeginInfo ri{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        ri.renderPass=renderPass_;ri.framebuffer=framebuffers_[imageIndex];
-        ri.renderArea.extent=swapExtent_;ri.clearValueCount=2;ri.pClearValues=clear;
-        vkCmdBeginRenderPass(cmd,&ri,VK_SUBPASS_CONTENTS_INLINE);
-        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_);
-
-        VkViewport vp{0,0,static_cast<float>(swapExtent_.width),static_cast<float>(swapExtent_.height),0,1};
-        VkRect2D sc{{0,0},swapExtent_};
+    void setDynamicViewport(VkCommandBuffer cmd,uint32_t width,uint32_t height){
+        VkViewport vp{0,0,static_cast<float>(width),static_cast<float>(height),0,1};
+        VkRect2D sc{{0,0},{width,height}};
         vkCmdSetViewport(cmd,0,1,&vp);
         vkCmdSetScissor(cmd,0,1,&sc);
+    }
 
+    void drawWorldGeometry(VkCommandBuffer cmd,const PushConstants& base,bool reflectionPass){
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline_);
         VkDeviceSize off[2]={0,0};
-        PushConstants base=makePush();
+        const float modeOffset=reflectionPass?10.0f:0.0f;
 
-        // 1) Distant Horizons original por baixo dos chunks.
         if(!horizonTiles_.empty()){
             PushConstants p=base;
-            p.environment[2]=2.0f;
+            p.environment[2]=2.0f+modeOffset;
             const float chunkEnd=std::max(160.0f,(activeViewRadius()-0.8f)*64.0f);
             p.terrain[2]=chunkEnd-120.0f;
             p.terrain[3]=3000.0f*0.55f;
@@ -3732,24 +3720,16 @@ private:
             }
         }
 
-        // 1.5) Árvores distantes — atlas e posições originais do HorizonTerrain.
         if(!impostorBlocks_.empty()){
             PushConstants pi=base;
-            pi.environment[2]=4.0f;
+            pi.environment[2]=4.0f+modeOffset;
             const Vec3 center=transitionMode_!=0?transitionLook_:(observerMode_?focus_:camera_);
             pi.terrain[0]=center.x;
             pi.terrain[1]=center.z;
             pi.terrain[2]=0.0f;
             pi.terrain[3]=3000.0f*0.55f;
-            vkCmdBindDescriptorSets(
-                cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,
-                0,1,&impostorDescriptor_,0,nullptr
-            );
-            vkCmdPushConstants(
-                cmd,pipelineLayout_,
-                VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,
-                0,sizeof(pi),&pi
-            );
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,0,1,&impostorDescriptor_,0,nullptr);
+            vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(pi),&pi);
             for(const auto& [key,b]:impostorBlocks_){
                 if(!b.mesh.indexCount)continue;
                 VkBuffer bufs[2]={b.mesh.vb.buffer,dummyInstance_.buffer};
@@ -3759,11 +3739,10 @@ private:
             }
         }
 
-        // 2) Chunks 64x64 originais, cada um com sua textura e LOD.
         for(const auto& [key,ch]:exactChunks_){
             if(!ch.mesh.indexCount)continue;
             PushConstants p=base;
-            p.environment[2]=1.0f;
+            p.environment[2]=1.0f+modeOffset;
             p.environment[3]=ch.density;
             p.terrain[0]=ch.cx*64.0f-32.0f;
             p.terrain[1]=ch.cz*64.0f-32.0f;
@@ -3777,13 +3756,12 @@ private:
             vkCmdDrawIndexed(cmd,ch.mesh.indexCount,1,0,0,0);
         }
 
-        // 3) Pixel_Tree real exportado do mesmo PixelTreeAssetLibrary do projeto original.
         for(const auto& [assetKey,asset]:pixelTreeAssets_){
             if(asset.visible.empty())continue;
             for(const auto& part:asset.parts){
                 if(!part.mesh.indexCount)continue;
                 PushConstants pt=base;
-                pt.environment[2]=3.0f;
+                pt.environment[2]=3.0f+modeOffset;
                 pt.environment[3]=1.0f;
                 pt.terrain[0]=part.repeatX;
                 pt.terrain[1]=part.repeatY;
@@ -3794,26 +3772,98 @@ private:
                 VkBuffer bufs[2]={part.mesh.vb.buffer,asset.instanceBuffer.buffer};
                 vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
                 vkCmdBindIndexBuffer(cmd,part.mesh.ib.buffer,0,VK_INDEX_TYPE_UINT32);
-                vkCmdDrawIndexed(
-                    cmd,part.mesh.indexCount,
-                    static_cast<uint32_t>(asset.visible.size()),
-                    0,0,0
-                );
+                vkCmdDrawIndexed(cmd,part.mesh.indexCount,static_cast<uint32_t>(asset.visible.size()),0,0,0);
             }
         }
 
-        // 4) Rochas e outros props ainda pertencentes ao pool leve do Pixel-Island.
         PushConstants p=base;
-        p.environment[2]=0.0f;
+        p.environment[2]=0.0f+modeOffset;
         p.environment[3]=1.0f;
         vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,0,1,&descriptorSet_,0,nullptr);
         vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
-        for(int i=0;i<MESH_KIND_COUNT;i++) {
-            if(visible_[i].empty()) continue;
+        for(int i=0;i<MESH_KIND_COUNT;i++){
+            if(visible_[i].empty())continue;
             VkBuffer bufs[2]={meshes_[i].vb.buffer,instanceBuffers_[i].buffer};
             vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
             vkCmdBindIndexBuffer(cmd,meshes_[i].ib.buffer,0,VK_INDEX_TYPE_UINT32);
             vkCmdDrawIndexed(cmd,meshes_[i].indexCount,static_cast<uint32_t>(visible_[i].size()),0,0,0);
+        }
+    }
+
+    void beginScenePass(
+        VkCommandBuffer cmd,
+        const SceneTargetGpu& target,
+        const VkClearColorValue& clearColor
+    ){
+        VkClearValue clear[2]{};
+        clear[0].color=clearColor;
+        clear[1].depthStencil={1.0f,0};
+        VkRenderPassBeginInfo ri{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        ri.renderPass=renderPass_;
+        ri.framebuffer=target.framebuffer;
+        ri.renderArea.extent={target.width,target.height};
+        ri.clearValueCount=2;
+        ri.pClearValues=clear;
+        vkCmdBeginRenderPass(cmd,&ri,VK_SUBPASS_CONTENTS_INLINE);
+        setDynamicViewport(cmd,target.width,target.height);
+    }
+
+    void record(VkCommandBuffer cmd,uint32_t imageIndex) {
+        VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        check(vkBeginCommandBuffer(cmd,&bi),"vkBeginCommandBuffer");
+
+        const CameraState cam=currentCameraState(false);
+        const CameraState reflectedCam=currentCameraState(true);
+        const PushConstants mainPush=makePush(cam);
+        const VkClearColorValue skyClear{{0.144f,0.394f,0.823f,1.0f}};
+
+        // Passo 1 do original: reflexão planar só em primeira pessoa e em frequência reduzida.
+        const bool shouldReflect=!observerMode_&&transitionMode_==0&&
+            (!reflectionValid_||(time_-lastReflectionUpdate_)>=0.20f);
+        if(shouldReflect){
+            beginScenePass(cmd,reflectionTarget_,skyClear);
+            PushConstants reflectedPush=makePush(reflectedCam);
+            drawWorldGeometry(cmd,reflectedPush,true);
+            vkCmdEndRenderPass(cmd);
+            reflectionValid_=true;
+            lastReflectionUpdate_=time_;
+        }else if(!reflectionValid_){
+            const VkClearColorValue black{{0,0,0,1}};
+            beginScenePass(cmd,reflectionTarget_,black);
+            vkCmdEndRenderPass(cmd);
+            reflectionValid_=true;
+        }
+
+        // Passo 2: mundo opaco sem água, com depth amostrável.
+        beginScenePass(cmd,sceneTarget_,skyClear);
+        drawWorldGeometry(cmd,mainPush,false);
+        vkCmdEndRenderPass(cmd);
+
+        updateWaterUniforms(cam,reflectedCam);
+
+        // Passos 3/4: blit da cena opaca para o canvas e WaterShader original por cima.
+        VkClearValue presentClear{};
+        presentClear.color={{0,0,0,1}};
+        VkRenderPassBeginInfo pri{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        pri.renderPass=presentRenderPass_;
+        pri.framebuffer=framebuffers_[imageIndex];
+        pri.renderArea.extent=swapExtent_;
+        pri.clearValueCount=1;
+        pri.pClearValues=&presentClear;
+        vkCmdBeginRenderPass(cmd,&pri,VK_SUBPASS_CONTENTS_INLINE);
+        setDynamicViewport(cmd,swapExtent_.width,swapExtent_.height);
+
+        vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,blitPipeline_);
+        vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,blitPipelineLayout_,0,1,&blitDescriptorSet_,0,nullptr);
+        vkCmdDraw(cmd,3,1,0,0);
+
+        if(waterMesh_.indexCount){
+            vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterPipeline_);
+            vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,waterPipelineLayout_,0,1,&waterDescriptorSet_,0,nullptr);
+            VkDeviceSize off=0;
+            vkCmdBindVertexBuffers(cmd,0,1,&waterMesh_.vb.buffer,&off);
+            vkCmdBindIndexBuffer(cmd,waterMesh_.ib.buffer,0,VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd,waterMesh_.indexCount,1,0,0,0);
         }
 
         vkCmdEndRenderPass(cmd);
@@ -4077,6 +4127,8 @@ private:
     VkDescriptorPool postDescriptorPool_=VK_NULL_HANDLE;
     VkDescriptorSet blitDescriptorSet_=VK_NULL_HANDLE;
     VkDescriptorSet waterDescriptorSet_=VK_NULL_HANDLE;
+    bool reflectionValid_=false;
+    float lastReflectionUpdate_=-1e9f;
     bool terrainTextureInitialized_=false;
     float terrainTextureOriginX_=0.0f;
     float terrainTextureOriginZ_=0.0f;
