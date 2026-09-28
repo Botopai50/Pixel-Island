@@ -40,9 +40,15 @@ jobs:
           cd standalone-build
           zip -r ../artifact/Pixel-Island-Standalone-Windows.zip .
 
-      - name: Upload standalone package
+      - name: Package current source
+        run: |
+          git archive --format=zip --output=artifact/Pixel-Island-current-source.zip HEAD
+
+      - name: Upload test packages
         uses: actions/upload-artifact@v4
         with:
-          name: pixel-island-standalone-windows
-          path: artifact/Pixel-Island-Standalone-Windows.zip
+          name: pixel-island-test-packages
+          path: |
+            artifact/Pixel-Island-Standalone-Windows.zip
+            artifact/Pixel-Island-current-source.zip
           if-no-files-found: error
