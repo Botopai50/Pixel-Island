@@ -34,6 +34,32 @@ float clg(vec2 t){
 
 float fadeHash(vec2 p){return h21(p+vec2(37.0,17.0));}
 
+vec3 hzPix(vec2 uv,float cell,float wall){
+    float n=h21(floor(uv/cell)+cell*0.173);
+    float n2=h21(floor(uv/(cell*4.0))+cell*0.311+31.7);
+    vec3 t=n<0.22?vec3(0.66,0.74,0.74):
+           n<0.55?vec3(0.88,0.92,0.90):
+           n<0.85?vec3(1.05,1.04,0.98):vec3(1.20,1.16,0.94);
+    vec3 tw=vec3(n<0.2?0.60:n<0.55?0.84:n<0.85?1.0:1.16);
+    return mix(t,tw,wall)*(n2<0.5?0.92:1.05);
+}
+
+vec3 horizonPixelTone(vec3 base){
+    vec3 hzA=abs(normalize(vWorldNormal));
+    float hzWall=1.0-smoothstep(0.55,0.70,hzA.y);
+    vec2 hzUV=hzA.y>=0.62?vWorldPos.xz:(hzA.x>hzA.z?vWorldPos.zy:vWorldPos.xy);
+    if(hzA.y<0.62)hzUV.x*=0.5;
+    vec2 hzFw=fwidth(hzUV);
+    float hzFoot=max(max(hzFw.x,hzFw.y),1e-4);
+    vec3 tone=vec3(1.0);
+    for(int k=0;k<3;k++){
+        float hzC=2.0*exp2(float(k)*2.0);
+        float hzF=1.0-smoothstep(0.35,0.60,hzFoot/hzC);
+        tone*=mix(vec3(1.0),hzPix(hzUV,hzC,hzWall),hzF*(k==0?1.0:0.6));
+    }
+    return base*tone;
+}
+
 vec4 sampleTop(bool dark,vec2 localUV){
     float texW=round(64.0*pc.environment.w);
     // imagem nativa fixa 256x128; pixels válidos ocupam texW x texW.
@@ -151,11 +177,12 @@ void main(){
         float inner=pc.terrain.z,outer=pc.terrain.w;
         if(d<inner)discard;
         float fade=smoothstep(outer,outer+250.0,d);
-        if(fadeHash(floor(vWorldPos.xz/2.0))>1.0-fade)discard;
+        if(fadeHash(floor(vWorldPos.xz/16.0))>1.0-fade)discard;
     }
 
     vec3 color;
     if(mode>0.5&&mode<1.5) color=terrainColor()*vLight;
+    else if(mode>1.5) color=horizonPixelTone(vColor)*vLight;
     else color=vColor*vLight;
 
     color=aerialPerspective(color,vWorldPos,vec3(0.2462,0.5029,0.8069),pc.cameraFog.w,pc.environment.y);
