@@ -1,6 +1,9 @@
 import { PRNG } from '../src/generation/math/prng.ts';
 import { TerrainGenerator } from '../src/generation/terrain/terrainGenerator.ts';
 import { planChunkVegetation } from '../src/generation/vegetation/vegetationPlanner.ts';
+import { buildChunkGeometry } from '../src/generation/terrain/chunkGeometry.ts';
+import { buildHorizonTile } from '../src/generation/terrain/horizonGeometry.ts';
+import { buildImpostorBlock } from '../src/generation/terrain/horizonTrees.ts';
 import {
   DEFAULT_FORGE_PARAMS,
   makePerlin,
@@ -108,4 +111,125 @@ const PLAN_KEYS=[
   const per=makePerlin(seed);
   const res=genChunkTexture(params,per,world,minWorldX,minWorldZ,chunkSize,density);
   return res.img.buffer;
+};
+
+
+function copyInto(dst:Uint8Array, offset:number, src:ArrayBufferView){
+  dst.set(new Uint8Array(src.buffer, src.byteOffset, src.byteLength), offset);
+  return offset + src.byteLength;
+}
+function align4(v:number){ return (v + 3) & ~3; }
+
+/**
+ * Pacote binário do chunk ORIGINAL:
+ * header uint32[10]:
+ * magic, version, segments, vertexCount, indexCount, texW, texH, grassFloatCount, reserved0, reserved1
+ * depois: positions f32, normals f32, wall f32, morph f32, indices u16, padding4,
+ *         top RGBA8, topDark RGBA8, grass f32.
+ */
+(globalThis as any).pixelGenerateExactChunk=function(
+  seedText:string,
+  cx:number,
+  cz:number,
+  chunkSize:number,
+  density:number,
+  segments:number,
+  walls:number
+){
+  const world=worldFor(seedText);
+  const seed=PRNG.hashString(seedText);
+  const centerX=cx*chunkSize, centerZ=cz*chunkSize;
+  const minX=centerX-chunkSize*0.5, minZ=centerZ-chunkSize*0.5;
+
+  const geo=buildChunkGeometry(world,centerX,centerZ,chunkSize,segments,walls!==0);
+  const grid=segments+1;
+  const hs=new Float32Array(grid*grid);
+  for(let i=0;i<grid*grid;i++) hs[i]=geo.positions[i*3+1];
+
+  const params={...DEFAULT_FORGE_PARAMS,seed};
+  const per=makePerlin(seed);
+  const tex=genChunkTexture(params,per,world,minX,minZ,chunkSize,density,{
+    heights:hs,grid,step:chunkSize/segments
+  });
+
+  const headerBytes=10*4;
+  const posBytes=geo.positions.byteLength;
+  const nrmBytes=geo.normals.byteLength;
+  const wallBytes=geo.wall.byteLength;
+  const morphBytes=geo.morph.byteLength;
+  const idxBytes=geo.index.byteLength;
+  const texBytes=tex.img.byteLength;
+  const darkBytes=tex.imgD.byteLength;
+  const grass=tex.grass ?? new Float32Array(0);
+  const grassBytes=grass.byteLength;
+
+  let size=headerBytes+posBytes+nrmBytes+wallBytes+morphBytes+idxBytes;
+  size=align4(size)+texBytes+darkBytes+grassBytes;
+  const out=new ArrayBuffer(size);
+  const dv=new DataView(out);
+  const u8=new Uint8Array(out);
+  const H=[0x50494348,1,geo.segments,geo.positions.length/3,geo.index.length,tex.width,tex.height,grass.length,0,0];
+  for(let i=0;i<H.length;i++) dv.setUint32(i*4,H[i],true);
+
+  let o=headerBytes;
+  o=copyInto(u8,o,geo.positions);
+  o=copyInto(u8,o,geo.normals);
+  o=copyInto(u8,o,geo.wall);
+  o=copyInto(u8,o,geo.morph);
+  o=copyInto(u8,o,geo.index);
+  o=align4(o);
+  o=copyInto(u8,o,tex.img);
+  o=copyInto(u8,o,tex.imgD);
+  o=copyInto(u8,o,grass);
+  return out;
+};
+
+/**
+ * Pacote binário do Distant Horizons ORIGINAL.
+ * header uint32[6]: magic,version,vertexCount,indexCount,seg,reserved
+ * positions/normals/colors f32, morph f32, index u16.
+ */
+(globalThis as any).pixelGenerateHorizonTile=function(
+  seedText:string,minX:number,minZ:number,size:number,seg:number
+){
+  const world=worldFor(seedText);
+  const h=buildHorizonTile(world,minX,minZ,size,seg);
+  const headerBytes=6*4;
+  const total=headerBytes+h.positions.byteLength+h.normals.byteLength+h.colors.byteLength+h.morph.byteLength+h.index.byteLength;
+  const out=new ArrayBuffer(total),dv=new DataView(out),u8=new Uint8Array(out);
+  const H=[0x5049485a,1,h.positions.length/3,h.index.length,seg,0];
+  for(let i=0;i<H.length;i++) dv.setUint32(i*4,H[i],true);
+  let o=headerBytes;
+  o=copyInto(u8,o,h.positions);
+  o=copyInto(u8,o,h.normals);
+  o=copyInto(u8,o,h.colors);
+  o=copyInto(u8,o,h.morph);
+  o=copyInto(u8,o,h.index);
+  return out;
+};
+
+/**
+ * Pacote de impostores do horizonte ORIGINAL.
+ * header uint32[5]: magic,version,vertexCount,indexCount,reserved
+ * positions f32x3, tree f32x4, colors u8x3, padding4, indices u32.
+ */
+(globalThis as any).pixelGenerateImpostorBlock=function(
+  seedText:string,minX:number,minZ:number,size:number,originX:number,originZ:number
+){
+  const world=worldFor(seedText);
+  const h=buildImpostorBlock(world,minX,minZ,size,originX,originZ);
+  const headerBytes=5*4;
+  let body=headerBytes+h.positions.byteLength+h.tree.byteLength+h.colors.byteLength;
+  body=align4(body);
+  const total=body+h.index.byteLength;
+  const out=new ArrayBuffer(total),dv=new DataView(out),u8=new Uint8Array(out);
+  const H=[0x5049494d,1,h.positions.length/3,h.index.length,0];
+  for(let i=0;i<H.length;i++) dv.setUint32(i*4,H[i],true);
+  let o=headerBytes;
+  o=copyInto(u8,o,h.positions);
+  o=copyInto(u8,o,h.tree);
+  o=copyInto(u8,o,h.colors);
+  o=align4(o);
+  o=copyInto(u8,o,h.index);
+  return out;
 };
