@@ -537,8 +537,9 @@ export function planChunkVegetation(
               tint: new THREE.Color(0x4e8e42)
             });
           }
-        }        addTreeDressing(wx, wz, pt, treeSeed, false);
+        }
 
+        addTreeDressing(wx, wz, pt, treeSeed, false);
       } else if (roll < treeChance + shrubChance) {
         // 2. ARBUSTOS (Folhoso vs Frutífero)
         const isArctic = biome.type === BiomeType.FROZEN_TUNDRA || (pt.iceInfluence || 0) > 0.15;
