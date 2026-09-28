@@ -57,6 +57,11 @@ jobs:
       - name: Build Release
         run: cmake --build native/build --config Release --parallel
 
+      - name: Smoke test embedded original world runtime
+        shell: pwsh
+        run: |
+          native/build/Release/PixelIslandWorldSmoke.exe native/world.bundle.js
+
       - name: Verify original-world numerical parity
         shell: pwsh
         run: |
