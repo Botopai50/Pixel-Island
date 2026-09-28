@@ -52,7 +52,7 @@ jobs:
       - name: Configure Vulkan prototype
         shell: pwsh
         run: |
-          cmake -S native -B native/build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake -S native -B native/build -A x64 -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
 
       - name: Build Release
         run: cmake --build native/build --config Release --parallel
