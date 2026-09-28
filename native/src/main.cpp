@@ -1013,6 +1013,76 @@ CpuMesh buildFlowerMesh() {
     return m;
 }
 
+WaterMeshCpu buildOriginalWaterMesh() {
+    WaterMeshCpu out;
+    auto pushVertex=[&](float x,float y,float u,float v){
+        out.vertices.push_back({x,y,0.0f,u,v});
+    };
+
+    // createSeamlessCascadedWaterGeometry() original.
+    constexpr int innerHalf=512;
+    constexpr int innerSegs=128;
+    constexpr float step=(innerHalf*2.0f)/innerSegs;
+
+    for(int j=0;j<=innerSegs;j++){
+        const float y=-innerHalf+j*step;
+        for(int i=0;i<=innerSegs;i++){
+            const float x=-innerHalf+i*step;
+            pushVertex(x,y,static_cast<float>(i)/innerSegs,static_cast<float>(j)/innerSegs);
+        }
+    }
+
+    const int row=innerSegs+1;
+    for(int j=0;j<innerSegs;j++){
+        for(int i=0;i<innerSegs;i++){
+            const uint32_t a=j*row+i;
+            const uint32_t b=j*row+i+1;
+            const uint32_t cc=(j+1)*row+i;
+            const uint32_t d=(j+1)*row+i+1;
+            out.indices.insert(out.indices.end(),{a,b,cc,b,d,cc});
+        }
+    }
+
+    struct Ring{int inR,outR,segs;};
+    const Ring rings[]={{512,1024,128},{1024,2048,64},{2048,4096,32},{4096,8192,16}};
+    for(const auto& ring:rings){
+        const uint32_t base=static_cast<uint32_t>(out.vertices.size());
+        std::vector<std::pair<float,float>> inner,outer;
+        inner.reserve(ring.segs*4);outer.reserve(ring.segs*4);
+        for(int edge=0;edge<4;edge++){
+            for(int st=0;st<ring.segs;st++){
+                const float t=static_cast<float>(st)/ring.segs;
+                float xi=0,yi=0,xo=0,yo=0;
+                if(edge==0){
+                    xi=-ring.inR+t*(2.0f*ring.inR);yi=-ring.inR;
+                    xo=-ring.outR+t*(2.0f*ring.outR);yo=-ring.outR;
+                }else if(edge==1){
+                    xi=ring.inR;yi=-ring.inR+t*(2.0f*ring.inR);
+                    xo=ring.outR;yo=-ring.outR+t*(2.0f*ring.outR);
+                }else if(edge==2){
+                    xi=ring.inR-t*(2.0f*ring.inR);yi=ring.inR;
+                    xo=ring.outR-t*(2.0f*ring.outR);yo=ring.outR;
+                }else{
+                    xi=-ring.inR;yi=ring.inR-t*(2.0f*ring.inR);
+                    xo=-ring.outR;yo=ring.outR-t*(2.0f*ring.outR);
+                }
+                inner.emplace_back(xi,yi);
+                outer.emplace_back(xo,yo);
+            }
+        }
+        const uint32_t count=static_cast<uint32_t>(inner.size());
+        for(auto [x,y]:inner)pushVertex(x,y,0.5f,0.5f);
+        for(auto [x,y]:outer)pushVertex(x,y,0.5f,0.5f);
+        for(uint32_t i=0;i<count;i++){
+            const uint32_t next=(i+1)%count;
+            const uint32_t inCur=base+i,inNext=base+next;
+            const uint32_t outCur=base+count+i,outNext=base+count+next;
+            out.indices.insert(out.indices.end(),{inCur,outCur,inNext,inNext,outCur,outNext});
+        }
+    }
+    return out;
+}
+
 CpuMesh buildMeshForKind(int kind) {
     switch(kind) {
         case TREE_LOD0: return buildTreeMesh(0);
