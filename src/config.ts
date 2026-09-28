@@ -8,6 +8,8 @@ export const CONFIG = {
   MAX_VIEW_RADIUS_CHUNKS: 22, // Raio no zoom mais afastado (~1.4km): preenche a tela inteira
   VEGETATION_RADIUS_CHUNKS: 6, // Raio de instanciamento botânico otimizado (~384m)
   GRASS_RADIUS_CHUNKS: 4,      // Raio (chunks) com grama 3D em tufos (0 = desligada)
+  VEGETATION_DENSITY_SCALE: 1.0, // Multiplicador global de densidade usado pela qualidade adaptativa
+  NEAR_TEXTURE_DENSITY_CAP: Infinity as number, // teto também para os 3x3 chunks próximos (Infinity = qualidade total)
   UNLOAD_MARGIN_CHUNKS: 1, // Margem antes de descarregar chunk da memória
 
   // Tamanho do personagem em 1ª pessoa (1 = humano de 1.75m). Altura dos olhos, velocidades,
