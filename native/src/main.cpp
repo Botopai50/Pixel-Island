@@ -3126,6 +3126,33 @@ private:
             }
         }
 
+        // 1.5) Árvores distantes — atlas e posições originais do HorizonTerrain.
+        if(!impostorBlocks_.empty()){
+            PushConstants pi=base;
+            pi.environment[2]=4.0f;
+            const Vec3 center=transitionMode_!=0?transitionLook_:(observerMode_?focus_:camera_);
+            pi.terrain[0]=center.x;
+            pi.terrain[1]=center.z;
+            pi.terrain[2]=0.0f;
+            pi.terrain[3]=3000.0f*0.55f;
+            vkCmdBindDescriptorSets(
+                cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,
+                0,1,&impostorDescriptor_,0,nullptr
+            );
+            vkCmdPushConstants(
+                cmd,pipelineLayout_,
+                VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,
+                0,sizeof(pi),&pi
+            );
+            for(const auto& [key,b]:impostorBlocks_){
+                if(!b.mesh.indexCount)continue;
+                VkBuffer bufs[2]={b.mesh.vb.buffer,dummyInstance_.buffer};
+                vkCmdBindVertexBuffers(cmd,0,2,bufs,off);
+                vkCmdBindIndexBuffer(cmd,b.mesh.ib.buffer,0,VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexed(cmd,b.mesh.indexCount,1,0,0,0);
+            }
+        }
+
         // 2) Chunks 64x64 originais, cada um com sua textura e LOD.
         for(const auto& [key,ch]:exactChunks_){
             if(!ch.mesh.indexCount)continue;
@@ -3232,11 +3259,12 @@ private:
           <<L" | "<<(observerMode_?L"OBSERVADOR":L"FPS")
           <<L" | Chunks "<<exactChunks_.size()
           <<L" | Horizon "<<horizonTiles_.size()
+          <<L" | Impostors "<<impostorBlocks_.size()
           <<L" | Fila "<<(exactStreamer_?exactStreamer_->pendingCount():0)
           <<L"/"<<(horizonStreamer_?horizonStreamer_->pendingCount():0)
           <<L" | PixelTree "<<pixelTrees
           <<L" | Props "<<visibleTotal
-          <<L" | Draws "<<(exactChunks_.size()+horizonTiles_.size()+propDraws+pixelDraws)
+          <<L" | Draws "<<(exactChunks_.size()+horizonTiles_.size()+impostorBlocks_.size()+propDraws+pixelDraws)
           <<L" | TAB modo";
         SetWindowTextW(hwnd_,ss.str().c_str());
     }
