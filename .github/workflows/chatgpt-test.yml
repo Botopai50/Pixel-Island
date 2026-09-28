@@ -29,14 +29,20 @@ jobs:
       - name: Procedural tests
         run: npm test
 
-      - name: Package test source
+      - name: Build zero-dependency Windows package
         run: |
-          mkdir -p artifact
-          git archive --format=zip --output=artifact/Pixel-Island-tree-variation-test.zip HEAD
+          rm -rf artifact standalone-build
+          mkdir -p artifact standalone-build
+          cp -R dist/. standalone-build/
+          cp standalone/INICIAR_JOGO.bat standalone-build/
+          cp standalone/SERVIDOR_LOCAL.ps1 standalone-build/
+          cp standalone/COMO_INICIAR.txt standalone-build/
+          cd standalone-build
+          zip -r ../artifact/Pixel-Island-Standalone-Windows.zip .
 
-      - name: Upload test package
+      - name: Upload standalone package
         uses: actions/upload-artifact@v4
         with:
-          name: pixel-island-tree-variation-test
-          path: artifact/Pixel-Island-tree-variation-test.zip
+          name: pixel-island-standalone-windows
+          path: artifact/Pixel-Island-Standalone-Windows.zip
           if-no-files-found: error
