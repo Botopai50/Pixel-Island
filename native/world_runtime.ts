@@ -6,6 +6,7 @@ import { buildHorizonTile } from '../src/generation/terrain/horizonGeometry.ts';
 import { buildImpostorBlock } from '../src/generation/terrain/horizonTrees.ts';
 import {
   DEFAULT_FORGE_PARAMS,
+  TerrainTextureForge,
   makePerlin,
   genChunkTexture,
 } from '../src/generation/terrain/terrainTextureForge.ts';
@@ -231,5 +232,31 @@ function align4(v:number){ return (v + 3) & ~3; }
   o=copyInto(u8,o,h.colors);
   o=align4(o);
   o=copyInto(u8,o,h.index);
+  return out;
+};
+
+
+/**
+ * Recursos globais do TerrainTextureForge ORIGINAL.
+ * header uint32[8]: magic,version,wallW,wallH,gradW,gradH,res0,res1
+ * wallA, wallB, wallC, wallD, gradMap — todos RGBA8.
+ */
+(globalThis as any).pixelGetForgeGlobals=function(seedText:string){
+  const seed=PRNG.hashString(seedText);
+  const forge:any=new TerrainTextureForge(seed);
+  const wallA=forge.wallA.image.data as Uint8Array;
+  const wallB=forge.wallB.image.data as Uint8Array;
+  const wallC=forge.wallC.image.data as Uint8Array;
+  const wallD=forge.wallD.image.data as Uint8Array;
+  const grad=forge.gradMap.image.data as Uint8Array;
+  const wallW=forge.wallA.image.width|0, wallH=forge.wallA.image.height|0;
+  const gradW=forge.gradMap.image.width|0, gradH=forge.gradMap.image.height|0;
+  const headerBytes=8*4;
+  const total=headerBytes+wallA.byteLength+wallB.byteLength+wallC.byteLength+wallD.byteLength+grad.byteLength;
+  const out=new ArrayBuffer(total),dv=new DataView(out),u8=new Uint8Array(out);
+  const H=[0x50494647,1,wallW,wallH,gradW,gradH,0,0];
+  for(let i=0;i<H.length;i++) dv.setUint32(i*4,H[i],true);
+  let o=headerBytes;
+  o=copyInto(u8,o,wallA);o=copyInto(u8,o,wallB);o=copyInto(u8,o,wallC);o=copyInto(u8,o,wallD);o=copyInto(u8,o,grad);
   return out;
 };
