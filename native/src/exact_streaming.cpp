@@ -60,6 +60,17 @@ void ExactStreamingWorker::requestVegetation(int cx,int cz,bool detail,double pr
     enqueue(std::move(r));
 }
 
+void ExactStreamingWorker::requestWaterBiome(float centerX,float centerZ,double priority,uint64_t generation){
+    Request r;
+    r.kind=Kind::WaterBiome;
+    r.f0=centerX;r.f1=centerZ;
+    r.priority=priority;r.generation=generation;
+    const int qx=static_cast<int>(std::floor(centerX/12.0f));
+    const int qz=static_cast<int>(std::floor(centerZ/12.0f));
+    r.key="w:"+std::to_string(qx)+":"+std::to_string(qz);
+    enqueue(std::move(r));
+}
+
 void ExactStreamingWorker::requestHorizon(int level,int tx,int tz,float minX,float minZ,float size,int segments,float lower,double priority,uint64_t generation){
     Request r;
     r.kind=Kind::Horizon;
@@ -146,6 +157,21 @@ ImpostorBlockCpu ExactStreamingWorker::decodeImpostors(const Request& r,const st
     return o;
 }
 
+static WaterBiomeCpu decodeWaterBiomePack(const std::vector<uint8_t>& b){
+    if(b.size()<32)throw std::runtime_error("WaterBiomeMap pack vazio.");
+    auto rd=[&](size_t o){uint32_t v=0;std::memcpy(&v,b.data()+o,4);return v;};
+    auto rf=[&](size_t o){float v=0;std::memcpy(&v,b.data()+o,4);return v;};
+    if(rd(0)!=0x50495742u||rd(4)!=1u)throw std::runtime_error("WaterBiomeMap pack invalido.");
+    WaterBiomeCpu out{};
+    out.width=rd(8);out.height=rd(12);out.span=static_cast<float>(rd(16));
+    out.originX=rf(24);out.originZ=rf(28);
+    const size_t bytes=static_cast<size_t>(out.width)*out.height*4u;
+    if(b.size()<32u+bytes)throw std::runtime_error("WaterBiomeMap pack truncado.");
+    out.rgba.resize(bytes);
+    std::memcpy(out.rgba.data(),b.data()+32,bytes);
+    return out;
+}
+
 void ExactStreamingWorker::run(){
     try{
         std::unique_ptr<JsWorldRuntime> js;
@@ -169,6 +195,9 @@ void ExactStreamingWorker::run(){
                 v.cx=r.a;v.cz=r.b;v.detail=r.flag;
                 v.data=js->generateVegetation("Avalon",r.a,r.b,64.0,r.flag);
                 result.payload=std::move(v);
+            }else if(r.kind==Kind::WaterBiome){
+                auto raw=js->generateWaterBiomeMap("Avalon",r.f0,r.f1);
+                result.payload=decodeWaterBiomePack(raw);
             }else if(r.kind==Kind::Horizon){
                 auto raw=js->generateHorizonTile("Avalon",r.f0,r.f1,r.f2,static_cast<int>(r.f3));
                 result.payload=decodeHorizon(r,raw);
