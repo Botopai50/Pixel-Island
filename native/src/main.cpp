@@ -1610,6 +1610,8 @@ private:
             instanceBuffers_[i]=createBuffer(sizeof(InstanceGPU)*MAX_INSTANCES_PER_MESH,VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
             visible_[i].reserve(i==GRASS?MAX_INSTANCES_PER_MESH:12000);
         }
+
+        createTerrainTextureResources();
     }
 
     void uploadWorld(WorldData&& w) {
@@ -1622,6 +1624,11 @@ private:
         terrainIndexCount_=static_cast<uint32_t>(w.terrainIndices.size());
         terrainHeights_.resize(w.terrainVertices.size());
         for(size_t i=0;i<w.terrainVertices.size();++i) terrainHeights_[i]=w.terrainVertices[i].py;
+
+        uploadTerrainTexture(w.terrainTexture);
+        terrainTextureOriginX_=w.terrainTextureOriginX;
+        terrainTextureOriginZ_=w.terrainTextureOriginZ;
+
         objects_=std::move(w.objects);
         worldCenterX_=w.centerX; worldCenterZ_=w.centerZ;
         requestedCenterX_=worldCenterX_; requestedCenterZ_=worldCenterZ_;
@@ -1809,6 +1816,10 @@ private:
         p.cameraFog[3]=observerMode_?std::max(fogFar_,observerSize_*2.4f):fogFar_;
         p.sunAmbient[0]=0.36f;p.sunAmbient[1]=0.82f;p.sunAmbient[2]=0.43f;p.sunAmbient[3]=0.34f;
         p.environment[0]=time_;p.environment[1]=observerMode_?1.0f:0.0f;p.environment[2]=0.0f;p.environment[3]=0.0f;
+        p.terrainAtlas[0]=terrainTextureOriginX_;
+        p.terrainAtlas[1]=terrainTextureOriginZ_;
+        p.terrainAtlas[2]=TERRAIN_SIZE;
+        p.terrainAtlas[3]=0.0f;
         return p;
     }
 
@@ -1831,7 +1842,13 @@ private:
         vkCmdSetViewport(cmd,0,1,&vp);
         vkCmdSetScissor(cmd,0,1,&sc);
 
+        vkCmdBindDescriptorSets(
+            cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipelineLayout_,
+            0,1,&descriptorSet_,0,nullptr
+        );
+
         PushConstants p=makePush();
+        p.terrainAtlas[3]=1.0f;
         vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
 
         VkDeviceSize off[2]={0,0};
@@ -1839,6 +1856,9 @@ private:
         vkCmdBindVertexBuffers(cmd,0,2,terrainBuffers,off);
         vkCmdBindIndexBuffer(cmd,terrainIB_.buffer,0,VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd,terrainIndexCount_,1,0,0,0);
+
+        p.terrainAtlas[3]=0.0f;
+        vkCmdPushConstants(cmd,pipelineLayout_,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(p),&p);
 
         for(int i=0;i<MESH_KIND_COUNT;i++) {
             if(visible_[i].empty()) continue;
