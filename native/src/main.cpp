@@ -349,6 +349,15 @@ struct WorldData {
     std::vector<Vertex> terrainVertices;
     std::vector<uint32_t> terrainIndices;
     std::vector<ObjectSeed> objects;
+
+    // Atlas 13x13 do Terrain Texture Forge original.
+    // Cada slot reserva 112px (64m * 1.75 tx/m); slots distantes usam somente 80px.
+    std::vector<uint8_t> terrainTexture;
+    uint32_t terrainTextureWidth=0;
+    uint32_t terrainTextureHeight=0;
+    float terrainTextureOriginX=0;
+    float terrainTextureOriginZ=0;
+
     int centerX=0;
     int centerZ=0;
 };
@@ -520,8 +529,52 @@ WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
         }
     }
 
-    // Mesmas coordenadas de chunk da versão original: centro = (cx,cz) * 64.
+    // Textura pixel-art: chama o Terrain Texture Forge ORIGINAL por chunk.
+    // O atlas mantém o grid de chunks do jogo para que o fragment shader possa localizar
+    // exatamente a textura correspondente a cada coordenada do mundo.
+    constexpr int atlasRadius=6;
+    constexpr int atlasGrid=atlasRadius*2+1;
+    constexpr int atlasSlotPx=112; // round(64 * 1.75)
+    constexpr int atlasOuterPx=80; // round(64 * 1.25)
+    constexpr int atlasSizePx=atlasGrid*atlasSlotPx;
     constexpr double chunkSize=64.0;
+
+    const int centerCx=static_cast<int>(std::round(centerX/chunkSize));
+    const int centerCz=static_cast<int>(std::round(centerZ/chunkSize));
+
+    w.terrainTextureWidth=atlasSizePx;
+    w.terrainTextureHeight=atlasSizePx;
+    w.terrainTexture.assign(static_cast<size_t>(atlasSizePx)*atlasSizePx*4u,0);
+    w.terrainTextureOriginX=static_cast<float>((centerCx-atlasRadius)*chunkSize-chunkSize*0.5);
+    w.terrainTextureOriginZ=static_cast<float>((centerCz-atlasRadius)*chunkSize-chunkSize*0.5);
+
+    for(int gz=0;gz<atlasGrid;++gz){
+        for(int gx=0;gx<atlasGrid;++gx){
+            const int cx=centerCx-atlasRadius+gx;
+            const int cz=centerCz-atlasRadius+gz;
+            const int dx=cx-centerCx,dz=cz-centerCz;
+            const int ring=std::max(std::abs(dx),std::abs(dz));
+            const double density=ring<=1?1.75:1.25;
+            const int srcPx=ring<=1?atlasSlotPx:atlasOuterPx;
+
+            const double minX=cx*chunkSize-chunkSize*0.5;
+            const double minZ=cz*chunkSize-chunkSize*0.5;
+            const auto tex=js.generateChunkTexture(WORLD_SEED_TEXT,minX,minZ,chunkSize,density);
+            const size_t expectedTex=static_cast<size_t>(srcPx)*srcPx*4u;
+            if(tex.size()!=expectedTex) throw std::runtime_error("Terrain Texture Forge retornou tamanho inesperado.");
+
+            const int dstX=gx*atlasSlotPx;
+            const int dstY=gz*atlasSlotPx;
+            for(int y=0;y<srcPx;++y){
+                const uint8_t* src=tex.data()+static_cast<size_t>(y)*srcPx*4u;
+                uint8_t* dst=w.terrainTexture.data()+
+                    (static_cast<size_t>(dstY+y)*atlasSizePx+dstX)*4u;
+                std::memcpy(dst,src,static_cast<size_t>(srcPx)*4u);
+            }
+        }
+    }
+
+    // Mesmas coordenadas de chunk da versão original: centro = (cx,cz) * 64.
     const double half=TERRAIN_SIZE*0.5;
     const int minCx=static_cast<int>(std::ceil((centerX-half)/chunkSize));
     const int maxCx=static_cast<int>(std::floor((centerX+half)/chunkSize));
