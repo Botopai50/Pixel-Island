@@ -1,0 +1,8 @@
+{
+  "name": "pixel-island-native",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "vulkan-headers",
+    "vulkan-loader"
+  ]
+}
