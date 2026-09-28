@@ -2424,7 +2424,7 @@ private:
         const Vec3 eye=observerMode_?observerEye():camera_;
         Vec3 viewDir;
         if(observerMode_) viewDir=normalize(focus_-eye);
-        else viewDir=normalize({std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)});
+        else viewDir=normalize({-std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),-std::cos(yaw_)*std::cos(pitch_)});
 
         for(const auto& o:objects_) {
             const float dx=o.x-eye.x,dy=o.y-eye.y,dz=o.z-eye.z;
@@ -2477,13 +2477,13 @@ private:
             focusDistance=length(eye-target);
             view=lookAt(eye,target,{0,1,0});
             const float aspect=static_cast<float>(swapExtent_.width)/swapExtent_.height;
-            const float half=observerSize_*0.5f;
+            const float half=observerFrustumSize_*0.5f;
             proj=orthographicVulkan(-half*aspect,half*aspect,-half,half,0.5f,5000.0f);
         } else {
-            eye=camera_;
-            const Vec3 dir{std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),std::cos(yaw_)*std::cos(pitch_)};
+            eye={camera_.x,camera_.y+fpsBob_,camera_.z};
+            const Vec3 dir{-std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),-std::cos(yaw_)*std::cos(pitch_)};
             view=lookAt(eye,eye+dir,{0,1,0});
-            proj=perspectiveVulkan(74.0f*PI/180.0f,static_cast<float>(swapExtent_.width)/swapExtent_.height,0.08f,2400.0f);
+            proj=perspectiveVulkan(75.0f*PI/180.0f,static_cast<float>(swapExtent_.width)/swapExtent_.height,0.2f,14000.0f);
         }
 
         // skyAtmosphere.ts + preset "integrada fraca".
