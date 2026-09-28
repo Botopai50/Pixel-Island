@@ -1407,13 +1407,17 @@ private:
     }
 
     void createDescriptorSetLayout() {
-        std::array<VkDescriptorSetLayoutBinding,2> bindings{};
+        std::array<VkDescriptorSetLayoutBinding,3> bindings{};
         for(uint32_t i=0;i<2;i++){
             bindings[i].binding=i;
             bindings[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             bindings[i].descriptorCount=1;
             bindings[i].stageFlags=VK_SHADER_STAGE_FRAGMENT_BIT;
         }
+        bindings[2].binding=2;
+        bindings[2].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bindings[2].descriptorCount=1;
+        bindings[2].stageFlags=VK_SHADER_STAGE_VERTEX_BIT;
 
         VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         ci.bindingCount=static_cast<uint32_t>(bindings.size());
@@ -1819,7 +1823,12 @@ private:
         infos[1].imageView=wallTexture_.view;
         infos[1].imageLayout=VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        VkWriteDescriptorSet writes[2]{};
+        VkDescriptorBufferInfo bi{};
+        bi.buffer=impostorInfoBuffer_.buffer;
+        bi.offset=0;
+        bi.range=sizeof(ImpostorInfoGpu);
+
+        VkWriteDescriptorSet writes[3]{};
         for(uint32_t i=0;i<2;i++){
             writes[i].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet=set;
@@ -1828,7 +1837,14 @@ private:
             writes[i].descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             writes[i].pImageInfo=&infos[i];
         }
-        vkUpdateDescriptorSets(device_,2,writes,0,nullptr);
+        writes[2].sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[2].dstSet=set;
+        writes[2].dstBinding=2;
+        writes[2].descriptorCount=1;
+        writes[2].descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[2].pBufferInfo=&bi;
+
+        vkUpdateDescriptorSets(device_,3,writes,0,nullptr);
         return set;
     }
 
@@ -1852,6 +1868,32 @@ private:
             }
         }
         return atlas;
+    }
+
+    std::vector<uint8_t> loadTreeImpostorAtlas(ImpostorInfoGpu& info,uint32_t& width,uint32_t& height) {
+        const std::wstring path=executableDir()+L"\\tree_impostor_atlas.bin";
+        auto raw=readBinary(path);
+        if(raw.size()<24)throw std::runtime_error("tree_impostor_atlas.bin ausente/invalido.");
+        auto rd=[&](size_t o){uint32_t v=0;std::memcpy(&v,raw.data()+o,4);return v;};
+        if(rd(0)!=0x50494d50u||rd(4)!=1u)throw std::runtime_error("tree_impostor_atlas.bin magic/version invalido.");
+        width=rd(8);height=rd(12);
+        const uint32_t cols=rd(16),rows=rd(20);
+        if(cols!=4u||rows!=4u)throw std::runtime_error("Grid inesperado do atlas de impostores.");
+        constexpr uint32_t typeCount=15;
+        const size_t metaBytes=24u+typeCount*12u;
+        if(raw.size()<metaBytes+static_cast<size_t>(width)*height*4u)
+            throw std::runtime_error("tree_impostor_atlas.bin truncado.");
+        for(uint32_t i=0;i<typeCount;i++){
+            float xyz[3]{};
+            std::memcpy(xyz,raw.data()+24u+i*12u,12u);
+            info.v[i][0]=xyz[0];
+            info.v[i][1]=xyz[1];
+            info.v[i][2]=xyz[2];
+            info.v[i][3]=0.0f;
+        }
+        std::vector<uint8_t> rgba(static_cast<size_t>(width)*height*4u);
+        std::memcpy(rgba.data(),raw.data()+metaBytes,rgba.size());
+        return rgba;
     }
 
     void createTerrainTextureResources() {
@@ -1881,20 +1923,30 @@ private:
         pixelRepeatSci.addressModeV=VK_SAMPLER_ADDRESS_MODE_REPEAT;
         check(vkCreateSampler(device_,&pixelRepeatSci,nullptr,&pixelRepeatSampler_),"vkCreateSampler(pixel-repeat)");
 
-        VkDescriptorPoolSize ps{};
-        ps.type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        ps.descriptorCount=1024;
+        std::array<VkDescriptorPoolSize,2> ps{};
+        ps[0].type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ps[0].descriptorCount=1024;
+        ps[1].type=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        ps[1].descriptorCount=512;
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pci.flags=VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         pci.maxSets=512;
-        pci.poolSizeCount=1;
-        pci.pPoolSizes=&ps;
+        pci.poolSizeCount=static_cast<uint32_t>(ps.size());
+        pci.pPoolSizes=ps.data();
         check(vkCreateDescriptorPool(device_,&pci,nullptr,&descriptorPool_),"vkCreateDescriptorPool");
+
+        ImpostorInfoGpu impInfo{};
+        uint32_t impW=0,impH=0;
+        auto impPixels=loadTreeImpostorAtlas(impInfo,impW,impH);
+        impostorInfoBuffer_=createBuffer(sizeof(ImpostorInfoGpu),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        std::memcpy(impostorInfoBuffer_.mapped,&impInfo,sizeof(impInfo));
 
         std::vector<uint8_t> white(256u*128u*4u,255);
         fallbackTexture_=createTextureRgba(white,256,128);
         wallTexture_=createTextureRgba(loadWallAtlasPixels(),1024,1024);
+        impostorAtlasTexture_=createTextureRgba(impPixels,impW,impH);
         descriptorSet_=allocateTerrainDescriptor(fallbackTexture_);
+        impostorDescriptor_=allocateTerrainDescriptor(impostorAtlasTexture_,pixelClampSampler_);
     }
 
     void uploadTerrainTexture(const std::vector<uint8_t>& pixels) {
@@ -3200,8 +3252,10 @@ private:
                 if(renderFinished_[i])vkDestroySemaphore(device_,renderFinished_[i],nullptr);
                 if(inFlight_[i])vkDestroyFence(device_,inFlight_[i],nullptr);
             }
+            destroyTexture(impostorAtlasTexture_);
             destroyTexture(fallbackTexture_);
             destroyTexture(wallTexture_);
+            destroyBuffer(impostorInfoBuffer_);
             if(pixelRepeatSampler_)vkDestroySampler(device_,pixelRepeatSampler_,nullptr);
             if(pixelClampSampler_)vkDestroySampler(device_,pixelClampSampler_,nullptr);
             if(wallTextureSampler_)vkDestroySampler(device_,wallTextureSampler_,nullptr);
@@ -3262,6 +3316,9 @@ private:
     VkSampler pixelRepeatSampler_=VK_NULL_HANDLE;
     TextureGpu fallbackTexture_{};
     TextureGpu wallTexture_{};
+    TextureGpu impostorAtlasTexture_{};
+    VkDescriptorSet impostorDescriptor_=VK_NULL_HANDLE;
+    Buffer impostorInfoBuffer_{};
     bool terrainTextureInitialized_=false;
     float terrainTextureOriginX_=0.0f;
     float terrainTextureOriginZ_=0.0f;
