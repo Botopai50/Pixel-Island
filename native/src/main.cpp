@@ -463,9 +463,111 @@ WorldData generateWorld(int centerX,int centerZ){
     return w;
 }
 
+
+int nativeKindForPlanType(int type) {
+    if (type >= 0 && type <= 16) return TREE_LOD0;
+    if (type == 17) return DEAD_TREE_PROP;
+    if (type == 18 || type == 19) return CACTUS;
+    if (type == 20 || type == 21) return SHRUB;
+    if (type >= 22 && type <= 26) return ROCK;
+    if (type >= 27 && type <= 30) return LOG_PROP;
+    if (type == 31) return FERN_PROP;
+    if (type == 32) return FLOWER;
+    if (type == 33) return REED_PROP;
+    return ROCK;
+}
+
+WorldData generateWorldExact(JsWorldRuntime& js, int centerX, int centerZ) {
+    WorldData w;
+    w.centerX=centerX;
+    w.centerZ=centerZ;
+
+    constexpr int terrainStride=12;
+    const auto terrain=js.generateTerrain(
+        WORLD_SEED_TEXT,
+        static_cast<double>(centerX),
+        static_cast<double>(centerZ),
+        TERRAIN_SEGMENTS,
+        TERRAIN_SIZE
+    );
+
+    const int side=TERRAIN_SEGMENTS+1;
+    const size_t expected=static_cast<size_t>(side)*side*terrainStride;
+    if(terrain.size()!=expected) throw std::runtime_error("Buffer de terreno original com tamanho inesperado.");
+
+    w.terrainVertices.resize(static_cast<size_t>(side)*side);
+    for(size_t i=0;i<w.terrainVertices.size();++i){
+        const float* p=&terrain[i*terrainStride];
+        // p: x,y,z,nx,ny,nz,r,g,b,isWater,isLava,biome
+        Vec3 color{p[6],p[7],p[8]};
+        if(p[9]>0.5f){
+            // O material final de água ainda será portado; mantém a paleta aquática original por enquanto.
+            const bool deep=p[1]<-8.0f;
+            color=deep?Vec3{0.078f,0.22f,0.34f}:Vec3{0.145f,0.47f,0.55f};
+        }
+        if(p[10]>0.5f) color={1.0f,0.27f,0.0f};
+        w.terrainVertices[i]={p[0],p[1],p[2],p[3],p[4],p[5],color.x,color.y,color.z};
+    }
+
+    w.terrainIndices.reserve(static_cast<size_t>(TERRAIN_SEGMENTS)*TERRAIN_SEGMENTS*6);
+    for(int z=0;z<TERRAIN_SEGMENTS;++z){
+        for(int x=0;x<TERRAIN_SEGMENTS;++x){
+            const uint32_t i0=static_cast<uint32_t>(z*side+x);
+            const uint32_t i1=i0+1;
+            const uint32_t i2=i0+static_cast<uint32_t>(side);
+            const uint32_t i3=i2+1;
+            w.terrainIndices.insert(w.terrainIndices.end(),{i0,i2,i1,i1,i2,i3});
+        }
+    }
+
+    // Mesmas coordenadas de chunk da versão original: centro = (cx,cz) * 64.
+    constexpr double chunkSize=64.0;
+    const double half=TERRAIN_SIZE*0.5;
+    const int minCx=static_cast<int>(std::ceil((centerX-half)/chunkSize));
+    const int maxCx=static_cast<int>(std::floor((centerX+half)/chunkSize));
+    const int minCz=static_cast<int>(std::ceil((centerZ-half)/chunkSize));
+    const int maxCz=static_cast<int>(std::floor((centerZ+half)/chunkSize));
+
+    constexpr int vegStride=23;
+    w.objects.reserve(30000);
+
+    for(int cz=minCz;cz<=maxCz;++cz){
+        for(int cx=minCx;cx<=maxCx;++cx){
+            // No preset fraco do projeto, flora pequena fica só perto do centro.
+            const int dx=cx-static_cast<int>(std::round(centerX/chunkSize));
+            const int dz=cz-static_cast<int>(std::round(centerZ/chunkSize));
+            const bool detail=(dx*dx+dz*dz)<=1;
+
+            const auto veg=js.generateVegetation(WORLD_SEED_TEXT,cx,cz,chunkSize,detail);
+            if(veg.size()%vegStride!=0) throw std::runtime_error("Buffer de vegetacao original invalido.");
+
+            for(size_t o=0;o<veg.size();o+=vegStride){
+                const int planType=static_cast<int>(std::round(veg[o]));
+                ObjectSeed obj{};
+                obj.kind=nativeKindForPlanType(planType);
+                for(int k=0;k<16;k++) obj.matrix[k]=veg[o+1+k];
+                obj.exactMatrix=true;
+                obj.x=obj.matrix[12];obj.y=obj.matrix[13];obj.z=obj.matrix[14];
+
+                // Tint principal. Para árvores com folha separada, o asset final Pixel_Tree usará
+                // tint de tronco/folha individualmente; a malha provisória usa leaf tint.
+                const bool treePlan=planType>=0&&planType<=16;
+                const size_t tintOff=17;
+                const size_t leafOff=20;
+                obj.r=veg[o+(treePlan?leafOff:tintOff)+0];
+                obj.g=veg[o+(treePlan?leafOff:tintOff)+1];
+                obj.b=veg[o+(treePlan?leafOff:tintOff)+2];
+                w.objects.push_back(obj);
+            }
+        }
+    }
+    return w;
+}
+
 class WorldStreamer {
 public:
-    WorldStreamer() : worker_([this]{ run(); }) {}
+    explicit WorldStreamer(std::filesystem::path scriptPath)
+        : scriptPath_(std::move(scriptPath)), worker_([this]{ run(); }) {}
     ~WorldStreamer() {
         {
             std::lock_guard<std::mutex> lock(m_);
@@ -499,7 +601,8 @@ private:
                 if (stop_) return;
                 x=reqX_; z=reqZ_; requested_=false;
             }
-            WorldData data = generateWorld(x,z);
+            if(!js_) js_=std::make_unique<JsWorldRuntime>(scriptPath_);
+            WorldData data = generateWorldExact(*js_,x,z);
             {
                 std::lock_guard<std::mutex> lock(m_);
                 if (!requested_ || (x==reqX_ && z==reqZ_)) ready_ = std::move(data);
@@ -507,6 +610,8 @@ private:
         }
     }
 
+    std::filesystem::path scriptPath_;
+    std::unique_ptr<JsWorldRuntime> js_;
     std::thread worker_;
     std::mutex m_;
     std::condition_variable cv_;
