@@ -22,6 +22,8 @@ class SharedInstances {
   /** Lista mestre (todas as instâncias carregadas): matrizes 4x4 e cores RGB */
   private allM: Float32Array;
   private allC: Float32Array;
+  /** Esfera de culling já transformada para o mundo: cx, cy, cz, raio. */
+  private allS: Float32Array;
   /** Raio da esfera envolvente da geometria (escala 1) e centro local */
   private readonly geoRadius: number;
   private readonly geoCenter: THREE.Vector3;
@@ -37,6 +39,7 @@ class SharedInstances {
     this.capacity = initialCapacity;
     this.allM = new Float32Array(initialCapacity * 16);
     this.allC = new Float32Array(initialCapacity * 3);
+    this.allS = new Float32Array(initialCapacity * 4);
     if (!geometry.boundingSphere) geometry.computeBoundingSphere();
     this.geoRadius = geometry.boundingSphere?.radius ?? 1;
     this.geoCenter = geometry.boundingSphere?.center.clone() ?? new THREE.Vector3();
@@ -63,6 +66,7 @@ class SharedInstances {
     while (capacity < minCapacity) capacity *= 2;
     const nm = new Float32Array(capacity * 16); nm.set(this.allM); this.allM = nm;
     const nc = new Float32Array(capacity * 3); nc.set(this.allC); this.allC = nc;
+    const ns = new Float32Array(capacity * 4); ns.set(this.allS); this.allS = ns;
     const next = this.createMesh(capacity);
     next.name = this.mesh.name;
     this.root.remove(this.mesh);
@@ -83,7 +87,22 @@ class SharedInstances {
     }
     for (let i = 0; i < matrices.length; i++) {
       const slot = this.used++;
-      matrices[i].toArray(this.allM, slot * 16);
+      const matrix = matrices[i];
+      matrix.toArray(this.allM, slot * 16);
+
+      // Calcula a esfera em world-space uma única vez na entrada do pool.
+      // Antes escala e centro eram recalculados para TODA instância em todo culling.
+      const me = matrix.elements;
+      const sx = me[0] * me[0] + me[1] * me[1] + me[2] * me[2];
+      const sy = me[4] * me[4] + me[5] * me[5] + me[6] * me[6];
+      const sz = me[8] * me[8] + me[9] * me[9] + me[10] * me[10];
+      const sc = Math.sqrt(Math.max(sx, sy, sz));
+      const so = slot * 4;
+      this.allS[so] = me[0] * this.geoCenter.x + me[4] * this.geoCenter.y + me[8] * this.geoCenter.z + me[12];
+      this.allS[so + 1] = me[1] * this.geoCenter.x + me[5] * this.geoCenter.y + me[9] * this.geoCenter.z + me[13];
+      this.allS[so + 2] = me[2] * this.geoCenter.x + me[6] * this.geoCenter.y + me[10] * this.geoCenter.z + me[14];
+      this.allS[so + 3] = this.geoRadius * sc;
+
       const c = colors[i];
       this.allC[slot * 3] = c.r; this.allC[slot * 3 + 1] = c.g; this.allC[slot * 3 + 2] = c.b;
       this.slotOwner[slot] = owner;
@@ -97,7 +116,7 @@ class SharedInstances {
     if (!slots) return;
     this.ownerSlots.delete(owner);
 
-    const matrixArr = this.allM, colorArr = this.allC;
+    const matrixArr = this.allM, colorArr = this.allC, sphereArr = this.allS;
     // Libera do maior para o menor: a última instância em uso nunca é uma das que estão saindo
     const sorted = Array.from(slots).sort((a, b) => b - a);
     for (const slot of sorted) {
@@ -105,6 +124,7 @@ class SharedInstances {
       if (slot !== last) {
         matrixArr.copyWithin(slot * 16, last * 16, last * 16 + 16);
         colorArr.copyWithin(slot * 3, last * 3, last * 3 + 3);
+        sphereArr.copyWithin(slot * 4, last * 4, last * 4 + 4);
         const movedOwner = this.slotOwner[last];
         this.slotOwner[slot] = movedOwner;
         const movedSlots = this.ownerSlots.get(movedOwner)!;
@@ -121,23 +141,15 @@ class SharedInstances {
    * toca o frustum. `planes` = [nx, ny, nz, d] x 6 no espaço do mundo.
    */
   public cull(planes: Float32Array, margin: number): void {
-    const M = this.allM, C = this.allC;
+    const M = this.allM, C = this.allC, S = this.allS;
     const out = this.mesh.instanceMatrix.array as Float32Array;
     const outC = this.mesh.instanceColor!.array as Float32Array;
-    const gcx = this.geoCenter.x, gcy = this.geoCenter.y, gcz = this.geoCenter.z, gr = this.geoRadius;
     let k = 0;
     for (let s = 0; s < this.used; s++) {
       const o = s * 16;
-      // escala = maior comprimento de coluna da matriz
-      const sx = M[o] * M[o] + M[o + 1] * M[o + 1] + M[o + 2] * M[o + 2];
-      const sy = M[o + 4] * M[o + 4] + M[o + 5] * M[o + 5] + M[o + 6] * M[o + 6];
-      const sz = M[o + 8] * M[o + 8] + M[o + 9] * M[o + 9] + M[o + 10] * M[o + 10];
-      const sc = Math.sqrt(Math.max(sx, sy, sz));
-      // centro da esfera no mundo
-      const cx = M[o] * gcx + M[o + 4] * gcy + M[o + 8] * gcz + M[o + 12];
-      const cy = M[o + 1] * gcx + M[o + 5] * gcy + M[o + 9] * gcz + M[o + 13];
-      const cz = M[o + 2] * gcx + M[o + 6] * gcy + M[o + 10] * gcz + M[o + 14];
-      const r = gr * sc + margin;
+      const so = s * 4;
+      const cx = S[so], cy = S[so + 1], cz = S[so + 2];
+      const r = S[so + 3] + margin;
       let inside = true;
       for (let p = 0; p < 24; p += 4) {
         if (planes[p] * cx + planes[p + 1] * cy + planes[p + 2] * cz + planes[p + 3] < -r) { inside = false; break; }
@@ -165,8 +177,13 @@ export class VegetationInstancePool {
   private pools = new Map<THREE.BufferGeometry, Map<THREE.Material, SharedInstances>>();
   private readonly frustum = new THREE.Frustum();
   private readonly projView = new THREE.Matrix4();
-  private readonly lastProjView = new Float32Array(16);
   private readonly planes = new Float32Array(24);
+  private readonly lastCameraPos = new THREE.Vector3();
+  private readonly lastCameraQuat = new THREE.Quaternion();
+  private readonly tempCameraPos = new THREE.Vector3();
+  private readonly tempCameraQuat = new THREE.Quaternion();
+  private readonly lastProjection = new Float32Array(16);
+  private hasCullState = false;
 
   constructor() {
     this.root.name = 'vegetation_instances';
@@ -202,15 +219,30 @@ export class VegetationInstancePool {
    */
   public cull(camera: THREE.Camera, margin: number = 40): boolean {
     camera.updateMatrixWorld();
-    this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const e = this.projView.elements;
-    let camChanged = false;
-    for (let i = 0; i < 16; i++) {
-      if (Math.abs(e[i] - this.lastProjView[i]) > 1e-5) { camChanged = true; break; }
+    camera.getWorldPosition(this.tempCameraPos);
+    camera.getWorldQuaternion(this.tempCameraQuat);
+
+    // A margem de 40m permite evitar refazer o culling por micromovimentos.
+    // Quando o deslocamento acumulado passa de 0.35m ou a rotação muda ~0.5 grau, atualiza.
+    let projectionChanged = !this.hasCullState;
+    const pe = camera.projectionMatrix.elements;
+    if (!projectionChanged) {
+      for (let i = 0; i < 16; i++) {
+        if (Math.abs(pe[i] - this.lastProjection[i]) > 1e-6) { projectionChanged = true; break; }
+      }
     }
+
+    const moved = !this.hasCullState || this.tempCameraPos.distanceToSquared(this.lastCameraPos) > 0.35 * 0.35;
+    const rotated = !this.hasCullState || Math.abs(this.tempCameraQuat.dot(this.lastCameraQuat)) < 0.99999;
+    const camChanged = moved || rotated || projectionChanged;
+
     if (camChanged) {
-      this.lastProjView.set(e);
+      this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
       this.frustum.setFromProjectionMatrix(this.projView);
+      this.lastCameraPos.copy(this.tempCameraPos);
+      this.lastCameraQuat.copy(this.tempCameraQuat);
+      this.lastProjection.set(pe);
+      this.hasCullState = true;
       for (let p = 0; p < 6; p++) {
         const pl = this.frustum.planes[p];
         this.planes[p * 4] = pl.normal.x; this.planes[p * 4 + 1] = pl.normal.y;
