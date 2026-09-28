@@ -1306,6 +1306,27 @@ struct SceneTargetGpu {
     uint32_t width=0,height=0;
 };
 
+struct ShadowCascadeGpu {
+    VkImage image=VK_NULL_HANDLE;
+    VkDeviceMemory memory=VK_NULL_HANDLE;
+    VkImageView view=VK_NULL_HANDLE;
+    VkFramebuffer framebuffer=VK_NULL_HANDLE;
+    uint32_t size=512;
+    float radius=35.0f;
+    float bias=-0.00008f;
+    float normalBias=0.20f;
+    float nearPlane=1.0f;
+    float farPlane=1050.0f;
+    float lightDistance=800.0f;
+    Mat4 viewProj{};
+};
+
+struct alignas(16) ShadowInfoGpu {
+    Mat4 viewProj[3]{};
+    float params[3][4]{}; // radius, compare bias, normal bias, texel world size
+    float centerEnabled[4]{}; // xyz snapped target reference + enabled
+};
+
 struct ExactChunkGpu {
     int cx=0,cz=0,segments=0;
     float density=1.0f;
