@@ -10,24 +10,37 @@
 
 export interface QualityLevel {
   name: string;
-  renderScale: number;       // fração da resolução base (tela / PIXEL_SIZE) usada para renderizar
+  renderScale: number;       // fração da resolução base usada para renderizar
   shadowMapSize: number;     // lado de cada um dos 3 mapas de sombra
-  maxViewRadius: number;     // raio de chunks no zoom mais afastado
-  baseViewRadius: number;    // raio de chunks no zoom padrão
+  maxViewRadius: number;     // raio máximo de chunks no modo aéreo
+  baseViewRadius: number;    // raio base de chunks no modo aéreo
+  firstPersonRadius: number; // raio de chunks detalhados em 1ª pessoa
   vegetationRadius: number;  // raio (chunks) com árvores/pedras/arbustos
-  shadowStep: number;        // metros andados antes de refazer as sombras
-  reflectionSize: number;    // lado do render target do reflexo da água em 1ª pessoa
-  reflectionFps: number;     // frequência máxima do passe de reflexão planar
-  textureDensityCap: number; // teto de texels/m das texturas de chunk (custo de geração ~ quadrado)
+  grassRadius: number;       // raio (chunks) com grama 3D
+  vegetationDensityScale: number;
+  chunkSegments: number;     // subdivisões do terreno próximo
+  shadowStep: number;        // metros andados antes de refazer sombras
+  reflectionSize: number;    // lado do render target de reflexão
+  reflectionFps: number;     // frequência máxima da reflexão planar
+  textureDensityCap: number; // teto de texels/m fora do miolo
+  nearTextureDensityCap: number; // teto também para os 3x3 chunks centrais
+  horizonLevels: number;     // quantos anéis do horizonte ficam ativos
+  horizonScale: number;      // escala do alcance dos anéis
+  fogFirstPersonNear: number;
+  fogFirstPersonFar: number;
+  fogObserverMinFar: number;
+  fogObserverExtra: number;
+  fxaa: boolean;
 }
 
 export const QUALITY_LEVELS: QualityLevel[] = [
-  { name: 'alta',        renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 8, shadowStep: 0.6, reflectionSize: 512, reflectionFps: 60, textureDensityCap: Infinity },
-  { name: 'alta-',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, vegetationRadius: 7, shadowStep: 0.8, reflectionSize: 512, reflectionFps: 45, textureDensityCap: Infinity },
-  { name: 'média',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 7, shadowStep: 1.0, reflectionSize: 384, reflectionFps: 30, textureDensityCap: Infinity },
-  { name: 'média-',      renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 6, shadowStep: 1.5, reflectionSize: 384, reflectionFps: 24, textureDensityCap: 3 },
-  { name: 'baixa',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 6, shadowStep: 2.0, reflectionSize: 256, reflectionFps: 18, textureDensityCap: 2.5 },
-  { name: 'muito baixa', renderScale: 1.00, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 5, shadowStep: 3.0, reflectionSize: 256, reflectionFps: 12, textureDensityCap: 2 },
+  { name: 'alta',          renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, firstPersonRadius: 11, vegetationRadius: 8, grassRadius: 4, vegetationDensityScale: 1.00, chunkSegments: 32, shadowStep: 0.6, reflectionSize: 512, reflectionFps: 60, textureDensityCap: Infinity, nearTextureDensityCap: Infinity, horizonLevels: 3, horizonScale: 1.00, fogFirstPersonNear: 20, fogFirstPersonFar: 11000, fogObserverMinFar: 2400, fogObserverExtra: 2200, fxaa: true },
+  { name: 'alta-',         renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, firstPersonRadius: 10, vegetationRadius: 7, grassRadius: 4, vegetationDensityScale: 1.00, chunkSegments: 32, shadowStep: 0.8, reflectionSize: 512, reflectionFps: 45, textureDensityCap: Infinity, nearTextureDensityCap: Infinity, horizonLevels: 3, horizonScale: 1.00, fogFirstPersonNear: 20, fogFirstPersonFar: 10000, fogObserverMinFar: 2300, fogObserverExtra: 2100, fxaa: true },
+  { name: 'média',         renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 18, baseViewRadius: 10, firstPersonRadius: 9,  vegetationRadius: 7, grassRadius: 3, vegetationDensityScale: 0.92, chunkSegments: 32, shadowStep: 1.0, reflectionSize: 384, reflectionFps: 30, textureDensityCap: Infinity, nearTextureDensityCap: Infinity, horizonLevels: 3, horizonScale: 1.00, fogFirstPersonNear: 20, fogFirstPersonFar: 9000, fogObserverMinFar: 2200, fogObserverExtra: 2000, fxaa: true },
+  { name: 'média-',        renderScale: 0.95, shadowMapSize: 1024, maxViewRadius: 15, baseViewRadius: 9,  firstPersonRadius: 8,  vegetationRadius: 6, grassRadius: 3, vegetationDensityScale: 0.84, chunkSegments: 28, shadowStep: 1.5, reflectionSize: 320, reflectionFps: 22, textureDensityCap: 3, nearTextureDensityCap: 4, horizonLevels: 3, horizonScale: 0.90, fogFirstPersonNear: 18, fogFirstPersonFar: 7000, fogObserverMinFar: 2000, fogObserverExtra: 1700, fxaa: true },
+  { name: 'baixa',         renderScale: 0.90, shadowMapSize: 768,  maxViewRadius: 12, baseViewRadius: 8,  firstPersonRadius: 7,  vegetationRadius: 5, grassRadius: 2, vegetationDensityScale: 0.74, chunkSegments: 24, shadowStep: 2.5, reflectionSize: 256, reflectionFps: 14, textureDensityCap: 2.3, nearTextureDensityCap: 3.0, horizonLevels: 2, horizonScale: 0.82, fogFirstPersonNear: 16, fogFirstPersonFar: 5000, fogObserverMinFar: 1700, fogObserverExtra: 1400, fxaa: true },
+  { name: 'muito baixa',   renderScale: 0.82, shadowMapSize: 512,  maxViewRadius: 10, baseViewRadius: 7,  firstPersonRadius: 6,  vegetationRadius: 4, grassRadius: 2, vegetationDensityScale: 0.64, chunkSegments: 20, shadowStep: 4.0, reflectionSize: 192, reflectionFps: 8,  textureDensityCap: 1.8, nearTextureDensityCap: 2.4, horizonLevels: 2, horizonScale: 0.70, fogFirstPersonNear: 14, fogFirstPersonFar: 3200, fogObserverMinFar: 1400, fogObserverExtra: 1100, fxaa: false },
+  { name: 'integrada fraca', renderScale: 0.72, shadowMapSize: 512, maxViewRadius: 8,  baseViewRadius: 6,  firstPersonRadius: 5,  vegetationRadius: 3, grassRadius: 1, vegetationDensityScale: 0.52, chunkSegments: 16, shadowStep: 5.5, reflectionSize: 128, reflectionFps: 5,  textureDensityCap: 1.25, nearTextureDensityCap: 1.75, horizonLevels: 1, horizonScale: 0.55, fogFirstPersonNear: 12, fogFirstPersonFar: 1400, fogObserverMinFar: 1000, fogObserverExtra: 700, fxaa: false },
 ];
 
 /** Nível inicial pelo hardware (índice em QUALITY_LEVELS). */
@@ -36,6 +49,7 @@ export function detectInitialQuality(gl: WebGLRenderingContext | WebGL2Rendering
   if (forced === 'high') return 0;
   if (forced === 'medium') return 2;
   if (forced === 'low') return 4;
+  if (forced === 'potato' || forced === 'weak') return 6;
 
   const cores = navigator.hardwareConcurrency || 4;
   const memory = (navigator as any).deviceMemory as number | undefined;
@@ -44,11 +58,13 @@ export function detectInitialQuality(gl: WebGLRenderingContext | WebGL2Rendering
   const dbg = gl.getExtension('WEBGL_debug_renderer_info');
   if (dbg) gpu = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL));
   const software = /SwiftShader|llvmpipe|Software|Basic Render/i.test(gpu);
+  const weakIntel = /Intel.*(?:UHD Graphics|HD Graphics)/i.test(gpu);
   const integrated = /Intel|UHD|Iris|HD Graphics|Mali|Adreno|PowerVR|Apple GPU|Vega \d+ Graphics|Radeon\(TM\) Graphics/i.test(gpu);
 
-  if (software) return 5;
+  if (software) return 6;
   let level = 0;
-  if (integrated) level = 2;
+  if (weakIntel) level = 6;
+  else if (integrated) level = 2;
   if (mobile) level = Math.max(level, 3);
   if (cores <= 4) level = Math.max(level, 2);
   if (cores <= 2 || (memory !== undefined && memory <= 2)) level = Math.max(level, 4);
