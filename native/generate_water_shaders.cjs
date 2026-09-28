@@ -12,7 +12,7 @@ function extractConstTemplate(source,name){
   if(!m)throw new Error('Nao encontrou '+name);
   return m[1];
 }
-function stripUniforms(s){ return s.replace(/^\\s*uniform\\s+[^;]+;\\s*$/gm,''); }
+function stripUniforms(s){ return s.split('\n').filter(line=>!line.trim().startsWith('uniform ')).join('\n'); }
 function varyings(s,isVertex){
   const names=[['vec3','vWorldPosition',0],['vec3','vNormal',1],['vec2','vUv',2],['float','vWaveHeight',3],['float','vRippleOffset',4],['vec4','vReflectCoord',5]];
   for(const [type,name,loc] of names){
@@ -87,14 +87,14 @@ const ubo=[
 
 vs=stripUniforms(vs);
 vs=varyings(vs,true);
-vs=vs.replace(/gl_Position\\s*=\\s*projectionMatrix\\s*\\*\\s*viewMatrix\\s*\\*\\s*worldPosition\\s*;/g,'gl_Position = W.uViewProj * worldPosition;');
-vs=vs.replace(/\\btexture2D\\s*\\(/g,'texture(');
+vs=vs.split('gl_Position = projectionMatrix * viewMatrix * worldPosition;').join('gl_Position = W.uViewProj * worldPosition;');
+vs=vs.split('texture2D(').join('texture(');
 vs='#version 450\nlayout(location=0) in vec3 position;\nlayout(location=1) in vec2 uv;\nlayout(set=0,binding=2) uniform sampler2D uBiomeMap;\n'+ubo+'\n'+vs+'\n';
 
 fsx=stripUniforms(fsx);
 fsx=varyings(fsx,false);
-fsx=fsx.replace(/\\btexture2D\\s*\\(/g,'texture(');
-fsx=fsx.replace(/\\bgl_FragColor\\b/g,'outColor');
+fsx=fsx.split('texture2D(').join('texture(');
+fsx=fsx.split('gl_FragColor').join('outColor');
 fsx='#version 450\nlayout(set=0,binding=0) uniform sampler2D tDepth;\nlayout(set=0,binding=1) uniform sampler2D tPlanarReflection;\nlayout(set=0,binding=2) uniform sampler2D uBiomeMap;\n'+ubo+'\nlayout(location=0) out vec4 outColor;\n'+fsx+'\n';
 
 fs.writeFileSync('native/shaders/water.vert',vs);
