@@ -555,21 +555,142 @@ void addCross(CpuMesh& m, float y0, float w, float h, Vec3 color) {
     quad({0,y0,-w},{0,y0,w},{0,y0+h,w},{0,y0+h,-w});
 }
 
+
+void addBox(CpuMesh& m, Vec3 mn, Vec3 mx, Vec3 color) {
+    Vec3 p[8] = {
+        {mn.x,mn.y,mn.z},{mx.x,mn.y,mn.z},{mx.x,mx.y,mn.z},{mn.x,mx.y,mn.z},
+        {mn.x,mn.y,mx.z},{mx.x,mn.y,mx.z},{mx.x,mx.y,mx.z},{mn.x,mx.y,mx.z}
+    };
+    const int q[6][4] = {{0,1,2,3},{5,4,7,6},{4,0,3,7},{1,5,6,2},{3,2,6,7},{4,5,1,0}};
+    for (auto& face : q) {
+        addTriangle(m,p[face[0]],p[face[1]],p[face[2]],color);
+        addTriangle(m,p[face[0]],p[face[2]],p[face[3]],color*0.90f);
+    }
+}
+
+void addCone(CpuMesh& m, float radius, float y0, float height, int sides, Vec3 color) {
+    Vec3 top{0,y0+height,0};
+    for(int i=0;i<sides;i++){
+        float a0=PI*2.0f*i/sides,a1=PI*2.0f*(i+1)/sides;
+        Vec3 p0{std::cos(a0)*radius,y0,std::sin(a0)*radius};
+        Vec3 p1{std::cos(a1)*radius,y0,std::sin(a1)*radius};
+        addTriangle(m,p0,top,p1,color);
+    }
+}
+
 CpuMesh buildTreeMesh(int lod) {
     CpuMesh m;
-    const Vec3 bark{0.37f,0.22f,0.11f};
+    const Vec3 bark{0.42f,0.27f,0.13f};
     if (lod==0) {
-        addCylinder(m,0.34f,3.3f,8,bark);
-        addOcta(m,{0,4.1f,0},1.85f,1.65f,{0.08f,0.38f,0.11f});
-        addOcta(m,{-0.85f,3.75f,0.45f},1.25f,1.15f,{0.10f,0.47f,0.13f});
-        addOcta(m,{0.90f,3.85f,-0.30f},1.20f,1.10f,{0.13f,0.52f,0.14f});
+        addCylinder(m,0.34f,3.4f,8,bark);
+        // galhos grossos simplificados: mantêm a silhueta sem milhares de triângulos
+        addBox(m,{-0.17f,2.35f,-0.12f},{1.18f,2.60f,0.12f},bark*0.92f);
+        addBox(m,{-1.06f,2.72f,-0.10f},{0.12f,2.94f,0.10f},bark*0.88f);
+        addOcta(m,{0,4.15f,0},1.90f,1.55f,{0.15f,0.58f,0.16f});
+        addOcta(m,{-0.92f,3.82f,0.42f},1.28f,1.08f,{0.13f,0.50f,0.14f});
+        addOcta(m,{0.96f,3.90f,-0.34f},1.24f,1.12f,{0.17f,0.64f,0.17f});
+        addOcta(m,{0.20f,4.75f,0.30f},1.08f,0.96f,{0.20f,0.67f,0.18f});
     } else if (lod==1) {
-        addCylinder(m,0.28f,2.9f,6,bark);
-        addOcta(m,{0,3.8f,0},1.75f,1.70f,{0.09f,0.42f,0.11f});
+        addCylinder(m,0.29f,3.05f,6,bark);
+        addOcta(m,{0,3.95f,0},1.82f,1.60f,{0.14f,0.54f,0.15f});
+        addOcta(m,{0.70f,3.75f,0.0f},0.95f,0.88f,{0.17f,0.60f,0.16f});
     } else {
-        addCross(m,0.0f,1.4f,4.8f,{0.08f,0.35f,0.10f});
+        addCross(m,0.0f,1.5f,5.0f,{0.12f,0.48f,0.13f});
     }
     return m;
+}
+
+CpuMesh buildRockMesh() {
+    CpuMesh m;
+    addOcta(m,{0,0.72f,0},0.92f,0.72f,{0.62f,0.64f,0.61f});
+    addOcta(m,{0.35f,0.52f,0.16f},0.58f,0.50f,{0.54f,0.57f,0.53f});
+    return m;
+}
+
+CpuMesh buildShrubMesh() {
+    CpuMesh m;
+    addOcta(m,{-0.35f,0.62f,0},0.72f,0.62f,{0.18f,0.55f,0.17f});
+    addOcta(m,{0.38f,0.58f,0.12f},0.68f,0.58f,{0.23f,0.65f,0.20f});
+    addOcta(m,{0,0.96f,-0.12f},0.62f,0.56f,{0.20f,0.60f,0.18f});
+    return m;
+}
+
+CpuMesh buildGrassMesh() {
+    CpuMesh m;
+    addCross(m,0.0f,0.11f,0.62f,{0.25f,0.72f,0.20f});
+    return m;
+}
+
+CpuMesh buildIceMesh() {
+    CpuMesh m;
+    addOcta(m,{0,1.2f,0},0.48f,1.35f,{0.62f,0.88f,0.98f});
+    addOcta(m,{0.48f,0.62f,0.18f},0.34f,0.70f,{0.75f,0.94f,1.0f});
+    return m;
+}
+
+CpuMesh buildCaveMesh() {
+    CpuMesh m;
+    const Vec3 stone{0.30f,0.30f,0.28f};
+    addBox(m,{-1.45f,0,-0.46f},{-0.72f,2.55f,0.46f},stone);
+    addBox(m,{0.72f,0,-0.46f},{1.45f,2.55f,0.46f},stone*0.92f);
+    addBox(m,{-1.45f,2.15f,-0.46f},{1.45f,2.90f,0.46f},stone*0.86f);
+    addBox(m,{-0.72f,0.02f,0.18f},{0.72f,2.15f,0.42f},{0.055f,0.052f,0.048f});
+    return m;
+}
+
+CpuMesh buildGeyserMesh() {
+    CpuMesh m;
+    addCylinder(m,0.72f,0.35f,7,{0.50f,0.44f,0.34f});
+    addOcta(m,{0,1.15f,0},0.32f,1.25f,{0.68f,0.88f,0.90f});
+    addOcta(m,{0,2.35f,0},0.20f,0.80f,{0.82f,0.95f,0.96f});
+    return m;
+}
+
+CpuMesh buildLandmarkMesh() {
+    CpuMesh m;
+    const Vec3 stone{0.53f,0.54f,0.49f};
+    // pequeno círculo de pedra + monólito central
+    for(int i=0;i<8;i++){
+        float a=PI*2.0f*i/8.0f;
+        float x=std::cos(a)*2.4f,z=std::sin(a)*2.4f;
+        addOcta(m,{x,0.70f,z},0.55f,0.78f,stone*(0.84f+0.02f*i));
+    }
+    addBox(m,{-0.42f,0,-0.34f},{0.42f,3.8f,0.34f},stone*0.86f);
+    return m;
+}
+
+CpuMesh buildCactusMesh() {
+    CpuMesh m;
+    Vec3 green{0.28f,0.56f,0.20f};
+    addCylinder(m,0.28f,3.0f,8,green);
+    addBox(m,{0.18f,1.45f,-0.13f},{1.00f,1.72f,0.13f},green*0.95f);
+    addCylinder(m,0.17f,1.1f,7,green*0.96f);
+    return m;
+}
+
+CpuMesh buildFlowerMesh() {
+    CpuMesh m;
+    addCross(m,0.0f,0.055f,0.52f,{0.18f,0.55f,0.16f});
+    addOcta(m,{0,0.55f,0},0.18f,0.11f,{1.0f,0.72f,0.72f});
+    return m;
+}
+
+CpuMesh buildMeshForKind(int kind) {
+    switch(kind) {
+        case TREE_LOD0: return buildTreeMesh(0);
+        case TREE_LOD1: return buildTreeMesh(1);
+        case TREE_LOD2: return buildTreeMesh(2);
+        case ROCK: return buildRockMesh();
+        case SHRUB: return buildShrubMesh();
+        case GRASS: return buildGrassMesh();
+        case ICE: return buildIceMesh();
+        case CAVE: return buildCaveMesh();
+        case GEYSER: return buildGeyserMesh();
+        case LANDMARK: return buildLandmarkMesh();
+        case CACTUS: return buildCactusMesh();
+        case FLOWER: return buildFlowerMesh();
+        default: return buildRockMesh();
+    }
 }
 
 std::vector<char> readBinary(const std::wstring& path) {
