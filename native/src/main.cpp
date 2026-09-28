@@ -2870,6 +2870,11 @@ private:
         waterMesh_=uploadWaterMesh(wm);
         waterUniformBuffer_=createBuffer(sizeof(WaterUniformsGpu),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
+        SkyMeshCpu sm=buildOriginalSkySphere();
+        skyMesh_=uploadSkyMesh(sm);
+        for(auto& b:skyUniformBuffers_)
+            b=createBuffer(sizeof(SkyUniformsGpu),VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
         sci.magFilter=VK_FILTER_LINEAR;
         sci.minFilter=VK_FILTER_LINEAR;
@@ -2889,7 +2894,7 @@ private:
         ps[0].type=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         ps[0].descriptorCount=8;
         ps[1].type=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        ps[1].descriptorCount=2;
+        ps[1].descriptorCount=4;
         VkDescriptorPoolCreateInfo pci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pci.maxSets=4;
         pci.poolSizeCount=static_cast<uint32_t>(ps.size());
@@ -2908,6 +2913,26 @@ private:
         wai.pSetLayouts=&waterDescriptorSetLayout_;
         check(vkAllocateDescriptorSets(device_,&wai,&waterDescriptorSet_),"vkAllocateDescriptorSets(water)");
 
+        for(size_t i=0;i<skyDescriptorSets_.size();++i){
+            VkDescriptorSetAllocateInfo sai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            sai.descriptorPool=postDescriptorPool_;
+            sai.descriptorSetCount=1;
+            sai.pSetLayouts=&skyDescriptorSetLayout_;
+            check(vkAllocateDescriptorSets(device_,&sai,&skyDescriptorSets_[i]),"vkAllocateDescriptorSets(sky)");
+
+            VkDescriptorBufferInfo sbi{};
+            sbi.buffer=skyUniformBuffers_[i].buffer;
+            sbi.offset=0;
+            sbi.range=sizeof(SkyUniformsGpu);
+            VkWriteDescriptorSet sw{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            sw.dstSet=skyDescriptorSets_[i];
+            sw.dstBinding=0;
+            sw.descriptorCount=1;
+            sw.descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            sw.pBufferInfo=&sbi;
+            vkUpdateDescriptorSets(device_,1,&sw,0,nullptr);
+        }
+
         std::vector<uint8_t> defaultBiome={0,0,0,0};
         waterBiomeTexture_=createTextureRgba(defaultBiome,1,1);
         waterBiomeReady_=false;
@@ -2916,6 +2941,9 @@ private:
     }
 
     void destroyPostProcessResources(){
+        destroySkyMesh(skyMesh_);
+        for(auto& b:skyUniformBuffers_)destroyBuffer(b);
+        skyDescriptorSets_.fill(VK_NULL_HANDLE);
         destroyWaterMesh(waterMesh_);
         destroyBuffer(waterUniformBuffer_);
         destroyTexture(waterBiomeTexture_);
