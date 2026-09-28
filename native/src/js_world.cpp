@@ -237,3 +237,16 @@ std::vector<uint8_t> JsWorldRuntime::generateImpostorBlock(
 std::vector<uint8_t> JsWorldRuntime::getForgeGlobals(const std::string& seed) {
     return callByteBuffer("pixelGetForgeGlobals", { seed }, {});
 }
+
+
+std::vector<uint8_t> JsWorldRuntime::generateWaterBiomeMap(
+    const std::string& seed,
+    double centerX,
+    double centerZ
+) {
+    return callByteBuffer(
+        "pixelGenerateWaterBiomeMap",
+        { seed },
+        { centerX, centerZ }
+    );
+}
