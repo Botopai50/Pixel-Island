@@ -2141,6 +2141,45 @@ private:
         return out;
     }
 
+    ImpostorBlockGpu uploadImpostorBlock(ImpostorBlockCpu&& src) {
+        ImpostorBlockGpu out{};
+        out.tx=src.tx;out.tz=src.tz;out.minX=src.minX;out.minZ=src.minZ;out.size=src.size;
+        const size_t nv=src.positions.size()/3u;
+        std::vector<Vertex> vertices(nv);
+
+        // buildImpostorBlock guarda posições locais ao centro do tile de horizonte de 1024m.
+        const float tileMinX=std::floor(src.minX/1024.0f)*1024.0f;
+        const float tileMinZ=std::floor(src.minZ/1024.0f)*1024.0f;
+        const float ox=tileMinX+512.0f;
+        const float oz=tileMinZ+512.0f;
+
+        for(size_t i=0;i<nv;i++){
+            Vertex v{};
+            v.px=src.positions[i*3+0]+ox;
+            v.py=src.positions[i*3+1];
+            v.pz=src.positions[i*3+2]+oz;
+            v.nx=0;v.ny=1;v.nz=0;
+            if(src.colors.size()>=i*3+3){
+                v.r=src.colors[i*3+0]/255.0f;
+                v.g=src.colors[i*3+1]/255.0f;
+                v.b=src.colors[i*3+2]/255.0f;
+            }
+            if(src.tree.size()>=i*4+4){
+                v.treeX=src.tree[i*4+0];
+                v.treeY=src.tree[i*4+1];
+                v.treeType=src.tree[i*4+2];
+                v.treeScale=src.tree[i*4+3];
+            }
+            vertices[i]=v;
+        }
+        out.mesh=uploadVertexIndexMesh(vertices,src.indices);
+        return out;
+    }
+
+    void destroyImpostorBlock(ImpostorBlockGpu& b){
+        destroyMesh(b.mesh);
+    }
+
     void destroyExactChunk(ExactChunkGpu& c) {
         if(c.descriptor&&descriptorPool_)vkFreeDescriptorSets(device_,descriptorPool_,1,&c.descriptor);
         c.descriptor=VK_NULL_HANDLE;
@@ -2640,6 +2679,10 @@ private:
         return std::to_string(level)+":"+std::to_string(tx)+":"+std::to_string(tz);
     }
 
+    static std::string impostorKey(int tx,int tz){
+        return std::to_string(tx)+":"+std::to_string(tz);
+    }
+
     int activeViewRadius() const { return observerMode_?6:5; }
 
     void planExactStreaming(float x,float z,bool force=false) {
@@ -2717,6 +2760,7 @@ private:
             const float reach=outer+overlap;
 
             std::unordered_set<std::string> wanted;
+            wantedImpostors_.clear();
             const int t0x=static_cast<int>(std::floor((x-reach)/size));
             const int t1x=static_cast<int>(std::floor((x+reach)/size));
             const int t0z=static_cast<int>(std::floor((z-reach)/size));
@@ -2732,9 +2776,39 @@ private:
                     wanted.insert(key);
                     if(!horizonTiles_.contains(key))
                         horizonStreamer_->requestHorizon(0,tx,tz,minX,minZ,size,seg,lower,nearD,streamGeneration_);
+                    // HorizonTerrain.requestTrees(): blocos 256m do nível 0, perto primeiro.
+                    constexpr float B=256.0f;
+                    constexpr float treeOuter=3000.0f*0.55f;
+                    const float ox=minX+size*0.5f,oz=minZ+size*0.5f;
+                    for(float bz=minZ;bz<minZ+size;bz+=B){
+                        for(float bx=minX;bx<minX+size;bx+=B){
+                            const float bnx=std::max({bx-x,0.0f,x-(bx+B)});
+                            const float bnz=std::max({bz-z,0.0f,z-(bz+B)});
+                            const float bnear=std::hypot(bnx,bnz);
+                            if(bnear>treeOuter)continue;
+                            const int btx=static_cast<int>(std::floor(bx/B));
+                            const int btz=static_cast<int>(std::floor(bz/B));
+                            const std::string ikey=impostorKey(btx,btz);
+                            wantedImpostors_.insert(ikey);
+                            if(!impostorBlocks_.contains(ikey))
+                                horizonStreamer_->requestImpostors(
+                                    btx,btz,bx,bz,B,ox,oz,
+                                    300.0+bnear/10.0,streamGeneration_
+                                );
+                        }
+                    }
                 }
             }
             wantedHorizon_=std::move(wanted);
+
+            bool impRemoved=false;
+            for(auto it=impostorBlocks_.begin();it!=impostorBlocks_.end();){
+                if(!wantedImpostors_.contains(it->first)){
+                    if(!impRemoved){vkDeviceWaitIdle(device_);impRemoved=true;}
+                    destroyImpostorBlock(it->second);
+                    it=impostorBlocks_.erase(it);
+                }else ++it;
+            }
 
             bool removed=false;
             for(auto it=horizonTiles_.begin();it!=horizonTiles_.end();){
@@ -2791,7 +2865,18 @@ private:
         // Horizonte tem worker separado e recebe um upload por quadro.
         ExactStreamResult hr;
         if(horizonStreamer_->take(hr)){
-            if(auto* cpu=std::get_if<HorizonTileCpu>(&hr.payload)){
+            if(auto* imp=std::get_if<ImpostorBlockCpu>(&hr.payload)){
+                const std::string key=impostorKey(imp->tx,imp->tz);
+                if(wantedImpostors_.contains(key)&&!imp->indices.empty()){
+                    auto fresh=uploadImpostorBlock(std::move(*imp));
+                    auto it=impostorBlocks_.find(key);
+                    if(it!=impostorBlocks_.end()){
+                        vkDeviceWaitIdle(device_);
+                        destroyImpostorBlock(it->second);
+                        it->second=std::move(fresh);
+                    }else impostorBlocks_.emplace(key,std::move(fresh));
+                }
+            }else if(auto* cpu=std::get_if<HorizonTileCpu>(&hr.payload)){
                 const std::string key=horizonKey(cpu->level,cpu->tx,cpu->tz);
                 if(wantedHorizon_.contains(key)){
                     const float chunkEnd=std::max(160.0f,(activeViewRadius()-0.8f)*64.0f);
@@ -3242,6 +3327,8 @@ private:
             exactChunks_.clear();
             for(auto& [k,h]:horizonTiles_)destroyHorizon(h);
             horizonTiles_.clear();
+            for(auto& [k,b]:impostorBlocks_)destroyImpostorBlock(b);
+            impostorBlocks_.clear();
 
             destroyPixelTreeAssets();
             for(int i=0;i<MESH_KIND_COUNT;i++){destroyMesh(meshes_[i]);destroyBuffer(instanceBuffers_[i]);}
@@ -3377,7 +3464,9 @@ private:
     std::unordered_map<std::string,ExactChunkGpu> exactChunks_;
     std::unordered_map<std::string,ChunkVegetationNative> chunkVegetation_;
     std::unordered_map<std::string,HorizonGpu> horizonTiles_;
+    std::unordered_map<std::string,ImpostorBlockGpu> impostorBlocks_;
     std::unordered_set<std::string> wantedHorizon_;
+    std::unordered_set<std::string> wantedImpostors_;
     int exactCenterCx_=999999,exactCenterCz_=999999;
     float lastHorizonPlanX_=1e9f,lastHorizonPlanZ_=1e9f;
     uint64_t streamGeneration_=1;
