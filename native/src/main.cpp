@@ -9,9 +9,11 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
