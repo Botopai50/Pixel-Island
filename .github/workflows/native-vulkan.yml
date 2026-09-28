@@ -35,6 +35,8 @@ jobs:
           glslangValidator -V --target-env vulkan1.0 native/shaders/water.frag -o native/compiled-shaders/water.frag.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/sky.vert -o native/compiled-shaders/sky.vert.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/sky.frag -o native/compiled-shaders/sky.frag.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/shadow.vert -o native/compiled-shaders/shadow.vert.spv
+          glslangValidator -V --target-env vulkan1.0 native/shaders/shadow.frag -o native/compiled-shaders/shadow.frag.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/blit.vert -o native/compiled-shaders/blit.vert.spv
           glslangValidator -V --target-env vulkan1.0 native/shaders/blit.frag -o native/compiled-shaders/blit.frag.spv
 
