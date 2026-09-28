@@ -1284,6 +1284,12 @@ struct WaterMeshGpu {
     uint32_t indexCount=0;
 };
 
+struct SkyMeshGpu {
+    Buffer vb;
+    Buffer ib;
+    uint32_t indexCount=0;
+};
+
 struct TextureGpu {
     VkImage image=VK_NULL_HANDLE;
     VkDeviceMemory memory=VK_NULL_HANDLE;
