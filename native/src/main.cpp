@@ -137,6 +137,18 @@ Mat4 textureBiasMatrix() {
     return r;
 }
 
+float srgbLinearChannel(float v){
+    return v<=0.04045f?v/12.92f:std::pow((v+0.055f)/1.055f,2.4f);
+}
+
+Vec3 linearHex(uint32_t rgb){
+    return {
+        srgbLinearChannel(((rgb>>16)&255u)/255.0f),
+        srgbLinearChannel(((rgb>>8)&255u)/255.0f),
+        srgbLinearChannel((rgb&255u)/255.0f)
+    };
+}
+
 Mat4 lookAt(const Vec3& eye, const Vec3& center, const Vec3& up) {
     const Vec3 f = normalize(center - eye);
     const Vec3 s = normalize(cross(f, up));
@@ -3559,44 +3571,124 @@ private:
         }
     }
 
-    PushConstants makePush() {
-        Mat4 view{},proj{};
+    struct CameraState {
+        Mat4 view{};
+        Mat4 proj{};
+        Mat4 viewProj{};
         Vec3 eye{};
+        Vec3 forward{};
+        float nearPlane=0.1f;
+        float farPlane=14000.0f;
         float focusDistance=0.0f;
-        const float aspect=static_cast<float>(swapExtent_.width)/swapExtent_.height;
+        bool orthographic=false;
+    };
+
+    CameraState currentCameraState(bool reflected=false) const {
+        CameraState s{};
+        const float aspect=static_cast<float>(swapExtent_.width)/std::max(1u,swapExtent_.height);
 
         if(transitionMode_!=0){
-            eye=transitionPos_;
-            view=lookAt(eye,transitionLook_,{0,1,0});
-            proj=perspectiveVulkan(transitionFov_*PI/180.0f,aspect,0.1f,14000.0f);
-            focusDistance=length(eye-transitionLook_);
-        } else if(observerMode_) {
-            eye=observerEye();
+            s.eye=transitionPos_;
+            s.forward=normalize(transitionLook_-transitionPos_);
+            s.nearPlane=0.1f;s.farPlane=14000.0f;
+            s.proj=perspectiveVulkan(transitionFov_*PI/180.0f,aspect,s.nearPlane,s.farPlane);
+            s.focusDistance=length(transitionPos_-transitionLook_);
+        }else if(observerMode_){
+            s.eye=observerEye();
             const Vec3 target{focus_.x,focus_.y,focus_.z};
-            focusDistance=length(eye-target);
-            view=lookAt(eye,target,{0,1,0});
+            s.forward=normalize(target-s.eye);
+            s.nearPlane=0.5f;s.farPlane=3500.0f;s.orthographic=true;
             const float half=observerFrustumSize_*0.5f;
-            proj=orthographicVulkan(-half*aspect,half*aspect,-half,half,0.5f,3500.0f);
-        } else {
-            eye={camera_.x,camera_.y+fpsBob_,camera_.z};
-            const Vec3 dir{-std::sin(yaw_)*std::cos(pitch_),std::sin(pitch_),-std::cos(yaw_)*std::cos(pitch_)};
-            view=lookAt(eye,eye+dir,{0,1,0});
-            proj=perspectiveVulkan(75.0f*PI/180.0f,aspect,0.2f,14000.0f);
+            s.proj=orthographicVulkan(-half*aspect,half*aspect,-half,half,s.nearPlane,s.farPlane);
+            s.focusDistance=length(s.eye-target);
+        }else{
+            s.eye={camera_.x,camera_.y+fpsBob_,camera_.z};
+            s.forward=normalize({
+                -std::sin(yaw_)*std::cos(pitch_),
+                 std::sin(pitch_),
+                -std::cos(yaw_)*std::cos(pitch_)
+            });
+            s.nearPlane=0.2f;s.farPlane=14000.0f;
+            s.proj=perspectiveVulkan(75.0f*PI/180.0f,aspect,s.nearPlane,s.farPlane);
         }
 
-        // skyAtmosphere.ts + preset "integrada fraca".
+        if(reflected&&!s.orthographic){
+            const Vec3 target=s.eye+s.forward*100.0f;
+            s.eye.y=-s.eye.y;
+            Vec3 reflectedTarget=target;
+            reflectedTarget.y=-reflectedTarget.y;
+            s.forward=normalize(reflectedTarget-s.eye);
+            s.view=lookAt(s.eye,reflectedTarget,{0,-1,0});
+        }else{
+            s.view=lookAt(s.eye,s.eye+s.forward,{0,1,0});
+        }
+        s.viewProj=multiply(s.proj,s.view);
+        return s;
+    }
+
+    PushConstants makePush(const CameraState& cam) const {
         const bool aerial=(transitionMode_!=0)||observerMode_;
-        const float fogNear=aerial?std::max(180.0f,focusDistance+120.0f):12.0f;
-        const float fogFar=aerial?std::max(1000.0f,focusDistance+700.0f):1400.0f;
+        const float fogNear=aerial?std::max(180.0f,cam.focusDistance+120.0f):12.0f;
+        const float fogFar=aerial?std::max(1000.0f,cam.focusDistance+700.0f):1400.0f;
 
         PushConstants p{};
-        p.viewProj=multiply(proj,view);
-        p.cameraFog[0]=eye.x;p.cameraFog[1]=eye.y;p.cameraFog[2]=eye.z;p.cameraFog[3]=fogNear;
-        // NOON: elevação 45°, azimute 140°.
+        p.viewProj=cam.viewProj;
+        p.cameraFog[0]=cam.eye.x;p.cameraFog[1]=cam.eye.y;p.cameraFog[2]=cam.eye.z;p.cameraFog[3]=fogNear;
         p.sunAmbient[0]=0.45452f;p.sunAmbient[1]=0.70711f;p.sunAmbient[2]=-0.54168f;p.sunAmbient[3]=0.34f;
         p.environment[0]=time_;p.environment[1]=fogFar;p.environment[2]=0.0f;p.environment[3]=1.0f;
         p.terrain[0]=p.terrain[1]=p.terrain[2]=p.terrain[3]=0.0f;
         return p;
+    }
+
+    void updateWaterUniforms(const CameraState& cam,const CameraState& reflectedCam){
+        WaterUniformsGpu w{};
+
+        const Vec3 anchor=transitionMode_!=0?transitionPos_:(observerMode_?focus_:camera_);
+        const float snapX=std::round(anchor.x/8.0f)*8.0f;
+        const float snapZ=std::round(anchor.z/8.0f)*8.0f;
+        w.model=waterModelMatrix(snapX,snapZ);
+        w.viewProj=cam.viewProj;
+        w.reflectTextureMatrix=multiply(textureBiasMatrix(),reflectedCam.viewProj);
+
+        w.cameraPosTime[0]=cam.eye.x;w.cameraPosTime[1]=cam.eye.y;w.cameraPosTime[2]=cam.eye.z;w.cameraPosTime[3]=time_;
+        w.waterParams0[0]=0.16f;w.waterParams0[1]=1.2f;w.waterParams0[2]=1.2f;w.waterParams0[3]=0.65f;
+        w.waterParams1[0]=0.8f;w.waterParams1[1]=0.785f;w.waterParams1[2]=0.92f;w.waterParams1[3]=0.16f;
+
+        const Vec3 deep=linearHex(0x0284c7u),shallow=linearHex(0x00d2ffu);
+        const Vec3 foam=linearHex(0xffffffu),crest=linearHex(0xbbf2f6u);
+        w.deepColor[0]=deep.x;w.deepColor[1]=deep.y;w.deepColor[2]=deep.z;
+        w.shallowColor[0]=shallow.x;w.shallowColor[1]=shallow.y;w.shallowColor[2]=shallow.z;
+        w.foamColor[0]=foam.x;w.foamColor[1]=foam.y;w.foamColor[2]=foam.z;
+        w.crestColor[0]=crest.x;w.crestColor[1]=crest.y;w.crestColor[2]=crest.z;
+
+        w.lightDirMode[0]=0.45452f;w.lightDirMode[1]=0.70711f;w.lightDirMode[2]=-0.54168f;
+        w.lightDirMode[3]=cam.orthographic?1.0f:0.0f;
+
+        const bool aerial=(transitionMode_!=0)||observerMode_;
+        const float fogNear=aerial?std::max(180.0f,cam.focusDistance+120.0f):12.0f;
+        const float fogFar=aerial?std::max(1000.0f,cam.focusDistance+700.0f):1400.0f;
+        const Vec3 fog=linearHex(0x88bce8u);
+        const Vec3 corona=linearHex(0xffe69cu);
+        w.fogColorNear[0]=fog.x;w.fogColorNear[1]=fog.y;w.fogColorNear[2]=fog.z;w.fogColorNear[3]=fogNear;
+        w.fogSunColorFar[0]=corona.x;w.fogSunColorFar[1]=corona.y;w.fogSunColorFar[2]=corona.z;w.fogSunColorFar[3]=fogFar;
+        w.fogSunDirOn[0]=0.45452f;w.fogSunDirOn[1]=0.70711f;w.fogSunDirOn[2]=-0.54168f;w.fogSunDirOn[3]=1.0f;
+
+        w.resolutionTexel[0]=static_cast<float>(sceneTarget_.width);
+        w.resolutionTexel[1]=static_cast<float>(sceneTarget_.height);
+        w.resolutionTexel[2]=8.0f;
+        w.resolutionTexel[3]=1.0f;
+
+        w.biomeOriginSpanReady[0]=waterBiomeOriginX_;
+        w.biomeOriginSpanReady[1]=waterBiomeOriginZ_;
+        w.biomeOriginSpanReady[2]=waterBiomeSpan_;
+        w.biomeOriginSpanReady[3]=waterBiomeReady_?1.0f:0.0f;
+
+        w.cameraNearFarActive[0]=cam.nearPlane;
+        w.cameraNearFarActive[1]=cam.farPlane;
+        w.cameraNearFarActive[2]=0.0f;
+        w.cameraNearFarActive[3]=0.0f;
+
+        std::memcpy(waterUniformBuffer_.mapped,&w,sizeof(w));
     }
 
     void record(VkCommandBuffer cmd,uint32_t imageIndex) {
