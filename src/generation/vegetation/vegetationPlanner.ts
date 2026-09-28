@@ -13,6 +13,8 @@ import { CONFIG } from '../../config.ts';
 export interface ITerrainQueryable {
   getPoint(x: number, z: number): TerrainPoint;
   getPointFast?(x: number, z: number): TerrainPoint;
+  /** Seed estrutural do mundo. Opcional para manter compatibilidade com stubs/testes antigos. */
+  getSeed?(): number;
 }
 
 export interface TreeTransformItem {
@@ -30,11 +32,19 @@ export function planChunkVegetation(
   terrainGen: ITerrainQueryable,
   enableDetailFlora: boolean = true
 ) {
-  const chunkSeed = PRNG.hash2D(chunkX, chunkZ, 0x85ebca6b);
-  const prng = new PRNG(chunkSeed * 100000);
-  // flora rasteira (só perto da câmera) com a sua própria sequência: assim as árvores, pedras e
-  // troncos saem iguais com ou sem ela (e iguais às árvores distantes, planejadas nos workers)
-  const flora = new PRNG(chunkSeed * 100000 + 7919);
+  // Aleatoriedade hierárquica:
+  // world seed -> chunk seed -> sub-seed individual por árvore.
+  // Isso mantém o mundo reproduzível sem fazer árvores vizinhas compartilharem a mesma "forma".
+  // Antes o sorteio do chunk dependia apenas de (chunkX, chunkZ), então duas world seeds diferentes
+  // percorriam a mesma sequência aleatória e só divergiam indiretamente por causa do terreno/bioma.
+  const worldSeed = terrainGen.getSeed?.() ?? 0x51f15e5d;
+  const chunkSeed01 = PRNG.hash2D(chunkX, chunkZ, (worldSeed ^ 0x85ebca6b) >>> 0);
+  const chunkSeed = Math.max(1, Math.floor(chunkSeed01 * 0xffffffff));
+  const prng = new PRNG(chunkSeed);
+
+  // Flora rasteira usa outra sequência: ativá-la/desativá-la não desloca a sequência estrutural.
+  const floraSeed01 = PRNG.hash2D(chunkX, chunkZ, (worldSeed ^ 0x27d4eb2d) >>> 0);
+  const flora = new PRNG(Math.max(1, Math.floor(floraSeed01 * 0xffffffff)));
 
   // Listas de instâncias: Adultas, Mudas (Saplings) e Variantes
   const oakItems: TreeTransformItem[] = [];
@@ -180,12 +190,20 @@ export function planChunkVegetation(
       const roll = prng.next();
 
       if (roll < treeChance) {
+        // Cada candidato de árvore recebe sua própria sub-seed derivada da posição e da world seed.
+        // Assim pequenas mudanças em outra árvore não "empurram" a sequência aleatória das próximas.
+        const treeSeed01 = PRNG.hash2D(
+          Math.round(wx * 8),
+          Math.round(wz * 8),
+          (worldSeed ^ 0x9e3779b9) >>> 0
+        );
+        const treePrng = new PRNG(Math.max(1, Math.floor(treeSeed01 * 0xffffffff)));
         // REGRA DA PRAIA: Apenas coqueiros (adulto ou muda)
         if (isBeach) {
-          const isSapling = prng.chance(0.28); // 28% de mudas jovens na praia
+          const isSapling = treePrng.chance(0.28); // 28% de mudas jovens na praia
           if (isSapling) {
-            const sScale = prng.range(0.85, 1.2);
-            const yaw = prng.range(0, Math.PI * 2);
+            const sScale = treePrng.range(0.72, 1.28);
+            const yaw = treePrng.range(0, Math.PI * 2);
             dummy.position.set(wx, pt.height - 0.05, wz);
             dummy.rotation.set(0, yaw, 0);
             dummy.scale.set(sScale, sScale, sScale);
@@ -196,10 +214,10 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x76c22c)
             });
           } else {
-            const palmHeightScale = prng.range(0.92, 1.25);
-            const palmWidthScale = prng.range(0.92, 1.15);
-            const palmTilt = prng.range(0.08, 0.20);
-            const palmYaw = prng.range(0, Math.PI * 2);
+            const palmHeightScale = treePrng.range(0.78, 1.38);
+            const palmWidthScale = treePrng.range(0.84, 1.22);
+            const palmTilt = treePrng.range(0.04, 0.24);
+            const palmYaw = treePrng.range(0, Math.PI * 2);
 
             dummy.position.set(wx, pt.height - 0.08, wz);
             dummy.rotation.set(Math.sin(palmYaw) * palmTilt, palmYaw, Math.cos(palmYaw) * palmTilt);
@@ -216,14 +234,16 @@ export function planChunkVegetation(
         }
 
         // VEGETAÇÃO DO INTERIOR
-        const isSapling = prng.chance(0.24);
-        const heightScale = prng.range(0.90, 1.22);
-        const widthScale = prng.range(0.90, 1.18);
-        const yaw = prng.range(0, Math.PI * 2);
+        const isSapling = treePrng.chance(0.24);
+        const heightScale = treePrng.range(0.78, 1.34);
+        const widthScale = treePrng.range(0.82, 1.24);
+        const yaw = treePrng.range(0, Math.PI * 2);
 
         const treeEmbed = Math.max(0.06, pt.slope * 0.15);
         dummy.position.set(wx, pt.height - treeEmbed, wz);
-        dummy.rotation.set(0, yaw, 0);
+        const lean = isSapling ? treePrng.range(0.0, 0.025) : treePrng.range(0.0, 0.065);
+        const leanDir = treePrng.range(0, Math.PI * 2);
+        dummy.rotation.set(Math.cos(leanDir) * lean, yaw, Math.sin(leanDir) * lean);
 
         const dist = biome.treeTypeDistribution;
         const totalWeight =
@@ -240,7 +260,7 @@ export function planChunkVegetation(
           (dist.cactus || 0);
 
         if (totalWeight <= 0) continue;
-        const normType = prng.next() * totalWeight;
+        const normType = treePrng.next() * totalWeight;
         let acc = 0;
 
         if ((acc += (dist.oak || 0)) && normType < acc) {
@@ -254,7 +274,7 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x68c434)
             });
           } else {
-            const isBroad = prng.chance(0.32);
+            const isBroad = treePrng.chance(0.32);
             if (isBroad) {
               dummy.scale.set(widthScale * 1.12, heightScale * 0.95, widthScale * 1.12);
               dummy.updateMatrix();
@@ -303,7 +323,7 @@ export function planChunkVegetation(
               leafTint: new THREE.Color(0x7ed638)
             });
           } else {
-            const isTwin = prng.chance(0.28);
+            const isTwin = treePrng.chance(0.28);
             if (isTwin) {
               dummy.scale.set(widthScale * 0.95, heightScale * 0.95, widthScale * 0.95);
               dummy.updateMatrix();
@@ -354,7 +374,7 @@ export function planChunkVegetation(
           // Bordo Outonal
           dummy.scale.set(widthScale * 1.02, heightScale, widthScale * 1.02);
           dummy.updateMatrix();
-          const mapleRoll = prng.next();
+          const mapleRoll = treePrng.next();
           let leafTint: THREE.Color;
           if (mapleRoll < 0.38) {
             leafTint = new THREE.Color(0xd44022);
