@@ -21,7 +21,7 @@ export function createImpactFoam(f:WaterfallFeature,water:THREE.ShaderMaterial,p
  const u=water.uniforms;
  const material=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{
   uTime:u.uTime,uResolution:u.uResolution,tDepth:u.tDepth,uFoamColor:u.uFoamColor,
-  uFogColor:u.uFogColor,uFogNear:u.uFogNear,uFogFar:u.uFogFar,pixelScale,uTexelDensity:u.uTexelDensity
+  uFogColor:u.uFogColor,uFogNear:u.uFogNear,uFogFar:u.uFogFar,pixelScale,uTexelDensity:u.uTexelDensity,uNightDim:u.uNightDim
  },vertexShader:`
  attribute vec3 motion;attribute vec4 params;
  uniform float uTime,pixelScale;
@@ -40,7 +40,7 @@ export function createImpactFoam(f:WaterfallFeature,water:THREE.ShaderMaterial,p
   gl_PointSize=clamp(params.z*(.8+age*.9)*pixelScale*projectionMatrix[1][1]/perspective,1.,90.);
  }`,fragmentShader:`
  uniform sampler2D tDepth;uniform vec2 uResolution;
- uniform vec3 uFoamColor,uFogColor;uniform float uFogNear,uFogFar,uTexelDensity;
+ uniform vec3 uFoamColor,uFogColor;uniform float uFogNear,uFogFar,uTexelDensity,uNightDim;
  varying float opacity,seed,dist,sizeM;
  void main(){
   if(gl_FragCoord.z>texture2D(tDepth,gl_FragCoord.xy/uResolution).r+.00001)discard;
@@ -55,6 +55,7 @@ export function createImpactFoam(f:WaterfallFeature,water:THREE.ShaderMaterial,p
   float jitter=fract(sin(dot(cell+seed*7.,vec2(12.9,78.2)))*43758.5453)-.5;
   float lit=-q.y*1.5+jitter*.3;
   vec3 color=mix(uFoamColor,vec3(.88,.96,.98),step(.22,q.y+seed*.12)*.18);
+  color*=mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim);
   color=mix(color,uFogColor,smoothstep(uFogNear,uFogFar,dist));
   if(opacity<.02)discard;
   gl_FragColor=vec4(color,opacity);

@@ -31,6 +31,14 @@ export const cascadeSurfaceColor = /* glsl */ `
  vec3 fallColor=mix(fallBase,softFoamColor,.08+aeration*.12);
  fallColor=mix(fallColor,softFoamColor,softPatches*.48);
  fallColor=mix(fallColor,uFoamColor,whitePatches*.72);
+ // RISCOS DE CORRENTEZA: a MESMA função dos rios (riverLines, waterShader.ts): fios finos de 1 pixel que
+ // descem pela cortina, cabeça clara e cauda apagada, cada faixa no seu ritmo. A fase é a distância
+ // descida (m) e a distância lateral é o x da cortina.
+ {
+  float streakSp=riverLines(fallGrid.y/(uFlowPeriod*3.0),fallGrid.x,fallTime*2.4);
+  float streakA=streakSp>1.5?.5:(streakSp>.5?.25:0.);
+  fallColor=mix(fallColor,vec3(.93,.97,1.),streakA*(.6+.4*fallingBlend));
+ }
  if(uCascadeReflectionReady>.5&&uIsOrthographic<.5&&fallingBlend>.01){
   vec2 mirrorUv=vCascadeReflectCoord.xy/max(vCascadeReflectCoord.w,.0001);
   float inMirror=step(0.,mirrorUv.x)*step(mirrorUv.x,1.)*step(0.,mirrorUv.y)*step(mirrorUv.y,1.);
@@ -73,6 +81,9 @@ export const cascadeSurfaceColor = /* glsl */ `
  float foamCore=step(.94-impactZone*.65,churnCells)*denseFoam;
  fallColor=mix(fallColor,softFoamColor,denseFoam*.88);
  fallColor=mix(fallColor,uFoamColor,foamCore*.97);
+ // a cortina é pintada depois do escurecimento da noite da água: escurece aqui, igual ao resto
+ vec3 cascadeNight=mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim);
+ fallColor*=cascadeNight;
  finalColor=mix(finalColor,fallColor,fallingBlend);
  // OLHO D'ÁGUA da nascente (o lago no começo do rio, ~25 m rio abaixo do começo da malha): a água
  // que vem de baixo é mais clara e azul-turquesa no centro, com bolhas subindo
@@ -90,7 +101,7 @@ export const cascadeSurfaceColor = /* glsl */ `
  float edgePulse=.5+.5*sin(edgeTravel*3.7+sin(edgeTravel*1.3)*.65);
  float edgeWidth=foamLimit*(.82+edgePulse*.36);
  float solidContact=smoothstep(edgeWidth,edgeWidth-transWidth,cascadeSceneDepth);
- vec3 edgeColor=mix(softFoamColor,uFoamColor,.80+edgePulse*.20);
+ vec3 edgeColor=mix(softFoamColor,uFoamColor,.80+edgePulse*.20)*cascadeNight;
  finalColor=mix(finalColor,edgeColor,solidContact*fallingBlend);
  float cascadeOpacity=mix(uOpacity,.96,fallingBlend);
 `;

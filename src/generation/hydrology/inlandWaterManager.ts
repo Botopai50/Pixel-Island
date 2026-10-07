@@ -182,14 +182,14 @@ export class InlandWaterManager {
   }
   const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));geo.setAttribute('velocity',new THREE.Float32BufferAttribute(velocity,3));geo.setAttribute('params',new THREE.Float32BufferAttribute(param,4));
   const u=this.native.uniforms;
-  const mat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{uTime:u.uTime,uResolution:u.uResolution,tDepth:u.tDepth,uFoamColor:u.uFoamColor,uFogColor:u.uFogColor,uFogNear:u.uFogNear,uFogFar:u.uFogFar,pixelScale:this.pixelScale,uTexelDensity:u.uTexelDensity},
+  const mat=new THREE.ShaderMaterial({transparent:true,depthWrite:false,uniforms:{uTime:u.uTime,uResolution:u.uResolution,tDepth:u.tDepth,uFoamColor:u.uFoamColor,uFogColor:u.uFogColor,uFogNear:u.uFogNear,uFogFar:u.uFogFar,pixelScale:this.pixelScale,uTexelDensity:u.uTexelDensity,uNightDim:u.uNightDim},
    vertexShader:`attribute vec3 velocity;attribute vec4 params;uniform float uTime,pixelScale;varying float alpha,kind,phase,dist,sizeM;
    void main(){float age=fract(uTime/params.y+params.x),t=age*params.y;vec3 p=position+velocity*t;kind=params.w;phase=params.x*19.+t*.2;sizeM=params.z*(kind>.5?1.8:.85+age*.8);
    if(kind>.5)p.y-=4.9*t*t;else{p.x+=sin(phase)*.4;p.z+=cos(phase)*.4;}
    alpha=sin(age*3.14159)*(kind<-.5?.3:(kind>.5?.85:.48))*smoothstep(.02,.2,p.y);vec4 mv=modelViewMatrix*vec4(p,1.);dist=length(mv.xyz);gl_Position=projectionMatrix*mv;
    float perspective=projectionMatrix[3][3]>.5?1.:max(.1,-mv.z);
    gl_PointSize=clamp(params.z*(kind>.5?1.8:.85+age*.8)*pixelScale*projectionMatrix[1][1]/perspective,1.,150.);}`,
-   fragmentShader:`uniform sampler2D tDepth;uniform vec2 uResolution;uniform vec3 uFoamColor,uFogColor;uniform float uFogNear,uFogFar,uTexelDensity;varying float alpha,kind,phase,dist,sizeM;
+   fragmentShader:`uniform sampler2D tDepth;uniform vec2 uResolution;uniform vec3 uFoamColor,uFogColor;uniform float uFogNear,uFogFar,uTexelDensity,uNightDim;varying float alpha,kind,phase,dist,sizeM;
    float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
    float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);}
    void main(){if(gl_FragCoord.z>texture2D(tDepth,gl_FragCoord.xy/uResolution).r+.00001)discard;
@@ -203,7 +203,7 @@ export class InlandWaterManager {
     density=(.35+floor(n*3.)*.2)*mix(.6,1.,step(.07,cloud));
    }
    else{q.x*=2.1;density=1.-smoothstep(.1,.46,length(q));}
-   float a=density*alpha;if(a<.003)discard;vec3 color=mix(uFoamColor,vec3(.9,.97,1.),.3);color=mix(color,uFogColor,smoothstep(uFogNear,uFogFar,dist));gl_FragColor=vec4(color,a);}`
+   float a=density*alpha;if(a<.003)discard;vec3 color=mix(uFoamColor,vec3(.9,.97,1.),.3);color*=mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim);color=mix(color,uFogColor,smoothstep(uFogNear,uFogFar,dist));gl_FragColor=vec4(color,a);}`
   });
   const points=new THREE.Points(geo,mat);points.renderOrder=3;points.frustumCulled=false;group.add(points);
  }

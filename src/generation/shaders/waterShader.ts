@@ -992,12 +992,13 @@ export const WaterShader = {
           float foamCells=step(.86-density*.72,vCombined)*step(.12,density);
           float whiteCells=step(.97-density*.72,vCombined)*foamCells;
           float onPool=1.-smoothstep(.15,1.5,abs(vWorldPosition.y));
-          finalColor=mix(finalColor,softFoamColor,foamCells*.82*onPool);
-          finalColor=mix(finalColor,uFoamColor,whiteCells*.94*onPool);
+          vec3 impactNight=mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim);
+          finalColor=mix(finalColor,softFoamColor*impactNight,foamCells*.82*onPool);
+          finalColor=mix(finalColor,uFoamColor*impactNight,whiteCells*.94*onPool);
         }
       }
       // Preserve the solid-contact border through the impact foam pass.
-      finalColor=mix(finalColor,uFoamColor,isContactFoam);
+      finalColor=mix(finalColor,uFoamColor*mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim),isContactFoam);
       // névoa (a água é desenhada à parte, sem a névoa da cena: mesma conta, valores copiados)
       if (uFogOn > 0.5) finalColor = aerialPerspectiveK(finalColor, vWorldPosition, uFogColor, uFogNear, uFogFar, 0.8);
       gl_FragColor = vec4(finalColor, uOpacity);
