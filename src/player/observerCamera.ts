@@ -79,6 +79,10 @@ export class ObserverCamera {
     return this.frustumSize;
   }
 
+  public setOrientation(yaw:number,pitch=this.pitch):void{
+    this.yaw=this.targetYaw=yaw;this.pitch=pitch;
+  }
+
   public getViewDistance(): number {
     return this.viewDistance;
   }

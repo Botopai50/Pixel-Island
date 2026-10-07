@@ -4,6 +4,8 @@ import { GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 import { BotanicalGeometryFactory } from './botanicalGeometryFactory.ts';
 import { VegetationInstancePool } from './instancePool.ts';
 import { FADE, FADE_GLSL } from '../shaders/fadeDither.ts';
+import { SHADOW_GRID } from '../../atmosphere/atmosphericFog.ts';
+import { WIND_U } from '../../atmosphere/wind.ts';
 import { planChunkVegetation, ITerrainQueryable, TreeTransformItem } from './vegetationPlanner.ts';
 
 export type { ITerrainQueryable, TreeTransformItem } from './vegetationPlanner.ts';
@@ -225,6 +227,41 @@ export class VegetationGeometries {
  * 'veg' no fim do raio da vegetação (pedras, arbustos, troncos: somem), 'tree' árvores (trocam seco
  * pelo impostor na mesma posição, no fim do raio), 'grass' no fim da grama 3D, 'none' sem.
  */
+/**
+ * Copas, folhas e arbustos balançando com o vento do mundo (wind.ts): o deslocamento cresce com a
+ * altura acima do pé da planta (o tronco/pé não mexe), com uma onda que atravessa a mata na
+ * direção do vento e uma oscilação própria por planta. amp: força (por material, uniform).
+ */
+export function addCanopySway(mat: THREE.MeshLambertMaterial, amp: number): THREE.MeshLambertMaterial {
+  const prev = mat.onBeforeCompile;
+  const uAmp = { value: amp };
+  mat.onBeforeCompile = (shader, renderer) => {
+    prev.call(mat, shader, renderer);
+    Object.assign(shader.uniforms, WIND_U);
+    shader.uniforms.uSwayAmp = uAmp;
+    shader.vertexShader = 'uniform vec2 uWindDir;\nuniform float uWindStr;\nuniform float uWindT;\nuniform float uSwayAmp;\n' + shader.vertexShader.replace(
+      '#include <begin_vertex>',
+      [
+        '#include <begin_vertex>',
+        '#ifdef USE_INSTANCING',
+        '{',
+        '  vec3 swBase = instanceMatrix[3].xyz;',
+        '  float swS2 = max(dot(instanceMatrix[1].xyz, instanceMatrix[1].xyz), 1e-4);',
+        '  float swH = max((instanceMatrix * vec4(transformed, 1.0)).y - swBase.y, 0.0);',
+        '  float swPh = dot(swBase.xz, vec2(0.13, 0.17));',
+        '  float swWave = smoothstep(-0.3, 1.0, sin(dot(swBase.xz, uWindDir) * 0.07 - uWindT * 1.5));',
+        '  float swAmt = (0.35 + 0.65 * swWave) * uWindStr * (0.65 + 0.35 * sin(uWindT * 2.1 + swPh));',
+        '  vec3 swOffW = vec3(uWindDir.x, 0.0, uWindDir.y) * swAmt * uSwayAmp * swH * swH / (1.0 + swH);',
+        // mundo -> local da instância (rotação + escala uniforme: inversa = transposta / escala²)
+        '  transformed += transpose(mat3(instanceMatrix)) * swOffW / swS2;',
+        '}',
+        '#endif',
+      ].join('\n')
+    );
+  };
+  return mat;
+}
+
 export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg' | 'tree' | 'grass' | 'none' = 'veg'): THREE.MeshLambertMaterial {
   mat.onBeforeCompile = (shader) => {
     if (fade !== 'none') {
@@ -259,6 +296,34 @@ export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg'
         'float dotNL = 1.0;'
       )
     );
+
+    // Sombra na grade de pixels da TEXTURA de cada objeto (como o chão, terrainShader.ts): a
+    // coordenada de sombra é tomada no ponto do mundo que fica no centro do pixel da textura
+    // (achado pelas derivadas de tela da posição e do UV), então cada pixel do tronco, das folhas
+    // ou da pedra fica inteiro na sombra ou na luz e a borda vira degraus do tamanho dos pixels.
+    const vegGridFns = /* glsl */ `
+      #if defined( USE_SHADOWMAP ) && ( NUM_DIR_LIGHT_SHADOWS > 0 )
+      uniform mat4 uSM[ 3 ];
+      uniform vec3 uSNB;
+      uniform float uShadowGrid;
+      varying vec3 vVegWP;
+      vec3 vegSnapPos() {
+        #ifdef USE_MAP
+        vec2 ts = vec2(textureSize(map, 0));
+        vec2 duv = (floor(vMapUv * ts) + 0.5) / ts - vMapUv;
+        vec3 dpx = dFdx(vVegWP), dpy = dFdy(vVegWP);
+        vec2 dux = dFdx(vMapUv), duy = dFdy(vMapUv);
+        float det = dux.x * duy.y - dux.y * duy.x;
+        if (abs(det) > 1e-14) {
+          float a = clamp((duv.x * duy.y - duv.y * duy.x) / det, -4.0, 4.0);
+          float b = clamp((dux.x * duv.y - dux.y * duv.x) / det, -4.0, 4.0);
+          return vVegWP + a * dpx + b * dpy;
+        }
+        #endif
+        return vVegWP;
+      }
+      #endif
+    `;
 
     // 2. Injeta a função de revectorização de silhueta de sombra (SMSR) com compensação de plano receptor
     const smsrFunction = /* glsl */ `
@@ -325,7 +390,13 @@ export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg'
 
     shader.fragmentShader = shader.fragmentShader.replace(
       '#include <shadowmap_pars_fragment>',
-      THREE.ShaderChunk.shadowmap_pars_fragment + smsrFunction
+      THREE.ShaderChunk.shadowmap_pars_fragment + smsrFunction + vegGridFns
+    );
+    // posição no mundo (com a instância) para a sombra na grade de pixels da textura
+    Object.assign(shader.uniforms, SHADOW_GRID);
+    shader.vertexShader = 'varying vec3 vVegWP;\n' + shader.vertexShader.replace(
+      '#include <worldpos_vertex>',
+      '#include <worldpos_vertex>\n#ifdef USE_SHADOWMAP\n  vVegWP = worldPosition.xyz;\n#endif'
     );
 
     // 3. Constrói o bloco customizado de luzes direcionais com amostragem hierárquica concêntrica de Shadow Clipmap + SMSR
@@ -347,18 +418,23 @@ export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg'
           float tanTheta = sqrt(clamp(1.0 - NdotL_raw * NdotL_raw, 0.0, 1.0)) / max(abs(NdotL_raw), 0.02);
           float slopeFactor = clamp(tanTheta, 0.0, 2.5);
 
+          // ponto da sombra no centro do pixel da textura (com o normalBias de cada faixa)
+          vec3 vegNW = normalize(inverseTransformDirection(geometryNormal, viewMatrix));
+          vec3 vegSP = vegSnapPos();
+          bool vegGrid = uShadowGrid > 0.5;
           #if NUM_DIR_LIGHT_SHADOWS >= 1
-          vec4 sc0 = vDirectionalShadowCoord[0];
+          // + ~30cm para fora da superfície: o objeto não se sombreia (ele entra no mapa pelos dois lados)
+          vec4 sc0 = vegGrid ? uSM[0] * vec4(vegSP + vegNW * (uSNB.x + 0.3), 1.0) : vDirectionalShadowCoord[0];
           vec3 c0 = sc0.xyz / sc0.w;
           vec2 dz_duv0 = computeReceiverPlaneDepthSlope(c0);
           #endif
           #if NUM_DIR_LIGHT_SHADOWS >= 2
-          vec4 sc1 = vDirectionalShadowCoord[1];
+          vec4 sc1 = vegGrid ? uSM[1] * vec4(vegSP + vegNW * (uSNB.y + 0.3), 1.0) : vDirectionalShadowCoord[1];
           vec3 c1 = sc1.xyz / sc1.w;
           vec2 dz_duv1 = computeReceiverPlaneDepthSlope(c1);
           #endif
           #if NUM_DIR_LIGHT_SHADOWS >= 3
-          vec4 sc2 = vDirectionalShadowCoord[2];
+          vec4 sc2 = vegGrid ? uSM[2] * vec4(vegSP + vegNW * (uSNB.z + 0.3), 1.0) : vDirectionalShadowCoord[2];
           vec3 c2 = sc2.xyz / sc2.w;
           vec2 dz_duv2 = computeReceiverPlaneDepthSlope(c2);
           #endif
@@ -557,6 +633,19 @@ export class VegetationManager {
       flatShading: false
     }), 'tree');
 
+    // Objetos sólidos entram no mapa de sombra pelos dois lados: só com as faces de trás (o padrão
+    // do three.js) a sombra do tronco/pedra começava longe da base, deixando uma fresta iluminada
+    // no pé. A auto-sombra que isso traria é evitada no shader (o ponto da sombra sai ~30cm da
+    // superfície, vegGridFns em setupCartoonMaterial).
+    // copas, folhas e arbustos balançam com o vento do mundo
+    addCanopySway(this.foliageMaterial, 0.022);
+    addCanopySway(this.palmFrondMaterial, 0.03);
+    addCanopySway(this.snowPineFoliageMaterial, 0.016);
+    addCanopySway(this.shrubMaterial, 0.07);
+
+    for (const m of [this.trunkMaterial, this.birchTrunkMaterial, this.palmTrunkMaterial, this.cactusMaterial,
+      this.rockMaterial, this.logMaterial, this.deadTreeMaterial]) m.shadowSide = THREE.DoubleSide;
+
     this.grassGeometry = buildGrassClumpGeometry();
     this.grassMaterials = VegetationTextures.getGrassVariantTextures('green').map((t) => this.makeGrassMaterial(t));
     this.dryGrassMaterials = VegetationTextures.getGrassVariantTextures('dry').map((t) => this.makeGrassMaterial(t));
@@ -667,9 +756,10 @@ export class VegetationManager {
     mat.onBeforeCompile = (shader, renderer) => {
       cartoon.call(mat, shader, renderer);
       shader.uniforms.uWindTime = windTime;
+      Object.assign(shader.uniforms, WIND_U);
       shader.uniforms.uGrassPusher = pusher;
       shader.uniforms.uGrassBillboard = billboard;
-      shader.vertexShader = 'uniform float uWindTime;\nuniform vec4 uGrassPusher;\nuniform float uGrassBillboard;\nattribute float grassPlane;\n' + shader.vertexShader.replace(
+      shader.vertexShader = 'uniform float uWindTime;\nuniform vec4 uGrassPusher;\nuniform float uGrassBillboard;\nattribute float grassPlane;\nuniform vec2 uWindDir;\nuniform float uWindStr;\nuniform float uWindT;\nvarying float vGust;\nvarying float vGrassTip;\n' + shader.vertexShader.replace(
         '#include <begin_vertex>',
         [
           '#include <begin_vertex>',
@@ -679,10 +769,18 @@ export class VegetationManager {
           '#else',
           '  vec2 wpos = vec2(0.0);',
           '#endif',
-          'float sway = sin(uWindTime * 1.8 + wpos.x * 0.35 + wpos.y * 0.21) * 0.5',
-          '           + sin(uWindTime * 3.1 + wpos.x * 0.9) * 0.2;',
-          'transformed.x += sway * 0.07 * position.y;',
-          'transformed.z += sway * 0.04 * position.y;',
+          // Vento do mundo (wind.ts): ondas que atravessam o campo na direção do vento (faixas
+          // onde a grama inclina mais, como em Zelda), mais fortes nas rajadas, e um tremor leve
+          'vec2 wPerp = vec2(-uWindDir.y, uWindDir.x);',
+          'float waveArg = dot(wpos, uWindDir) * 0.11 - uWindT * 2.3 + sin(dot(wpos, wPerp) * 0.045) * 1.6;',
+          'float gustWave = smoothstep(0.35, 1.0, sin(waveArg));',
+          'float flutter = sin(uWindTime * 3.1 + wpos.x * 0.9 + wpos.y * 0.7) * 0.25;',
+          'float windBend = (0.35 + gustWave * 1.1) * uWindStr;',
+          'vGust = gustWave * min(uWindStr, 1.5);',
+          'vGrassTip = position.y;',
+          'vec2 swayV = uWindDir * windBend + wPerp * flutter;',
+          'transformed.x += swayV.x * 0.07 * position.y;',
+          'transformed.z += swayV.y * 0.07 * position.y;',
         ].join('\n')
       ).replace(
         '#include <project_vertex>',
@@ -704,8 +802,8 @@ export class VegetationManager {
           '    vec3 upV = vec3(bAway.x * sin(tiltA), cos(tiltA), bAway.y * sin(tiltA));',
           '    float xL = (uv.x * 2.0 - 1.0) * 0.75, yL = position.y;',
           '    vec3 wp = bBase + vec3(rH.x, 0.0, rH.y) * xL * sW + upV * yL * sH;',
-          '    wp.x += sway * 0.07 * yL * sH;',
-          '    wp.z += sway * 0.04 * yL * sH;',
+          '    wp.x += swayV.x * 0.07 * yL * sH;',
+          '    wp.z += swayV.y * 0.07 * yL * sH;',
           '    mvPosition = vec4(grassPlane > 0.5 ? bBase : wp, 1.0);',
           '  }',
           '  // Personagem passando: as lâminas perto dele se afastam e abaixam (pontas mais que a base)',
@@ -731,6 +829,14 @@ export class VegetationManager {
     const prevCompile = mat.onBeforeCompile;
     mat.onBeforeCompile = (shader, renderer) => {
       prevCompile.call(mat, shader, renderer);
+      // onda de vento passando: as pontas inclinadas pegam mais luz (clareiam um pouco)
+      shader.fragmentShader = 'varying float vGust;\nvarying float vGrassTip;\n' + shader.fragmentShader.replace(
+        '#include <map_fragment>',
+        [
+          '#include <map_fragment>',
+          '  diffuseColor.rgb *= 1.0 + vGust * 0.16 * smoothstep(0.25, 1.0, vGrassTip);',
+        ].join('\n')
+      );
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <alphatest_fragment>',
         [
@@ -745,7 +851,7 @@ export class VegetationManager {
         ].join('\n')
       );
     };
-    mat.customProgramCacheKey = () => 'pixel_grass_wind_bb_aa';
+    mat.customProgramCacheKey = () => 'pixel_grass_wind_bb_aa_gust';
     return mat;
   }
 
@@ -776,6 +882,11 @@ export class VegetationManager {
       new THREE.Color(0.55, 0.42, 0.34), // vulcão: capim seco queimado
       new THREE.Color(0.72, 0.88, 0.86), // polar: verde-azulado frio, com geada
       new THREE.Color(1.0, 0.92, 0.55),  // deserto: palha
+      new THREE.Color(1.08, 0.86, 0.42), // savana (usa o capim seco, ver abaixo)
+      new THREE.Color(0.70, 1.0, 0.70),  // tropical: verde intenso
+      new THREE.Color(0.62, 0.82, 0.74), // taiga: verde-azulado escuro
+      new THREE.Color(1.0, 0.84, 0.52),  // outonal: capim oliva-dourado
+      new THREE.Color(0.66, 0.74, 0.60), // tundra: capim verde-acinzentado
     ];
     // Listas por (paleta, formato)
     const NV = this.grassMaterials.length;
@@ -786,6 +897,7 @@ export class VegetationManager {
     const white = new THREE.Color(1, 1, 1);
     const dryTint = new THREE.Color(0.78, 0.52, 0.34);
     const burntTint = new THREE.Color(0.62, 0.50, 0.42);
+    const savannaGold = new THREE.Color(1.25, 1.12, 0.62), savannaDark = new THREE.Color(1.0, 0.82, 0.5);
     const up = new THREE.Vector3(0, 1, 0), normal = new THREE.Vector3();
     const yaw = new THREE.Quaternion(), tilt = new THREE.Quaternion(), q = new THREE.Quaternion();
     for (let k = 0; k + 8 < data.length; k += 9) {
@@ -807,6 +919,10 @@ export class VegetationManager {
       if ((data[k + 4] | 0) === 1) {
         dry[v].m.push(m);
         dry[v].c.push(((data[k] * 5.17 + data[k + 2] * 2.39) % 1 + 1) % 1 < 0.35 ? burntTint : white);
+      } else if ((data[k + 4] | 0) === 4) {
+        // savana: capim seco dourado (alguns tufos mais queimados)
+        dry[v].m.push(m);
+        dry[v].c.push(((data[k] * 4.31 + data[k + 2] * 6.07) % 1 + 1) % 1 < 0.25 ? savannaDark : savannaGold);
       } else if ((data[k + 4] | 0) === 2) {
         snow[v].m.push(m);
         snow[v].c.push(((data[k] * 7.13 + data[k + 2] * 3.71) % 1 + 1) % 1 < 0.15 ? dryTint : white);

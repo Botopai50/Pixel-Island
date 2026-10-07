@@ -16,7 +16,9 @@ import { createSeamlessCascadedWaterGeometry } from './waterGeometry.ts';
 import { TerrainTextureForge } from './terrain/terrainTextureForge.ts';
 import { getTextureWorkerPool } from './terrain/textureWorkerPool.ts';
 import { HorizonTerrain } from './terrain/horizonTerrain.ts';
+import { LandmarkManager } from './landmarks/landmarkManager.ts';
 import { WaterBiomeMap } from './hydrology/waterBiomeMap.ts';
+import { RiverFlowMap, FLOW_MAX_SPEED, FLOW_PHASE_PERIOD } from './hydrology/riverFlowMap.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
 import { CONFIG } from '../config.ts';
 
@@ -28,6 +30,8 @@ interface RipplePoint {
   strength: number;
   decay: number;
   age: number;
+  /** velocidade com que o anel abre (m/s) */
+  speed: number;
 }
 
 export class WorldEngine {
@@ -39,10 +43,13 @@ export class WorldEngine {
   private terrainMaterial: THREE.Material;
   private waterMaterial: THREE.ShaderMaterial;
   private waterBiomeMap: WaterBiomeMap;
+  private riverFlowMap: RiverFlowMap;
   public forge: TerrainTextureForge;
 
   // Novos Subsistemas Geológicos, Hidrológicos e Biológicos
   public geothermalMgr: GeothermalManager;
+  /** altura (px) da imagem da cena, para o tamanho dos pixels do vapor (main.ts) */
+  public thermalViewH = 540;
   public glacialIceMgr: GlacialIceManager;
   public caveFeatureMgr: CaveFeatureManager;
   public lavaFluidMgr: LavaFluidManager;
@@ -57,6 +64,8 @@ export class WorldEngine {
   private ripples: RipplePoint[] = [];
 
   private horizon: HorizonTerrain;
+  /** cenas procedurais (arcos, ruínas, naufrágios...) montadas onde o lugar combina com elas */
+  public landmarks: LandmarkManager;
   private lastObserverX: number = 0;
   private lastObserverZ: number = 0;
 
@@ -83,6 +92,14 @@ export class WorldEngine {
     this.waterMaterial.uniforms.uBiomeMap.value = this.waterBiomeMap.texture;
     this.waterMaterial.uniforms.uBiomeMapOrigin.value = this.waterBiomeMap.origin;
     this.waterMaterial.uniforms.uBiomeMapSpan.value = this.waterBiomeMap.span;
+    // correnteza dos rios (direção rio abaixo e velocidade)
+    this.riverFlowMap = new RiverFlowMap(this.terrainGen);
+    this.waterMaterial.uniforms.uFlowMap.value = this.riverFlowMap.texture;
+    this.waterMaterial.uniforms.uFlowMapOrigin.value = this.riverFlowMap.origin;
+    this.waterMaterial.uniforms.uFlowMapSpan.value = this.riverFlowMap.span;
+    this.waterMaterial.uniforms.uFlowMaxSpeed.value = FLOW_MAX_SPEED;
+    this.waterMaterial.uniforms.uFlowLines.value = this.riverFlowMap.lineTexture;
+    this.waterMaterial.uniforms.uFlowPeriod.value = FLOW_PHASE_PERIOD;
 
     this.chunkMgr = new ChunkManager(
       this.scene,
@@ -94,13 +111,13 @@ export class WorldEngine {
     );
     // terreno distante (horizonte) além dos chunks detalhados
     this.horizon = new HorizonTerrain(this.scene, this.forge.gradMap, numericSeed);
+    this.landmarks = new LandmarkManager(this.scene, this.terrainGen);
 
     // Inicializa todos os subsistemas especiais do mundo de forma 100% procedural
     this.geothermalMgr = new GeothermalManager(this.scene, this.terrainGen.getGeothermalGenerator());
     this.glacialIceMgr = new GlacialIceManager(this.scene, numericSeed, this.terrainGen);
     this.caveFeatureMgr = new CaveFeatureManager(this.scene, numericSeed, this.terrainGen);
     this.lavaFluidMgr = new LavaFluidManager(this.scene, this.terrainGen.getVolcanoGenerator());
-    this.inlandWaterMgr = new InlandWaterManager(this.scene, this.terrainGen.getHydrology());
 
     // Grupo de água dedicado para controle no passe de renderização
     this.waterGroup = new THREE.Group();
@@ -118,6 +135,21 @@ export class WorldEngine {
     this.waterGroup.add(this.localWater);
 
     this.scene.add(this.waterGroup);
+    this.inlandWaterMgr = new InlandWaterManager(this.waterGroup, this.terrainGen.getHydrology(), this.waterMaterial);
+    this.inlandWaterMgr.onRipple = (x, z) => this.addRipple(x, z, 0.7, 2.2, 2.0, 0.93);
+    this.inlandWaterMgr.sceneRoot = this.scene;
+    this.inlandWaterMgr.heightAt = (x, z) => this.terrainGen.getHeight(x, z);
+
+    // Água das fontes termais: o MESMO material da água do mundo (uniforms compartilhados por
+    // referência: tempo, profundidade da cena, névoa, sombras...), só com uThermal = 1
+    const thermalWater = createWaterMaterial();
+    for (const k of Object.keys(this.waterMaterial.uniforms)) {
+      if (k !== 'uThermal') thermalWater.uniforms[k] = this.waterMaterial.uniforms[k];
+    }
+    thermalWater.uniforms.uThermal.value = 1.0;
+    this.geothermalMgr.attachWater(this.waterGroup, thermalWater);
+    // gotas do gêiser caindo na poça fazem ondulação
+    this.geothermalMgr.onSplash = (x, z) => this.addRipple(x, z, 0.8, 1.8, 2.2, 0.95);
   }
 
   /** Ilhas cuja hidrologia já foi pedida aos workers (por seed) */
@@ -159,6 +191,7 @@ export class WorldEngine {
     this.lastObserverX = x;
     this.lastObserverZ = z;
     this.prefetchIslands(x, z);
+    this.lavaFluidMgr.syncNear(this.terrainGen.getVolcanoGenerator(), x, z);
     // Transições com pontilhado (fadeDither.ts). Um chunk entra no raio pelo centro, então o raio
     // coberto de certeza é ~0.7 chunk menor: as faixas terminam 0.8 chunk para dentro.
     const CS = CONFIG.CHUNK_SIZE;
@@ -172,7 +205,9 @@ export class WorldEngine {
     FADE.uGrassFade.value.set(grassEnd - 50, grassEnd);
     // o horizonte começa um pouco antes dos chunks começarem a sumir (fica por baixo deles)
     this.horizon.update(x, z, chunkEnd - 120);
+    this.landmarks.update(x, z);
     this.chunkMgr.update(x, z);
+    this.inlandWaterMgr.updateObserver(x,z);
     // Move a malha de água com snap na grade de 8m (tamanho exato dos quads centrais).
     // Isso mantém os vértices 100% estáticos no espaço de mundo durante a caminhada,
     // eliminando qualquer deslizamento de triângulos e a trepidação nas margens.
@@ -269,6 +304,7 @@ export class WorldEngine {
     this.terrainGen.reseed(newSeed);
     this.islandsSentToWorkers.clear();
     this.waterBiomeMap.invalidate();
+    this.riverFlowMap.invalidate();
     this.geothermalMgr.reseed(newSeed);
     this.lavaFluidMgr.rebuild(this.terrainGen.getVolcanoGenerator());
     this.inlandWaterMgr.rebuild(this.terrainGen.getHydrology());
@@ -278,6 +314,7 @@ export class WorldEngine {
     this.chunkMgr.setForge(this.forge);
     this.chunkMgr.clearAll();
     this.horizon.reset(newSeed);
+    this.landmarks.reset();
 
     const spawn = this.getSpawnCoordinate();
     this.chunkMgr.update(spawn.x, spawn.z, true);
@@ -287,17 +324,19 @@ export class WorldEngine {
     this.globalOcean.position.z = spawn.z;
   }
 
-  public addRipple(worldX: number, worldZ: number, strength = 1.0): void {
+  /** maxRadius/speed: anéis menores e mais lentos para os pingos de chuva (rainSplashes.ts) */
+  public addRipple(worldX: number, worldZ: number, strength = 1.0, maxRadius = 2.8, speed = 4.2, decay = 0.88): void {
     this.ripples.push({
       x: worldX,
       z: worldZ,
       radius: 0.05,
-      maxRadius: 2.8,
+      maxRadius,
       strength: strength * 0.9,
-      decay: 0.88,
+      decay,
       age: 0,
+      speed,
     });
-    if (this.ripples.length > 8) {
+    if (this.ripples.length > 32) {
       this.ripples.shift();
     }
   }
@@ -308,17 +347,19 @@ export class WorldEngine {
     this.waterMaterial.uniforms.uTexelDensity.value = this.getTexelDensity();
     this.waterBiomeMap.update(this.lastObserverX, this.lastObserverZ);
     this.waterMaterial.uniforms.uBiomeMapReady.value = this.waterBiomeMap.ready ? 1.0 : 0.0;
+    this.riverFlowMap.update(this.lastObserverX, this.lastObserverZ);
+    this.waterMaterial.uniforms.uFlowMapReady.value = this.riverFlowMap.ready ? 1.0 : 0.0;
     if ((this.terrainMaterial as any)?.uniforms?.uTime) {
       (this.terrainMaterial as any).uniforms.uTime.value += dt;
     }
 
     // Atualização física das ondulações interativas portadas de untitled
     const activeRipples = this.ripples;
-    const rippleData = new Float32Array(8 * 4);
+    const rippleData = new Float32Array(32 * 4);
     for (let i = 0; i < activeRipples.length; i++) {
       const rip = activeRipples[i];
       rip.age += dt;
-      rip.radius += dt * 4.2; // Expansão snappier
+      rip.radius += dt * rip.speed;
       rip.strength *= Math.pow(rip.decay, dt * 60);
 
       rippleData[i * 4 + 0] = rip.x;
@@ -330,9 +371,10 @@ export class WorldEngine {
     this.waterMaterial.uniforms.uRipples.value = rippleData;
     this.waterMaterial.uniforms.uActiveRipples.value = this.ripples.length;
 
+    this.geothermalMgr.setView(this.thermalViewH);
     this.geothermalMgr.update(dt);
     this.lavaFluidMgr.update(dt);
-    this.inlandWaterMgr.update(dt);
+    this.inlandWaterMgr.update(dt, this.lastObserverX, this.lastObserverZ);
   }
 
   public syncLighting(
@@ -357,6 +399,11 @@ export class WorldEngine {
 
   /** Personagem que afasta a grama 3D ao passar (radius = 0 desliga). */
   /** Envia à GPU só a vegetação dentro (ou perto) do campo de visão da câmera. */
+  /** Grupo com toda a vegetação instanciada (para o mapa de oclusão de contato). */
+  public getVegetationRoot(): THREE.Object3D {
+    return this.vegetationMgr.instances.root;
+  }
+
   public cullVegetation(camera: THREE.Camera): boolean {
     return this.vegetationMgr.instances.cull(camera);
   }
@@ -375,6 +422,13 @@ export class WorldEngine {
 
   public getWaterGroup(): THREE.Group {
     return this.waterGroup;
+  }
+  public renderWaterfallReflection(renderer:THREE.WebGLRenderer,camera:THREE.Camera):void {
+    this.inlandWaterMgr.renderReflection(renderer,camera);
+  }
+  public renderCascadeSurfaceReflection(renderer:THREE.WebGLRenderer,camera:THREE.PerspectiveCamera):void {
+    this.setWaterVisible(false);
+    this.inlandWaterMgr.renderSurfaceReflection(renderer,camera,this.scene);
   }
 
   public getWaterMaterial(): THREE.ShaderMaterial {
@@ -410,9 +464,15 @@ export class WorldEngine {
     camera: THREE.Camera,
     resX: number,
     resY: number,
-    exposure: number = 1.0
+    exposure: number = 1.0,
+    sceneColor: THREE.Texture | null = null
   ): void {
     const u = this.waterMaterial.uniforms;
+    // reflexo em espaço de tela das fontes termais
+    if (sceneColor) u.tSceneColor.value = sceneColor;
+    u.uSSRProj.value.copy(camera.projectionMatrix);
+    u.uSSRInvProj.value.copy(camera.projectionMatrixInverse);
+    u.uSSRExposure.value = exposure;
     if (sceneDepth) {
       u.tDepth.value = sceneDepth;
     }
@@ -421,6 +481,9 @@ export class WorldEngine {
     }
     u.uReflectTextureMatrix.value.copy(reflectMatrix);
     u.uResolution.value.set(resX, resY);
+    this.inlandWaterMgr.syncResolution(resY);
+    // claridade do dia pela altura do sol de verdade (AERIAL.uFogSunDir; a luz da cena vira a lua à noite)
+    u.uNightDim.value = THREE.MathUtils.smoothstep(AERIAL.uFogSunDir.value.y, -0.2, 0.14);
     // a água é desenhada à parte (sem a névoa da cena): copia a névoa para o shader dela
     const fog = this.scene.fog;
     u.uFogOn.value = fog instanceof THREE.Fog ? 1 : 0;

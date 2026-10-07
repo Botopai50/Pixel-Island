@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { PRNG } from '../math/prng.ts';
 import { TerrainPoint, BiomeType } from '../types.ts';
 import { CONFIG } from '../../config.ts';
+import { landmarksNear } from '../landmarks/landmarkPlanner.ts';
 
 /**
  * Onde vai cada árvore, pedra, arbusto, tronco e flor de um chunk. Separado do VegetationManager
@@ -87,12 +88,21 @@ export function planChunkVegetation(
   const sampleStep = 6.2;
   const steps = Math.floor(chunkSize / sampleStep);
 
+  // Landmarks: o espaço de cada cena fica livre de árvores, pedras e troncos
+  const tgAny = terrainGen as any;
+  const landmarks = CONFIG.LANDMARKS_ENABLED && tgAny.getDryHeight ? landmarksNear(tgAny, startX, startZ, startX + chunkSize, startZ + chunkSize) : [];
+  const inLandmark = (x: number, z: number) => {
+    for (const l of landmarks) if ((x - l.x) ** 2 + (z - l.z) ** 2 < l.radius * l.radius) return true;
+    return false;
+  };
+
   for (let ix = 0; ix < steps; ix++) {
     for (let iz = 0; iz < steps; iz++) {
       const jx = (prng.next() - 0.5) * sampleStep * 0.85;
       const jz = (prng.next() - 0.5) * sampleStep * 0.85;
       const wx = startX + (ix + 0.5) * sampleStep + jx;
       const wz = startZ + (iz + 0.5) * sampleStep + jz;
+      if (landmarks.length && inLandmark(wx, wz)) continue;
 
       const pt: TerrainPoint = terrainGen.getPointFast ? terrainGen.getPointFast(wx, wz) : terrainGen.getPoint(wx, wz);
 
@@ -459,7 +469,8 @@ export function planChunkVegetation(
         const isPeakOrVolcano = biome.type === BiomeType.ROCKY_PEAKS || biome.type === BiomeType.SNOW_SUMMIT ||
           biome.type === BiomeType.VOLCANIC_FIELD || biome.type === BiomeType.VOLCANIC_CALDERA ||
           biome.type === BiomeType.CANYON_DESERT;
-        const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST;
+        const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST ||
+          biome.type === BiomeType.TROPICAL_RAINFOREST || biome.type === BiomeType.BOREAL_TAIGA;
 
         const rScale = prng.range(0.70, 1.40);
         const embedOffset = Math.max(0.16 * rScale, pt.slope * 0.45 * rScale);
@@ -534,7 +545,8 @@ export function planChunkVegetation(
         }
       } else {
         // 5. SUB-BOSQUE E FLORA RASTEIRA NAS CLAREIRAS
-        const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST;
+        const isForest = biome.type === BiomeType.TEMPERATE_FOREST || biome.type === BiomeType.AUTUMN_FOREST ||
+          biome.type === BiomeType.TROPICAL_RAINFOREST || biome.type === BiomeType.BOREAL_TAIGA;
         const isMeadow = biome.type === BiomeType.COASTAL_MEADOW || biome.type === BiomeType.SAVANNAH;
 
         if (enableDetailFlora && isForest && pt.slope < 0.45 && flora.chance(0.14)) {

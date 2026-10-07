@@ -19,6 +19,11 @@ class SharedInstances {
   private used = 0;
   private slotOwner: number[] = [];
   private ownerSlots = new Map<number, Set<number>>();
+  /**
+   * Caixa (AABB dos centros) e maior raio das instâncias de cada dono (chunk): o recorte testa o
+   * chunk inteiro primeiro e só desce às instâncias dos chunks na borda da tela.
+   */
+  private ownerBox = new Map<number, Float32Array>();
   /** Lista mestre (todas as instâncias carregadas): matrizes 4x4 e cores RGB */
   private allM: Float32Array;
   private allC: Float32Array;
@@ -81,9 +86,26 @@ class SharedInstances {
       slots = new Set();
       this.ownerSlots.set(owner, slots);
     }
+    let box = this.ownerBox.get(owner);
+    if (!box) {
+      box = new Float32Array([Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity, 0]);
+      this.ownerBox.set(owner, box);
+    }
+    const gcx = this.geoCenter.x, gcy = this.geoCenter.y, gcz = this.geoCenter.z, gr = this.geoRadius;
     for (let i = 0; i < matrices.length; i++) {
       const slot = this.used++;
       matrices[i].toArray(this.allM, slot * 16);
+      const M = this.allM, o = slot * 16;
+      const cx = M[o] * gcx + M[o + 4] * gcy + M[o + 8] * gcz + M[o + 12];
+      const cy = M[o + 1] * gcx + M[o + 5] * gcy + M[o + 9] * gcz + M[o + 13];
+      const cz = M[o + 2] * gcx + M[o + 6] * gcy + M[o + 10] * gcz + M[o + 14];
+      const sx = M[o] * M[o] + M[o + 1] * M[o + 1] + M[o + 2] * M[o + 2];
+      const sy = M[o + 4] * M[o + 4] + M[o + 5] * M[o + 5] + M[o + 6] * M[o + 6];
+      const sz = M[o + 8] * M[o + 8] + M[o + 9] * M[o + 9] + M[o + 10] * M[o + 10];
+      const r = gr * Math.sqrt(Math.max(sx, sy, sz));
+      if (cx < box[0]) box[0] = cx; if (cy < box[1]) box[1] = cy; if (cz < box[2]) box[2] = cz;
+      if (cx > box[3]) box[3] = cx; if (cy > box[4]) box[4] = cy; if (cz > box[5]) box[5] = cz;
+      if (r > box[6]) box[6] = r;
       const c = colors[i];
       this.allC[slot * 3] = c.r; this.allC[slot * 3 + 1] = c.g; this.allC[slot * 3 + 2] = c.b;
       this.slotOwner[slot] = owner;
@@ -96,6 +118,7 @@ class SharedInstances {
     const slots = this.ownerSlots.get(owner);
     if (!slots) return;
     this.ownerSlots.delete(owner);
+    this.ownerBox.delete(owner);
 
     const matrixArr = this.allM, colorArr = this.allC;
     // Libera do maior para o menor: a última instância em uso nunca é uma das que estão saindo
@@ -126,26 +149,48 @@ class SharedInstances {
     const outC = this.mesh.instanceColor!.array as Float32Array;
     const gcx = this.geoCenter.x, gcy = this.geoCenter.y, gcz = this.geoCenter.z, gr = this.geoRadius;
     let k = 0;
-    for (let s = 0; s < this.used; s++) {
-      const o = s * 16;
-      // escala = maior comprimento de coluna da matriz
-      const sx = M[o] * M[o] + M[o + 1] * M[o + 1] + M[o + 2] * M[o + 2];
-      const sy = M[o + 4] * M[o + 4] + M[o + 5] * M[o + 5] + M[o + 6] * M[o + 6];
-      const sz = M[o + 8] * M[o + 8] + M[o + 9] * M[o + 9] + M[o + 10] * M[o + 10];
-      const sc = Math.sqrt(Math.max(sx, sy, sz));
-      // centro da esfera no mundo
-      const cx = M[o] * gcx + M[o + 4] * gcy + M[o + 8] * gcz + M[o + 12];
-      const cy = M[o + 1] * gcx + M[o + 5] * gcy + M[o + 9] * gcz + M[o + 13];
-      const cz = M[o + 2] * gcx + M[o + 6] * gcy + M[o + 10] * gcz + M[o + 14];
-      const r = gr * sc + margin;
-      let inside = true;
-      for (let p = 0; p < 24; p += 4) {
-        if (planes[p] * cx + planes[p + 1] * cy + planes[p + 2] * cz + planes[p + 3] < -r) { inside = false; break; }
-      }
-      if (!inside) continue;
-      out.set(M.subarray(o, o + 16), k * 16);
+    // copia uma instância para o buffer da GPU (sem criar objetos: antes um subarray por instância)
+    const emit = (s: number) => {
+      const o = s * 16, d = k * 16;
+      for (let j = 0; j < 16; j++) out[d + j] = M[o + j];
       outC[k * 3] = C[s * 3]; outC[k * 3 + 1] = C[s * 3 + 1]; outC[k * 3 + 2] = C[s * 3 + 2];
       k++;
+    };
+    for (const [owner, slots] of this.ownerSlots) {
+      // o chunk inteiro: todo fora (pula), todo dentro (copia sem testar) ou na borda (testa cada)
+      const bx = this.ownerBox.get(owner);
+      let mode = 1; // 0 fora, 1 borda, 2 dentro
+      if (bx) {
+        const hx = (bx[3] - bx[0]) * 0.5, hy = (bx[4] - bx[1]) * 0.5, hz = (bx[5] - bx[2]) * 0.5;
+        const cx = bx[0] + hx, cy = bx[1] + hy, cz = bx[2] + hz;
+        const R = Math.sqrt(hx * hx + hy * hy + hz * hz) + bx[6] + margin;
+        mode = 2;
+        for (let p = 0; p < 24; p += 4) {
+          const dist = planes[p] * cx + planes[p + 1] * cy + planes[p + 2] * cz + planes[p + 3];
+          if (dist < -R) { mode = 0; break; }
+          if (dist < R) mode = 1;
+        }
+      }
+      if (mode === 0) continue;
+      if (mode === 2) { for (const s of slots) emit(s); continue; }
+      for (const s of slots) {
+        const o = s * 16;
+        // escala = maior comprimento de coluna da matriz
+        const sx = M[o] * M[o] + M[o + 1] * M[o + 1] + M[o + 2] * M[o + 2];
+        const sy = M[o + 4] * M[o + 4] + M[o + 5] * M[o + 5] + M[o + 6] * M[o + 6];
+        const sz = M[o + 8] * M[o + 8] + M[o + 9] * M[o + 9] + M[o + 10] * M[o + 10];
+        const sc = Math.sqrt(Math.max(sx, sy, sz));
+        // centro da esfera no mundo
+        const cx = M[o] * gcx + M[o + 4] * gcy + M[o + 8] * gcz + M[o + 12];
+        const cy = M[o + 1] * gcx + M[o + 5] * gcy + M[o + 9] * gcz + M[o + 13];
+        const cz = M[o + 2] * gcx + M[o + 6] * gcy + M[o + 10] * gcz + M[o + 14];
+        const r = gr * sc + margin;
+        let inside = true;
+        for (let p = 0; p < 24; p += 4) {
+          if (planes[p] * cx + planes[p + 1] * cy + planes[p + 2] * cz + planes[p + 3] < -r) { inside = false; break; }
+        }
+        if (inside) emit(s);
+      }
     }
     this.mesh.count = k;
     this.mesh.instanceMatrix.needsUpdate = true;
@@ -167,6 +212,11 @@ export class VegetationInstancePool {
   private readonly projView = new THREE.Matrix4();
   private readonly lastProjView = new Float32Array(16);
   private readonly planes = new Float32Array(24);
+  /** câmera do último recorte: só refaz quando ela girou ~2° ou andou ~4m (a margem cobre o resto) */
+  private readonly cullPos = new THREE.Vector3(Infinity, 0, 0);
+  private readonly cullDir = new THREE.Vector3();
+  private readonly cullProj = new Float32Array(16);
+  private readonly _dir = new THREE.Vector3();
 
   constructor() {
     this.root.name = 'vegetation_instances';
@@ -202,13 +252,25 @@ export class VegetationInstancePool {
    */
   public cull(camera: THREE.Camera, margin: number = 40): boolean {
     camera.updateMatrixWorld();
-    this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-    const e = this.projView.elements;
-    let camChanged = false;
+    // Refaz o recorte só quando a câmera mudou o bastante: girou mais de ~2°, andou mais de ~4m
+    // ou mudou a projeção (zoom, tela). A margem de 40m em volta da vista cobre a diferença, e
+    // recortar todas as ~90 mil instâncias a cada quadro custava ~4ms de CPU (e disparava a
+    // atualização das sombras).
+    const dir = camera.getWorldDirection(this._dir);
+    const pe = camera.projectionMatrix.elements;
+    let projChanged = false;
     for (let i = 0; i < 16; i++) {
-      if (Math.abs(e[i] - this.lastProjView[i]) > 1e-5) { camChanged = true; break; }
+      if (Math.abs(pe[i] - this.cullProj[i]) > 1e-4) { projChanged = true; break; }
     }
+    const camChanged = projChanged
+      || camera.position.distanceToSquared(this.cullPos) > 16
+      || dir.dot(this.cullDir) < 0.99939;
     if (camChanged) {
+      this.cullPos.copy(camera.position);
+      this.cullDir.copy(dir);
+      this.cullProj.set(pe);
+      this.projView.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+      const e = this.projView.elements;
       this.lastProjView.set(e);
       this.frustum.setFromProjectionMatrix(this.projView);
       for (let p = 0; p < 6; p++) {

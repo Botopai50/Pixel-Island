@@ -104,9 +104,10 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
       );
       msg.geometry = geo;
       // alturas dos vértices (antes de transferir o buffer) para os tufos de grama da textura
-      const grid = segments + 1, hs = new Float32Array(grid * grid);
+      const grid = geo.segments + 1, hs = new Float32Array(grid * grid);
       for (let i = 0; i < grid * grid; i++) hs[i] = geo.positions[i * 3 + 1];
-      meshHeights = { heights: hs, grid, step: chunkSize / segments };
+      // A warped grid is not uniformly spaced; grass must query the real terrain.
+      if(!geo.deformed)meshHeights = { heights: hs, grid, step: chunkSize / geo.segments };
       transfer.push(geo.positions.buffer as ArrayBuffer, geo.normals.buffer as ArrayBuffer, geo.wall.buffer as ArrayBuffer, geo.morph.buffer as ArrayBuffer, geo.index.buffer as ArrayBuffer);
     }
 

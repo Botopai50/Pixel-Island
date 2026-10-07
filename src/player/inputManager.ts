@@ -24,8 +24,10 @@ export class InputManager {
 
   private setupListeners(): void {
     window.addEventListener('keydown', (e) => {
-      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'ShiftLeft', 'ShiftRight'].includes(e.code)) {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyW', 'KeyS', 'KeyA', 'KeyD', 'ShiftLeft', 'ShiftRight', 'Space'].includes(e.code)) {
         this.keysPressed.add(e.code);
+        // o pulo fica guardado até o próximo quadro (um toque rápido no Espaço não se perde)
+        if (e.code === 'Space') { this.jumpQueued = true; e.preventDefault(); }
         if (e.code.startsWith('Arrow')) {
           e.preventDefault();
         }
@@ -99,6 +101,14 @@ export class InputManager {
 
   public isMovingRight(): boolean {
     return this.keysPressed.has('ArrowRight') || this.keysPressed.has('KeyD') || this.virtualVector.x > 0.15;
+  }
+
+  /** Espaço apertado agora (consome o toque: um pulo por aperto). */
+  private jumpQueued = false;
+  public consumeJump(): boolean {
+    const j = this.jumpQueued || this.keysPressed.has('Space');
+    this.jumpQueued = false;
+    return j;
   }
 
   public isSprinting(): boolean {

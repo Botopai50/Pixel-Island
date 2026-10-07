@@ -610,3 +610,65 @@ body.touch-device .first-person-exit-btn {
     right: 24px;
   }
 }
+
+/* =========================================================
+   HUD DE HORÁRIO E CLIMA (skyWidget.ts) - ao lado do botão de Texturas
+   ========================================================= */
+.sky-widget-container {
+  position: fixed;
+  top: 24px;
+  left: 168px;
+  z-index: 150;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  user-select: none;
+}
+.sky-panel { width: 300px; }
+.sky-btn-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-top: 8px;
+}
+.sky-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.sky-btn:hover { background: rgba(59, 130, 246, 0.18); border-color: rgba(96, 165, 250, 0.5); }
+.sky-btn.active { background: #2563eb; border-color: #60a5fa; color: #fff; }
+.sky-btn-icon { font-size: 16px; }
+@media (max-width: 640px) {
+  .sky-widget-container { left: 140px; top: 16px; }
+  .sky-panel { width: min(300px, 92vw); }
+}
+
+/* relógio do jogo, ao lado do botão do céu */
+.sky-clock {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 10px 14px;
+  background: rgba(20, 26, 38, 0.88);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: #f1f5f9;
+  border: 1.5px solid rgba(255, 255, 255, 0.16);
+  border-radius: 28px;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 22px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+@media (max-width: 640px) {
+  .sky-clock { padding: 8px 12px; font-size: 13px; }
+}

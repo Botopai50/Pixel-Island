@@ -1,5 +1,5 @@
 import { TerrainGenerator } from './terrainGenerator.ts';
-import { BiomeType } from '../types.ts';
+import { BIOMES, BIOME_TYPE_TO_FORGE, B_TEMP, B_POLAR, B_DESERT, B_MOUNT, B_ALPINE, B_THERMAL } from './terrainTextureForge.ts';
 import { CONFIG } from '../../config.ts';
 
 export interface HorizonTileData {
@@ -34,22 +34,11 @@ export const IMPOSTOR_TYPES = [
   'dead', 'cactus', 'cactusSapling',
 ] as const;
 
-// Cores médias do chão visto de longe (as mesmas paletas das texturas pixel art, já "borradas"
-// pela distância), em sRGB 0-255; convertidas para linear no uso
-const C_GRASS = [84, 158, 58];
-const C_DIRT = [186, 146, 80];
-const C_FOREST = [36, 84, 44];
-const C_SAND = [228, 202, 148];
-const C_SNOW = [236, 242, 250];
-const C_SNOW_ROCK = [146, 154, 168];
-const C_DESERT = [212, 168, 108];
-const C_ASH = [72, 60, 56];
-const C_CLIFF = [150, 118, 78];
-const C_ROCK = [112, 110, 104];
 // fundo do mar: além do alcance da malha de água (~8km) ele fica à vista, então tem a cor da água funda
 const C_SEABED = [66, 90, 124];
 
 const lin = (v: number) => Math.pow(v / 255, 2.2);
+const mix3 = (a: number[], b: number[], t: number) => [0, 1, 2].map((k) => a[k] + (b[k] - a[k]) * t);
 
 /** Espaçamento dos vértices e rebaixo do nível 0 do horizonte (horizonTerrain.ts usa os mesmos) */
 export const HORIZON_L0_STEP = 16;
@@ -132,29 +121,25 @@ export function buildHorizonTile(
         c = C_SEABED;
       } else {
         const b = biomeMgr.evaluateBiome(x, z, h, slope, 0.0, false);
-        const polar = b.type === BiomeType.FROZEN_TUNDRA || b.type === BiomeType.SNOW_SUMMIT;
-        const desert = b.type === BiomeType.DESERT_DUNES || b.type === BiomeType.CANYON_DESERT;
-        const volcanic = b.type === BiomeType.VOLCANIC_FIELD || b.type === BiomeType.VOLCANIC_CALDERA;
-        if (polar) c = slope > 0.9 ? C_SNOW_ROCK : C_SNOW;
-        else if (desert) c = C_DESERT;
-        else if (volcanic) c = C_ASH;
-        else if (h < CONFIG.SEA_LEVEL + 1.8 && slope < 0.3) c = C_SAND;
+        // mesmas paletas das texturas de perto: [areia, solo, rocha, vegetação, acentos]
+        const fi = BIOME_TYPE_TO_FORGE[b.type] ?? B_TEMP;
+        const R = BIOMES[fi].ramps;
+        const polar = fi === B_POLAR;
+        if (polar) c = slope > 0.9 ? R[2][3] : R[1][5];
+        else if (fi === B_DESERT) c = R[0][3];
+        else if (fi === B_MOUNT) c = R[1][3];
+        else if (fi === B_THERMAL) c = R[0][3];
+        else if (h < CONFIG.SEA_LEVEL + 1.8 && slope < 0.3) c = R[0][4];
+        else if (fi === B_ALPINE) c = mix3(R[1][3], R[3][2], 0.35);
         else {
           // grama com manchas de terra, escurecida pela floresta (copas vistas de longe)
           const p = noise(x, z);
           const dirt = p > 0.72 ? 0.45 : p > 0.62 ? 0.2 : 0.0;
           const forest = Math.min(1, b.vegetationDensity * 0.85);
-          c = [0, 1, 2].map((k) => {
-            const g = C_GRASS[k] + (C_DIRT[k] - C_GRASS[k]) * dirt;
-            return g + (C_FOREST[k] - g) * forest;
-          });
+          c = mix3(mix3(R[3][3], R[1][4], dirt), R[3][1], forest);
         }
-        // paredões e encostas muito íngremes: terra/rocha
-        if (slope > 1.0 && !polar) {
-          const t = Math.min(1, (slope - 1.0) / 0.8);
-          const wall = h > 12 ? C_CLIFF : C_ROCK;
-          c = [0, 1, 2].map((k) => c[k] + (wall[k] - c[k]) * t);
-        }
+        // paredões e encostas muito íngremes: a rocha do bioma
+        if (slope > 1.0 && !polar) c = mix3(c, R[2][3], Math.min(1, (slope - 1.0) / 0.8));
       }
       colors[v * 3] = lin(c[0]); colors[v * 3 + 1] = lin(c[1]); colors[v * 3 + 2] = lin(c[2]);
     }

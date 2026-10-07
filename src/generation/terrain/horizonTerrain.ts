@@ -86,7 +86,13 @@ export class HorizonTerrain {
         // blocos da transição para o anel seguinte: alguns pixels de lado na distância do fim do anel
         uFadeCell: { value: 16 * Math.pow(2, l) },
       };
-      const mat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap, side: THREE.DoubleSide });
+      // Deslocamento de profundidade: cada nível fica um pouco "atrás" do anterior (e todos atrás dos
+      // chunks), medido na própria precisão do buffer de profundidade - vale em qualquer distância.
+      // Sem isso, onde duas malhas se sobrepõem (faixas de transição) elas brigavam pixel a pixel.
+      const mat = new THREE.MeshToonMaterial({
+        vertexColors: true, gradientMap, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: 1 + l, polygonOffsetUnits: 4 * (l + 1),
+      });
       mat.onBeforeCompile = (sh) => {
         Object.assign(sh.uniforms, u);
         // geomorphing: no fim do anel a malha toma a forma do nível seguinte antes do pontilhado
@@ -99,7 +105,8 @@ export class HorizonTerrain {
             '  vHzN = normal;',
             '  {',
             '    float hzM = smoothstep(uOuter - 150.0, uOuter + 20.0, distance(vHzPos.xz, uCenter));',
-            '    if (uMorphLower > 0.0) transformed.y += (morph - uMorphLower) * hzM;',
+            // para um pouco ACIMA do nível seguinte (60% do rebaixo): coplanar, as duas malhas brigavam
+            '    if (uMorphLower > 0.0) transformed.y += (morph - uMorphLower * 0.6) * hzM;',
             '  }',
           ].join('\n')
         );

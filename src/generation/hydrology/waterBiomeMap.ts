@@ -77,7 +77,6 @@ export class WaterBiomeMap {
   }
 
   private writeTint(o: number, x: number, z: number): void {
-    const biomeMgr = this.terrainGen.getBiomeManager();
     // A água assume o clima da margem que a cerca: altura média da terra num anel de 36m. Um lago
     // no nível do mar cercado de terreno mais alto (e mais frio) fica com o tom da floresta ao
     // redor, não com o de uma planície quente ao nível do mar. No mar aberto isso dá ~0.
@@ -87,19 +86,17 @@ export class WaterBiomeMap {
       Math.max(0, this.terrainGen.getHeight(x, z + r)) + Math.max(0, this.terrainGen.getHeight(x, z - r))
     ) / 4;
     const { temperature, moisture } = this.terrainGen.getClimate(x, z, shoreElevation);
-    const polarZ = biomeMgr.polarLatitudeZ(x, z);
     const ice = this.terrainGen.getIceInfluence(x, z, 0);
 
-    // Mesmos limiares das regras do BiomeManager (FROZEN_TUNDRA abaixo de 0.28-0.32 ou além da
-    // latitude polar; MANGROVE_SWAMP e biomas tropicais acima de 0.60). As rampas suaves começam
+    // Mesmos limiares das regras do BiomeManager (FROZEN_TUNDRA abaixo de 0.17 ou com gelo;
+    // tropicais acima de 0.62, manguezal no tropical úmido). As rampas suaves começam
     // exatamente no limiar, nunca antes: senão um lago em floresta temperada pegava tom de pântano.
     const arctic = Math.max(
-      smoothstep(-440, -520, polarZ),
-      1 - smoothstep(0.26, 0.34, temperature),
+      1 - smoothstep(0.15, 0.22, temperature),
       smoothstep(0.05, 0.15, ice)
     );
-    const warm = smoothstep(0.60, 0.68, temperature) * (1 - arctic);
-    const swamp = warm * smoothstep(0.52, 0.62, moisture);
+    const warm = smoothstep(0.62, 0.70, temperature) * (1 - arctic);
+    const swamp = warm * smoothstep(0.56, 0.64, moisture);
     const tropical = warm * (1 - swamp);
 
     const depth = clamp(-this.terrainGen.getHeight(x, z), 0, MAX_ENCODED_DEPTH);

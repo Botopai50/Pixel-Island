@@ -10,6 +10,7 @@ export interface RaycastHit {
 
 export interface ITerrainHeightQueryable {
   getHeight(x: number, z: number): number;
+  getWaterSurfaceY?(x: number, z: number): number;
 }
 
 export class TerrainRaycaster {

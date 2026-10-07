@@ -29,32 +29,60 @@ import * as THREE from 'three';
 export const FOG_AMOUNT_GLSL = /* glsl */ `
   uniform vec3 uFogSunDir;
   uniform vec3 uFogSunColor;
+  // densidade do bioma (biomeAmbience.ts): x = distância, y = névoa baixa, z = ar da proximidade
+  uniform vec3 uFogBiome;
+  // névoa baixa da manhã (biomeAmbience.ts): x = quantidade (0-1), yz = deslocamento do desenho
+  // (anda com o vento)
+  uniform vec3 uGFog;
 
   float fogAmountAt(vec3 wpos, float fNear, float fFar) {
     float d = length(wpos - cameraPosition);
     float span = max(fFar - fNear, 1.0);
     float dd = max(d - fNear, 0.0);
-    float fd = max(1.0 - exp(-dd / (span * 0.4)), smoothstep(fNear + span * 0.7, fFar, d));
-    float hf = 0.55 * exp(-max(wpos.y - 2.0, 0.0) / 35.0) * (1.0 - exp(-max(d - fNear * 0.5, 0.0) / 800.0));
-    return 1.0 - (1.0 - fd) * (1.0 - hf);
+    float fd = max(1.0 - exp(-dd * uFogBiome.x / (span * 0.4)), smoothstep(fNear + span * 0.7, fFar, d));
+    float hf = min(0.55 * uFogBiome.y, 0.9) * exp(-max(wpos.y - 2.0, 0.0) / 35.0) * (1.0 - exp(-max(d - fNear * 0.5, 0.0) / 800.0));
+    // névoa rasteira da manhã: uma camada rente ao mar, aos rios e ao fundo dos vales (some acima
+    // de ~15m), em manchas que andam com o vento. A espessura vem da média da altura da câmera e
+    // da do ponto: dentro da camada tudo à volta embranquece; de cima só o vale fica coberto.
+    float gf = 0.0;
+    if (uGFog.x > 0.001) {
+      vec2 gp = wpos.xz - uGFog.yz;
+      float gn = 0.5 + 0.5 * sin(gp.x * 0.011 + sin(gp.y * 0.017) * 1.7) * sin(gp.y * 0.013 + sin(gp.x * 0.009) * 1.3);
+      float lay = 0.5 * ((1.0 - smoothstep(1.5, 15.0, wpos.y)) + (1.0 - smoothstep(1.5, 15.0, cameraPosition.y)));
+      gf = min(1.0 - exp(-d * 0.022 * uGFog.x * (0.4 + 0.85 * gn) * lay), 0.8);
+    }
+    return 1.0 - (1.0 - fd) * (1.0 - hf) * (1.0 - gf);
   }
 
-  vec3 aerialPerspective(vec3 col, vec3 wpos, vec3 fogCol, float fNear, float fFar) {
+  // silK: quanto a cor de silhueta escurece a cor do ar. 0.6 nas cores lineares da cena; a água é
+  // desenhada já nas cores da tela (depois do tonemapping), onde o mesmo escurecimento é ~0.8
+  vec3 aerialPerspectiveK(vec3 col, vec3 wpos, vec3 fogCol, float fNear, float fFar, float silK) {
     vec3 rel = wpos - cameraPosition;
     float d = length(rel);
-    // ar da proximidade (com teto) + névoa de distância/vales
-    float nh = 0.55 * (1.0 - exp(-max(d - fNear, 0.0) / 260.0));
-    float t = 1.0 - (1.0 - fogAmountAt(wpos, fNear, fFar)) * (1.0 - nh);
+    // 1. Camadas (como num Minecraft enevoado): entre ~fNear e ~240m o relevo e a mata puxam para
+    // uma COR DE SILHUETA (a cor do ar do bioma, mais escura e saturada) e param num teto alto: o
+    // que está longe continua bem visível, recortado e escuro, tingido pelo bioma (verde-azulado na
+    // selva, bege no deserto...), uma camada atrás da outra, em vez de lavar até o claro do céu.
+    float nk = smoothstep(fNear, fNear + 240.0 / uFogBiome.z, d);
+    float nh = min(0.84 * uFogBiome.z, 0.93) * nk * (2.0 - nk);
+    float fl = dot(fogCol, vec3(0.2126, 0.7152, 0.0722));
+    vec3 sil = max(mix(vec3(fl), fogCol, 1.6), 0.0) * silK;
+    // 2. Névoa de distância e dos vales: só ela leva à cor do céu (fecha no horizonte)
+    float t = fogAmountAt(wpos, fNear, fFar);
     // o azul se espalha primeiro
     vec3 tc = 1.0 - pow(vec3(1.0 - t), vec3(0.85, 1.0, 1.2));
     // cores lavadas: dessatura e achata o contraste
     float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
-    col = mix(col, vec3(lum), clamp(t * 0.7, 0.0, 1.0));
+    col = mix(col, vec3(lum), clamp(max(t, nh) * 0.6, 0.0, 1.0));
     // luz do ar: mais clara e quente na direção do sol (só com o sol acima do horizonte)
     float sunUp = clamp(uFogSunDir.y * 4.0 + 0.2, 0.0, 1.0);
     float glow = pow(max(dot(rel / max(d, 1e-3), uFogSunDir), 0.0), 5.0) * sunUp;
     vec3 inscat = mix(fogCol, uFogSunColor, glow * 0.45);
+    col = mix(col, mix(sil, inscat, glow * 0.35), nh);
     return mix(col, inscat, tc);
+  }
+  vec3 aerialPerspective(vec3 col, vec3 wpos, vec3 fogCol, float fNear, float fFar) {
+    return aerialPerspectiveK(col, wpos, fogCol, fNear, fFar, 0.6);
   }
 `;
 
@@ -66,6 +94,31 @@ export const FOG_AMOUNT_GLSL = /* glsl */ `
 export const AERIAL = {
   uFogSunDir: { value: { x: 0, y: 1, z: 0 } },
   uFogSunColor: { value: { x: 1, y: 0.9, z: 0.7 } },
+  uFogBiome: { value: { x: 1, y: 1, z: 1 } },
+  uGFog: { value: { x: 0, y: 0, z: 0 } },
+};
+
+/**
+ * Umidade do chão pela chuva (0 seco - 1 encharcado): sobe aos poucos enquanto chove e seca
+ * devagar depois (biomeAmbience.ts). O terreno escurece e ganha poças (terrainShader.ts).
+ * Compartilhado por referência (o shader do terreno liga o mesmo objeto).
+ */
+/**
+ * Sombra na grade de pixels do chão (terrainShader.ts): as matrizes das 3 faixas de sombra do
+ * clipmap (as mesmas Matrix4 das luzes, por referência) e o normalBias de cada uma. main.ts liga.
+ */
+export const SHADOW_GRID = {
+  uSM: { value: [new THREE.Matrix4(), new THREE.Matrix4(), new THREE.Matrix4()] },
+  uSNB: { value: new THREE.Vector3() },
+  uShadowGrid: { value: 0 },
+};
+
+export const WET = {
+  uWet: { value: 0 },
+  /** chuva caindo agora (0-1): os aneizinhos nas poças */
+  uRainNow: { value: 0 },
+  /** relógio das poças (s) */
+  uWetTime: { value: 0 },
 };
 
 const PARS_VERTEX = /* glsl */ `

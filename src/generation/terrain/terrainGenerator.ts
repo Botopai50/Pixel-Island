@@ -43,9 +43,21 @@ export class TerrainGenerator {
     this.canyonGen.reseed(seed);
   }
 
+  /** Correnteza dos rios (ver Hydrology.riverFlowAt): out = [vx, vz, presença]. */
+  public riverFlowAt(x: number, z: number, out: number[]): void {
+    this.hydrology.riverFlowAt(x, z, out);
+  }
+
   public getSeed(): number {
     return this.seed;
   }
+
+  public getWaterSurfaceY(x:number,z:number):number{
+    const hydro=this.hydrology.queryHydrology(x,z);
+    return hydro.isWater?Math.max(CONFIG.SEA_LEVEL,hydro.waterSurfaceY):CONFIG.SEA_LEVEL;
+  }
+
+  public getMeshPoint(x:number,z:number){return this.hydrology.getTerrainMeshPoint(x,z);}
 
   public getClimate(x: number, z: number, elevation: number): { temperature: number; moisture: number } {
     const hydro = this.hydrology.queryHydrology(x, z);
@@ -57,8 +69,9 @@ export class TerrainGenerator {
     // Rios e lagos esculpem o relevo por último (leito, margens e o dique natural em volta da
     // água), sobre o relevo já completo - senão um cânion aplicado depois rebaixava as margens
     const hydro = this.hydrology.queryHydrology(x, z, dry);
-    return clamp(this.applyHydrology(dry, hydro), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
+    return clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
   }
+
 
   /**
    * Altura final e a umidade da beira d'água (areia molhada) numa consulta só. A hidrologia precisa
@@ -67,7 +80,7 @@ export class TerrainGenerator {
   public getHeightAndWetness(x: number, z: number): { height: number; wetness: number } {
     const dry = this.getDryHeight(x, z);
     const hydro = this.hydrology.queryHydrology(x, z, dry);
-    return { height: clamp(this.applyHydrology(dry, hydro), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT), wetness: hydro.wetness };
+    return { height: clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT), wetness: hydro.wetness };
   }
 
   /**
@@ -93,8 +106,10 @@ export class TerrainGenerator {
     }
 
     const macroRelief = this.macroGeo.getMacroRelief(x, z, spineFactor, landFactor);
-    const mesoNoise = this.noise.fbm2D(x * 0.015, z * 0.015, 4, 0.45, 2.1) * 7.5;
-    const microNoise = this.noise.noise2D(x * 0.06, z * 0.06) * 1.4;
+    // ondulação média: mais larga e mais fraca, e quase nada nas planícies (regiões calmas)
+    const hilly = smoothstep(-0.25, 0.35, this.noise.fbm2D(x * 0.00035 + 61.0, z * 0.00035 - 23.0, 2));
+    const mesoNoise = this.noise.fbm2D(x * 0.009, z * 0.009, 3, 0.42, 2.1) * 4.5 * (0.35 + 0.65 * hilly);
+    const microNoise = this.noise.noise2D(x * 0.05, z * 0.05) * 0.8;
 
     // Amortecimento alpino: atenua oscilações de alta frequência nas montanhas e cumes nevados,
     // garantindo cristas e encostas facetadas, imponentes e livres de agulhas/dentes de serra
@@ -217,14 +232,16 @@ export class TerrainGenerator {
     const amount = mountain * smoothstep(0.30, 0.55, region);
     if (amount <= 0.0) return h;
     const stepH = 10.0 + this.noise.noise2D(x * 0.004 - 3.3, z * 0.004 + 9.1) * 2.5;
-    const warp = this.noise.noise2D(x * 0.02 + 5.5, z * 0.02 + 1.7) * stepH * 0.45
-               + this.noise.noise2D(x * 0.07, z * 0.07 + 3.3) * stepH * 0.12;
+    // só a deformação larga (~50m): a fina (~14m) recortava a borda dos paredões em dentes de serra
+    const warp = this.noise.noise2D(x * 0.02 + 5.5, z * 0.02 + 1.7) * stepH * 0.45;
     const hw = h + warp;
     const k = Math.floor(hw / stepH);
     const t = hw / stepH - k;
-    // t^6: começo do degrau quase plano (patamar), fim subindo de uma vez (paredão)
-    const t3 = t * t * t;
-    const stepped = (k + t3 * t3) * stepH - warp;
+    // patamar quase plano e paredão na segunda metade do degrau. O paredão é largo o bastante
+    // para a malha (vértices a ~1-2m) acompanhar: com t^6 ele ficava estreito demais e virava
+    // uma serra de pontas onde cruzava a grade na diagonal
+    const s = smoothstep(0.4, 1.0, t);
+    const stepped = (k + s * s * (3.0 - 2.0 * s)) * stepH - warp;
     return lerp(h, stepped, amount * 0.95);
   }
 
@@ -260,9 +277,10 @@ export class TerrainGenerator {
   }
 
   public getIceInfluence(x: number, z: number, y: number): number {
-    const polarZ = this.biomeMgr.polarLatitudeZ(x, z);
-    if (polarZ > -480.0) return 0.0;
-    const latProg = clamp((-polarZ - 480.0) / 280.0, 0.0, 1.0);
+    // gelo onde o clima de base é polar (mesma regra da tundra ártica do BiomeManager)
+    const t = this.biomeMgr.getBaseClimate(x, z).temperature;
+    if (t > 0.17) return 0.0;
+    const latProg = clamp((0.17 - t) / 0.05, 0.0, 1.0);
     const lowAltBonus = smoothstep(32.0, 4.0, y);
     return latProg * (0.4 + 0.6 * lowAltBonus);
   }

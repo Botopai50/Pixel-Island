@@ -5,9 +5,21 @@ import { getTextureWorkerPool } from './generation/terrain/textureWorkerPool.ts'
 import { WorldEngine } from './generation/worldEngine.ts';
 import { PlayerController, CameraMode } from './player/playerController.ts';
 import { SkyAtmosphere } from './atmosphere/skyAtmosphere.ts';
+import { BiomeAmbience, GRADE, GRADE_GLSL } from './atmosphere/biomeAmbience.ts';
+import { SunFX } from './atmosphere/sunFX.ts';
+import { VolumetricLight } from './atmosphere/volumetricLight.ts';
+import { Footprints } from './atmosphere/footprints.ts';
+import { WakeTrail } from './atmosphere/wake.ts';
+import { WakeSim } from './atmosphere/wakeSim.ts';
+import { Splash } from './atmosphere/splash.ts';
+import { Bloom } from './atmosphere/bloom.ts';
+import { WET, SHADOW_GRID } from './atmosphere/atmosphericFog.ts';
+import { PuddleSSR } from './atmosphere/puddleSSR.ts';
+import { WaterVisibility } from './generation/hydrology/waterVisibility.ts';
 import { DropReticle } from './player/dropReticle.ts';
 import { PegmanWidget } from './ui/pegmanWidget.ts';
 import { TextureForgeWidget } from './ui/textureForgeWidget.ts';
+import { SkyWidget } from './ui/skyWidget.ts';
 import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
 import { setForgeTextureAnisotropy, DEFAULT_D } from './generation/terrain/terrainTextureForge.ts';
@@ -42,6 +54,27 @@ class App {
 
   // 3. Atmosfera e Iluminação
   private atmosphere!: SkyAtmosphere;
+  /** oclusão de contato estilizada (mapa visto de cima da base da vegetação) */
+  private ambience!: BiomeAmbience;
+  private sunFX = new SunFX();
+  private volLight = new VolumetricLight();
+  private footprints = new Footprints();
+  private wake = new WakeTrail();
+  private wakeSim = new WakeSim();
+  private splash: Splash | null = null;
+  private prevFeetY = NaN;
+  private fallHigh = false;
+  private fallSpeed = 0;
+  private wakeLastX = NaN;
+  private wakeLastZ = NaN;
+  private wakeSpeed = 0;
+  private wakeDirX = 0;
+  private wakeDirZ = 0;
+  private bloom = new Bloom();
+  private puddleSSR = new PuddleSSR();
+  private _sunCol = new THREE.Color();
+  private _feet = new THREE.Vector3();
+  private waterVis = new WaterVisibility();
 
   // 4. Pegman HUD e Retículo 3D de Pouso
   private dropReticle!: DropReticle;
@@ -126,9 +159,12 @@ class App {
 
     // Inicialização da Atmosfera e Luz Solar
     this.atmosphere = new SkyAtmosphere(this.scene);
+    this.ambience = new BiomeAmbience(this.scene);
 
     // Inicialização do Motor de Geração Procedural do Mundo
     this.worldEngine = new WorldEngine(this.scene);
+    // pingos de chuva na água viram anelzinhos (as mesmas ondulações do clique, bem menores)
+    this.ambience.setRainRippleSink((x, z) => this.worldEngine.addRipple(x, z, 0.7, 0.8, 1.8, 0.955));
     this.worldEngine.initTreeImpostors(this.renderer);
     this.syncAtmosphereWithWorld();
 
@@ -152,6 +188,12 @@ class App {
       depthTest: false,
       depthWrite: false
     });
+    // gradação de cor do bioma (biomeAmbience.ts), em cores da tela
+    this.blitMaterial.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, GRADE);
+      shader.fragmentShader = GRADE_GLSL + shader.fragmentShader.replace(
+        '#include <colorspace_fragment>', '#include <colorspace_fragment>\n  gl_FragColor.rgb = biomeGrade(gl_FragColor.rgb);');
+    };
     const blitMesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.blitMaterial);
     this.blitScene.add(blitMesh);
 
@@ -199,11 +241,14 @@ class App {
     this.fxaaMaterial = new THREE.ShaderMaterial({
       uniforms: THREE.UniformsUtils.clone(FXAAShader.uniforms),
       vertexShader: FXAAShader.vertexShader,
-      fragmentShader: FXAAShader.fragmentShader,
+      fragmentShader: GRADE_GLSL + FXAAShader.fragmentShader.replace(
+        'gl_FragColor = ApplyFXAA( tDiffuse, resolution.xy, vUv );',
+        'gl_FragColor = ApplyFXAA( tDiffuse, resolution.xy, vUv );\n\t\t\tgl_FragColor.rgb = biomeGrade(gl_FragColor.rgb);'),
       depthTest: false,
       depthWrite: false,
       toneMapped: false,
     });
+    Object.assign(this.fxaaMaterial.uniforms, GRADE);
     this.fxaaMaterial.uniforms.tDiffuse.value = this.fxaaTarget.texture;
     this.fxaaMaterial.uniforms.resolution.value.set(1 / rw, 1 / rh);
     this.fxaaScene = new THREE.Scene();
@@ -238,6 +283,10 @@ class App {
     this.worldEngine.setGrassBillboard(CONFIG.GRASS_BILLBOARD);
     window.addEventListener('keydown', (e) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.key === 'v' || e.key === 'V') {
+        this.volLight.enabled = !this.volLight.enabled;
+        console.info('[luz volumétrica] ' + (this.volLight.enabled ? 'ligada' : 'desligada'));
+      }
       if (e.key === 'p' || e.key === 'P') {
         this.setPixelation(CONFIG.PIXEL_SIZE === 1);
         window.dispatchEvent(new CustomEvent('pixelation-changed', { detail: CONFIG.PIXEL_SIZE > 1 }));
@@ -295,8 +344,20 @@ class App {
 
     // Inicialização do Widget de Ajuste e Exportação de Texturas
     this.textureForgeWidget = new TextureForgeWidget(this.worldEngine);
+    new SkyWidget(this.atmosphere, () => { this.shadowsNeedUpdate = true; }, (kind) => this.ambience.setWeather(kind));
 
     // Globais para depuração e automação de testes
+    const waterfallView=new URLSearchParams(location.search).get('waterfall');
+    if(waterfallView==='close'||waterfallView==='spring'){
+      const f=this.worldEngine.getTerrainGenerator().getHydrology().getWaterfalls()[0];
+      if(f){
+        const spring=waterfallView==='spring',side=f.width*.5+2;
+        const x=spring?f.x+f.fz*side-f.fx*18:f.x-f.fz*f.width*.25+f.fx*(f.radius+10);
+        const z=spring?f.z-f.fx*side-f.fz*18:f.z+f.fx*f.width*.25+f.fz*(f.radius+10);
+        this.playerController.teleportToFirstPerson(x,z,this.worldEngine.getTerrainGenerator(),spring?Math.atan2(f.fz,-f.fx):Math.atan2(f.fx,f.fz),spring?-.40:.15);
+        this.worldEngine.updateObserverPosition(x,z);
+      }
+    }
     (window as any).__WORLD__ = this.worldEngine;
     (window as any).__PLAYER__ = this.playerController;
     (window as any).__TEXTURE_WIDGET__ = this.textureForgeWidget;
@@ -336,13 +397,17 @@ class App {
 
   private spawnPlayer(): void {
     const spawn = this.worldEngine.getSpawnCoordinate();
+    if(new URLSearchParams(location.search).has('waterfall')){
+      const f=this.worldEngine.getTerrainGenerator().getHydrology().getWaterfalls()[0];
+      if(f){spawn.x=f.x+f.fx*8;spawn.z=f.z+f.fz*8;this.playerController.setFrustumSize(65);this.playerController.setObserverOrientation(Math.atan2(f.fx,f.fz)+.45,Math.PI*.23);}
+    }
     this.playerController.setPosition(spawn.x, spawn.z);
     this.worldEngine.updateObserverPosition(spawn.x, spawn.z);
   }
 
   private syncAtmosphereWithWorld(): void {
     this.worldEngine.syncLighting(
-      this.atmosphere.getSunDirection(),
+      this.atmosphere.getLightDirection(),
       this.atmosphere.getSunColor(),
       this.atmosphere.getAmbientColor(),
       this.atmosphere.getFogColor()
@@ -406,6 +471,95 @@ class App {
     return Math.min(CONFIG.MAX_VIEW_RADIUS_CHUNKS, Math.max(CONFIG.VIEW_RADIUS_CHUNKS, r));
   }
 
+  /** Efeitos do vale termal sobre o personagem (lama, água quente, baforadas, gêiser) e a névoa de vapor. */
+  private hazeEl: HTMLDivElement | null = null;
+  private hazeLevel = 0;
+  private applyThermalFx(dt: number): void {
+    const fpc = this.playerController.getFirstPersonController();
+    const fx = this.worldEngine.geothermalMgr.interact(dt, this._feet.x, this._feet.y, this._feet.z);
+    fpc.speedMul = fx.speedMul;
+    fpc.minFloor = fx.floorY;
+    this.inThermalPool = fx.floorY > -1e8;
+    if (fx.pushX !== 0 || fx.pushZ !== 0) fpc.addVelocity(fx.pushX * dt, fx.pushZ * dt);
+    if (fx.launch > 0) fpc.launch(fx.launch);
+    if (fx.ripple) this.worldEngine.addRipple(this._feet.x, this._feet.z, 0.7, 1.4, 1.8, 0.95);
+    this.setHaze(dt, fx.haze);
+  }
+  /** Rastro d'água: vale na superfície do mar, de rios e lagos e das poças termais. */
+  private inThermalPool = false;
+  private updateWake(dt: number): void {
+    const p = this.worldEngine.getTerrainGenerator().getPointFast(this._feet.x, this._feet.z);
+    const surf = p.isWater || p.waterSurfaceY > p.height ? p.waterSurfaceY : -1e9;
+    // Splash: caiu na água vindo de cima (pulo, gêiser, queda de um barranco)
+    const fpcS = this.playerController.getFirstPersonController();
+    const surfY = this.inThermalPool ? fpcS.minFloor + 0.3 : surf;
+    // na água = com os pés na superfície (voando por cima ou na areia seca não deixa rastro)
+    const inWater = surfY > -1e8 && this._feet.y <= surfY + 0.12;
+    if (!this.splash) this.splash = new Splash(this.scene);
+    // a queda é acompanhada por vários quadros: enquanto os pés estão acima da água guarda a maior
+    // velocidade de descida; ao tocar a superfície, estoura com essa força (comparar só o quadro
+    // anterior perdia a queda quando ela passava pela faixa de 0.2m entre dois quadros)
+    if (!Number.isNaN(this.prevFeetY) && surfY > -1e8 && dt > 0) {
+      const vy = (this._feet.y - this.prevFeetY) / dt;
+      if (this._feet.y > surfY + 0.2) {
+        this.fallHigh = true;
+        this.fallSpeed = Math.max(this.fallSpeed, -vy);
+      }
+      if (this.fallHigh && this._feet.y <= surfY + 0.05) {
+        const fs = Math.max(this.fallSpeed, -vy);
+        this.fallHigh = false;
+        this.fallSpeed = 0;
+        if (fs < 2.0) { this.prevFeetY = this._feet.y; }
+        // força pela ALTURA da queda (v² / 2g): ~1m de um pulo dá um splash pequeno, ~13m do gêiser
+        // um enorme; em escala logarítmica, para quedas médias também crescerem de forma visível
+        const fallH = (fs * fs) / 36;
+        const s = Math.min(1, Math.max(0.08, Math.log2(1 + fallH) / 3.9));
+        if (fs >= 2.0) {
+        this.splash.burst(this._feet.x, surfY, this._feet.z, s);
+        this.wakeSim.splash(this._feet.x, this._feet.z, s);
+        this.worldEngine.addRipple(this._feet.x, this._feet.z, 1.0, 2.8, 4.2, 0.9);
+        }
+      }
+    } else if (surfY <= -1e8) {
+      this.fallHigh = false; this.fallSpeed = 0;
+    }
+    this.prevFeetY = this._feet.y;
+    this.splash.update(dt, this.waterRenderTarget.height);
+    this.wake.update(dt, this._feet.x, this._feet.z, inWater);
+    // simulação de ondas: quem anda na água empurra a superfície (mais forte quanto mais rápido)
+    const wdx = Number.isNaN(this.wakeLastX) ? 0 : this._feet.x - this.wakeLastX;
+    const wdz = Number.isNaN(this.wakeLastZ) ? 0 : this._feet.z - this.wakeLastZ;
+    this.wakeLastX = this._feet.x; this.wakeLastZ = this._feet.z;
+    const wd = Math.hypot(wdx, wdz);
+    const inst = wd > 5 || dt <= 0 ? 0 : wd / dt;
+    this.wakeSpeed += (inst - this.wakeSpeed) * Math.min(1, dt * 14);
+    const push = inWater && this.wakeSpeed > 0.25 ? Math.min(1.0, 0.3 + this.wakeSpeed * 0.1) : 0;
+    // a onda leva um instante para se formar e aparece atrás: a fonte vai um pouco à frente do
+    // personagem (mais quanto mais rápido), para o vértice do V nascer embaixo dele
+    if (wd > 1e-4 && wd < 5) { this.wakeDirX = wdx / wd; this.wakeDirZ = wdz / wd; }
+    const lead = Math.min(1.4, this.wakeSpeed * 0.22);
+    this.wakeSim.update(this.renderer, dt, this._feet.x + this.wakeDirX * lead, this._feet.z + this.wakeDirZ * lead, push);
+
+  }
+  private resetThermalFx(): void {
+    this.playerController.getFirstPersonController().speedMul = 1;
+    this.playerController.getFirstPersonController().minFloor = -1e9;
+    this.setHaze(0.016, 0);
+  }
+  /** Névoa branca de vapor por cima da imagem: sobe depressa e some devagar. */
+  private setHaze(dt: number, target: number): void {
+    if (!this.hazeEl) {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:5;opacity:0;'
+        + 'background:radial-gradient(ellipse at center, rgba(240,248,250,0.55) 0%, rgba(236,244,247,0.85) 100%);';
+      document.body.appendChild(el);
+      this.hazeEl = el;
+    }
+    const k = target > this.hazeLevel ? 1 - Math.exp(-dt * 6) : 1 - Math.exp(-dt * 1.2);
+    this.hazeLevel += (target - this.hazeLevel) * k;
+    this.hazeEl.style.opacity = this.hazeLevel < 0.01 ? '0' : this.hazeLevel.toFixed(3);
+  }
+
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
@@ -422,7 +576,14 @@ class App {
     if (this.playerController.getMode() === CameraMode.FIRST_PERSON) {
       const eye = 1.75 * CONFIG.PLAYER_SCALE;
       this.worldEngine.setGrassPusher(playerPos.x, playerPos.y - eye, playerPos.z, 0.45 + 0.9 * CONFIG.PLAYER_SCALE);
+      // pegadas: só no chão e fora d'água (o shader só marca areia e neve)
+      this._feet.set(playerPos.x, playerPos.y - eye, playerPos.z);
+      this.footprints.update(dt, this._feet, this._feet.y > 0.25);
+      this.applyThermalFx(dt);
+      this.updateWake(dt);
     } else {
+      this.wake.update(dt, 0, 0, false);
+      this.resetThermalFx();
       this.worldEngine.setGrassPusher(0, -9999, 0, 0);
     }
 
@@ -444,6 +605,22 @@ class App {
     this.worldEngine.updateSimulation(dt);
     this.syncAtmosphereWithWorld();
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
+    // sombra na grade do chão: as matrizes das 3 faixas de sombra (as próprias Matrix4 das luzes)
+    const sLights = this.atmosphere.getShadowClipmap().getLights();
+    if (sLights.length >= 3) {
+      for (let i = 0; i < 3; i++) SHADOW_GRID.uSM.value[i] = sLights[i].shadow.matrix;
+      SHADOW_GRID.uSNB.value.set(sLights[0].shadow.normalBias, sLights[1].shadow.normalBias, sLights[2].shadow.normalBias);
+      SHADOW_GRID.uShadowGrid.value = 1;
+      // sombras na água (o shader próprio da água lê os mapas de sombra direto)
+      const wu = this.worldEngine.getWaterMaterial().uniforms;
+      const m0 = sLights[0].shadow.map, m1 = sLights[1].shadow.map, m2 = sLights[2].shadow.map;
+      wu.tWShadow0.value = m0 ? m0.texture : null;
+      wu.tWShadow1.value = m1 ? m1.texture : null;
+      wu.tWShadow2.value = m2 ? m2.texture : null;
+      wu.uWShadowOn.value = m0 && m1 && m2 && this.renderer.shadowMap.enabled ? 1 : 0;
+    }
+    // ciclo de dia e noite (HUD Céu > Automático): o sol andou, refaz as sombras
+    if (this.atmosphere.tickCycle(dt)) this.shadowsNeedUpdate = true;
     this.atmosphere.update(dt, this.playerController.getCamera().position);
     // Neblina a partir do ponto focado (na visão aérea a câmera fica centenas de metros acima)
     this.atmosphere.setFocusDistance(
@@ -480,14 +657,25 @@ class App {
       this.shadowsNeedUpdate = true;
       this.lastVegShadowRefresh = now;
     }
+    // ambientação do bioma em volta do jogador: névoa, gradação de cor e partículas
+    const skybox = this.atmosphere.getSkybox();
+    this.ambience.setHour(this.atmosphere.hour);
+    this.worldEngine.thermalViewH = this.waterRenderTarget.height;
+    this.ambience.update(dt, this.worldEngine.getTerrainGenerator(), playerPos, activeCamera,
+      this.playerController.getMode() === CameraMode.FIRST_PERSON, this.waterRenderTarget.width, this.waterRenderTarget.height,
+      skybox);
     const isFirstPerson = this.playerController.getMode() === CameraMode.FIRST_PERSON;
     const seaLevel = 0.0;
 
     // 3. Renderização Multi-Pass para o Pixel Water Shader
     // No Modo 1ª Pessoa: Renderiza a reflexão a cada frame para sincronia total com o movimento do jogador (elimina 100% de flicadas e stutter ao andar)
-    const shouldRenderReflection = isFirstPerson;
+    // ... e só com água à vista (waterVisibility.ts): sem água na tela, o reflexo (que redesenha a
+    // cena inteira) não é desenhado
+    const shouldRenderReflection = isFirstPerson &&
+      this.waterVis.update(activeCamera as THREE.PerspectiveCamera, this.worldEngine.getTerrainGenerator(), now / 1000);
 
     if (shouldRenderReflection) {
+      this.worldEngine.renderCascadeSurfaceReflection(this.renderer,activeCamera as THREE.PerspectiveCamera);
       const camDir = new THREE.Vector3();
       activeCamera.getWorldDirection(camDir);
       const lookTarget = activeCamera.position.clone().add(camDir.multiplyScalar(100.0));
@@ -514,6 +702,7 @@ class App {
       this.reflectionClipPlane.constant = 0.05 - seaLevel;
       this.renderer.clippingPlanes = this.reflectionClipPlanes;
       this.renderer.render(this.scene, rPersp);
+      this.worldEngine.renderWaterfallReflection(this.renderer,rPersp);
       this.renderer.clippingPlanes = this.noClipPlanes;
       this.renderer.shadowMap.enabled = true; // RESTAURA SOMBRAS
 
@@ -562,6 +751,31 @@ class App {
     this.renderer.clear();
     this.renderer.render(this.scene, activeCamera);
 
+    // God rays + lens flare (sunFX.ts): raios a partir do depth da cena opaca; somados no fim
+    if (this.waterRenderTarget.depthTexture) {
+      this.sunFX.cloudCover = this.atmosphere.getSkybox().getCloudCoverage();
+      this._sunCol.copy(this.atmosphere.getSkybox().getCurrentCoronaColor()).lerp(new THREE.Color(1, 0.97, 0.88), 0.5).convertLinearToSRGB();
+      // luz volumétrica: sol acima do horizonte, primeira pessoa (o céu encoberto apaga no overlay)
+      const sunD = this.atmosphere.getSunDirection();
+      const volStrength = isFirstPerson ? THREE.MathUtils.smoothstep(sunD.y, -0.02, 0.12) : 0;
+      this.volLight.render(this.renderer, this.waterRenderTarget.depthTexture, activeCamera,
+        this.atmosphere.getShadowClipmap().getLights(), sunD, this.waterRenderTarget.width, this.waterRenderTarget.height, volStrength);
+      // bloom suave do que brilha (lava, vaga-lumes, brasas, sol)
+      this.bloom.render(this.renderer, this.waterRenderTarget.texture, this.waterRenderTarget.width, this.waterRenderTarget.height);
+      this.sunFX.volTex = this.volLight.texture;
+      this.sunFX.volAmt = this.volLight.amount;
+      this.sunFX.render(this.renderer, this.waterRenderTarget.depthTexture, this.waterRenderTarget.texture, activeCamera, this.atmosphere.getSunDirection(),
+        this._sunCol, this.waterRenderTarget.width, this.waterRenderTarget.height, isFirstPerson, dt);
+    }
+
+    // Reflexo das poças (puddleSSR.ts): só com poças e câmera em perspectiva; a imagem refletida
+    // substitui a cena opaca nos blits
+    const sceneTex = (WET.uWet.value > 0.01 && isFirstPerson && this.waterRenderTarget.depthTexture)
+      ? this.puddleSSR.render(this.renderer, this.waterRenderTarget, activeCamera, this.atmosphere.getSkybox().getCurrentFogColor())
+      : this.waterRenderTarget.texture;
+    this.blitMaterial.map = sceneTex;
+    this.blitToDisplayMaterial.uniforms.tScene.value = sceneTex;
+
     // Passo 3: Blit em tela cheia da cena opaca para o canvas (ou, com FXAA, para o alvo do FXAA,
     // já convertida para as cores da tela). Com a pixelização ligada o FXAA não entra: borraria
     // os pixels grandes de propósito.
@@ -584,7 +798,8 @@ class App {
       activeCamera,
       this.waterRenderTarget.width,
       this.waterRenderTarget.height,
-      this.renderer.toneMappingExposure
+      this.renderer.toneMappingExposure,
+      this.waterRenderTarget.texture
     );
 
     this.renderer.autoClear = false;
@@ -596,6 +811,11 @@ class App {
       this.renderer.setRenderTarget(null);
       this.renderer.render(this.fxaaScene, this.blitCamera);
     }
+
+    // Passo 6: god rays e lens flare por cima de tudo (pixels grandes, sem passar pelo FXAA)
+    this.renderer.setRenderTarget(null);
+    this.sunFX.overlay(this.renderer);
+    this.bloom.composite(this.renderer);
 
     if (snapCam) {
       snapCam.position.copy(this._camSaved);

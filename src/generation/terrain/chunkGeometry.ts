@@ -1,5 +1,7 @@
 import { makeHorizonL0Sampler } from './horizonGeometry.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
+import { localWaterfall, waterfallCenter, waterfallWidth } from '../hydrology/waterfallFeatures.ts';
+import { CONFIG } from '../../config.ts';
 
 export interface ChunkGeometryData {
   positions: Float32Array;
@@ -20,6 +22,7 @@ export interface ChunkGeometryData {
   morph: Float32Array;
   index: Uint16Array;
   segments: number;
+  deformed: boolean;
 }
 
 /**
@@ -39,6 +42,26 @@ export function buildChunkGeometry(
   /** medir os paredões (grama que escorre / terra no pé): só nos chunks perto da câmera */
   walls: boolean = true
 ): ChunkGeometryData {
+  // Refine only nearby waterfall chunks. Large triangles cut diagonal curtains
+  // into wedges even when the analytic terrain profile has the right contact.
+  if(size<=CONFIG.CHUNK_SIZE&&segments>=CONFIG.CHUNK_SEGMENTS){
+    const hydro=terrainGen.getHydrology(),G=CONFIG.ISLAND_GRID_SIZE;
+    const cx=Math.round(centerX/G),cz=Math.round(centerZ/G);
+    let refine=false;
+    for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++){
+      if((dx||dz)&&!hydro.hasIsland(cx+dx,cz+dz))continue;
+      for(const f of hydro.getWaterfalls(cx+dx,cz+dz)){
+        const q=localWaterfall(f,centerX,centerZ),reach=size*Math.SQRT1_2;
+        // a queda e TODO o rio de cima (e o lago): a margem da água sobre triângulos de 2 m sai em
+        // dentes de serra, então a faixa em volta da água usa grade de 1 m
+        if(q.z>f.radius+12+reach||q.z< -f.length-12-reach)continue;
+        const zc=Math.max(-f.length,Math.min(q.z,f.radius));
+        const center=waterfallCenter(f,zc),half=(q.z<0?waterfallWidth(f,zc):f.width)*.5+6;
+        if(Math.abs(q.x-center)<half+reach)refine=true;
+      }
+    }
+    if(refine)segments=Math.max(segments,Math.ceil(size));
+  }
   const grid = segments + 1;
   const half = size / 2;
   const step = size / segments;
@@ -46,12 +69,16 @@ export function buildChunkGeometry(
   // Alturas com um anel extra de 1 vértice em volta, para as normais das bordas
   const ext = grid + 2;
   const heights = new Float32Array(ext * ext);
+  let deformed=false;
+  const sampleX=new Float64Array(ext*ext),sampleZ=new Float64Array(ext*ext);
   for (let iz = 0; iz < ext; iz++) {
     const z = centerZ - half + (iz - 1) * step;
     for (let ix = 0; ix < ext; ix++) {
       const cornerRing = (ix === 0 || ix === ext - 1) && (iz === 0 || iz === ext - 1);
       if (cornerRing) continue; // cantos do anel não entram em nenhuma diferença central
-      heights[iz * ext + ix] = terrainGen.getHeight(centerX - half + (ix - 1) * step, z);
+      const p=terrainGen.getMeshPoint(centerX-half+(ix-1)*step,z),k=iz*ext+ix;
+      if(Math.abs(p.x-(centerX-half+(ix-1)*step))>1e-6||Math.abs(p.z-z)>1e-6)deformed=true;
+      sampleX[k]=p.x;sampleZ[k]=p.z;heights[k]=terrainGen.getHeight(p.x,p.z);
     }
   }
 
@@ -126,7 +153,7 @@ export function buildChunkGeometry(
       if (bm < 1e-8) continue;
       const gl = Math.sqrt(bm), gx = bx / gl, gz = bz / gl;
       const e = (iz + 1) * ext + (ix + 1);
-      const x0 = centerX - half + ix * step, z0 = centerZ - half + iz * step, h0 = heights[e];
+      const x0 = sampleX[e], z0 = sampleZ[e], h0 = heights[e];
       const rise = march(x0, z0, h0, gx, gz, 1) - h0;    // até a borda de cima
       const drop = h0 - march(x0, z0, h0, -gx, -gz, -1);  // até o pé
       // sem subida: é topo (se há descida grande) ou não está num paredão; idem para o pé
@@ -139,9 +166,9 @@ export function buildChunkGeometry(
     for (let ix = 0; ix < grid; ix++) {
       const i = iz * grid + ix;
       const e = (iz + 1) * ext + (ix + 1);
-      positions[i * 3] = -half + ix * step;
+      positions[i * 3] = sampleX[e]-centerX;
       positions[i * 3 + 1] = heights[e];
-      positions[i * 3 + 2] = -half + iz * step;
+      positions[i * 3 + 2] = sampleZ[e]-centerZ;
 
       const nx = (heights[e - 1] - heights[e + 1]) / (2 * step);
       const nz = (heights[e - ext] - heights[e + ext]) / (2 * step);
@@ -222,9 +249,10 @@ export function buildChunkGeometry(
   const hz = makeHorizonL0Sampler(terrainGen);
   const morph = new Float32Array(vertCount);
   for (let i = 0; i < grid * grid; i++) {
-    morph[i] = hz(centerX + positions[i * 3], centerZ + positions[i * 3 + 2]) - positions[i * 3 + 1];
+    // meio metro ACIMA da malha do horizonte: coplanar, as duas brigavam pela profundidade
+    morph[i] = hz(centerX + positions[i * 3], centerZ + positions[i * 3 + 2]) + 0.5 - positions[i * 3 + 1];
   }
   for (let k = 0; k < perimeter.length; k++) morph[skirtBase + k] = morph[perimeter[k]];
 
-  return { positions, normals, wall, morph, index, segments };
+  return { positions, normals, wall, morph, index, segments, deformed };
 }

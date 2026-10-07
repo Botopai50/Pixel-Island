@@ -158,9 +158,12 @@ export class MacroGeography {
     // 3. Planaltos, Vales e Colinas Interiores (Rolling Hills & High Plateaus)
     // Dá vida aos vastos interiores continentais (planícies de savana, desertos, bosques e taigas)
     const plateauNoise = this.noise.fbm2D(x * 0.00065 + 71.0, z * 0.00065 + 13.0, 3);
-    const rollingHills = this.noise.fbm2D(x * 0.0035, z * 0.0035, 4, 0.48, 2.0);
+    // Caráter da região (vários km): planícies calmas ou terras de colinas. Sem isso o mundo todo
+    // tinha o mesmo calombo aleatório em toda parte, sem formar nada
+    const hillRegion = smoothstep(-0.25, 0.35, this.noise.fbm2D(x * 0.00035 - 17.0, z * 0.00035 + 29.0, 2));
+    const rollingHills = this.noise.fbm2D(x * 0.0028, z * 0.0028, 3, 0.45, 2.0);
     const plateauContribution = smoothstep(0.08, 0.55, plateauNoise) * 24.0;
-    const hillsContribution = rollingHills * 12.0;
+    const hillsContribution = rollingHills * 12.0 * (0.3 + 0.7 * hillRegion);
 
     // Relevo combinado escalado proporcionalmente pela proximidade da terra firme
     const relief = (mountainHeight * valleyCut + plateauContribution + hillsContribution) * landFactor;

@@ -5,6 +5,7 @@ import { CONFIG } from '../../config.ts';
 import { MacroGeography } from '../geography/macroGeography.ts';
 import { VolcanoGenerator } from '../volcanology/volcanoGenerator.ts';
 import { GeothermalGenerator } from '../geothermal/geothermalGenerator.ts';
+import { deriveWaterfalls, sculptWaterfall, waterfallSurface, waterfallMeshPoint, waterfallCenter, waterfallWidth, localWaterfall, WaterfallFeature } from './waterfallFeatures.ts';
 
 export interface RiverPoint {
   x: number;
@@ -167,6 +168,52 @@ class MinHeap {
  *    em encosta dos dois lados até o terreno em volta.
  */
 export class Hydrology {
+  private waterfalls = new WeakMap<IslandHydrologyData,WaterfallFeature[]>();
+
+  public getWaterfalls(cellX=0,cellZ=0):WaterfallFeature[]{
+    const data=this.getIslandHydrology(cellX,cellZ);
+    if(!data.rivers.length||!this.heightSampler)return [];
+    let features=this.waterfalls.get(data);
+    if(!features){features=deriveWaterfalls(data,this.heightSampler);this.waterfalls.set(data,features);}
+    return features;
+  }
+
+  public sculptWaterfalls(x:number,z:number,height:number):number{
+    for(const f of this.nearbyWaterfalls(x,z))height=sculptWaterfall(f,x,z,height);
+    return height;
+  }
+
+  public getTerrainMeshPoint(x:number,z:number){
+    let p={x,z};for(const f of this.nearbyWaterfalls(x,z))p=waterfallMeshPoint(f,p.x,p.z);return p;
+  }
+
+  private nearbyWaterfalls(x:number,z:number):WaterfallFeature[]{
+    const G=CONFIG.ISLAND_GRID_SIZE,cx=Math.round(x/G),cz=Math.round(z/G);
+    const result=this.getWaterfalls(cx,cz);
+    // Features are less than ~340m long (river and lake upstream); query adjoining owners only near a cell border.
+    if(Math.abs(x-cx*G)>G*.5-340||Math.abs(z-cz*G)>G*.5-340){
+      const all=[...result];for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++)if(dx||dz)all.push(...this.getWaterfalls(cx+dx,cz+dz));return all;
+    }
+    return result;
+  }
+
+  public queryHydrology(x:number,z:number,currentElevation=16):HydrologyQueryResult{
+    const result=this.queryBaseHydrology(x,z,currentElevation);
+    for(const f of this.nearbyWaterfalls(x,z)){
+      const y=waterfallSurface(f,x,z);
+      if(y!==null){result.isWater=true;result.waterSurfaceY=y;result.moistureBonus=Math.max(result.moistureBonus,.25);result.wetness=1;}
+      else{
+        // margem do lago da nascente: areia/terra úmida clara (e mais umidade para a vegetação)
+        const q=localWaterfall(f,x,z),rel=q.z+f.length;
+        if(rel>-6&&rel<80){
+          const zc=Math.max(-f.length,Math.min(q.z,0)),half=waterfallWidth(f,zc)*.5,lateral=Math.abs(q.x-waterfallCenter(f,zc));
+          const ring=(1-smoothstep(half,half+4.5,lateral))*Math.exp(-(((rel-24)/26)**2));
+          if(ring>0){result.wetness=Math.max(result.wetness,ring);result.moistureBonus=Math.max(result.moistureBonus,.2*ring);}
+        }
+      }
+    }
+    return result;
+  }
   private seed: number;
   private noise: SimplexNoise;
   private macroGeo?: MacroGeography;
@@ -242,9 +289,7 @@ export class Hydrology {
 
   private nearVolcanoOrSpring(x: number, z: number, margin: number): boolean {
     if (this.volcanoGen) {
-      for (const v of this.volcanoGen.getVolcanoes()) {
-        if (dist2D(x, z, v.x, v.z) < v.baseRadius + margin) return true;
-      }
+      if (this.volcanoGen.volcanoesNear(x, z, margin).length > 0) return true;
     }
     if (this.geothermalGen) {
       for (const s of this.geothermalGen.getSprings()) {
@@ -615,6 +660,108 @@ export class Hydrology {
     }
   }
   private riverRecs: number[] = [];
+
+  /**
+   * Correnteza dos rios num ponto (para o mapa de fluxo da água): out = [vx, vz, presença 0-1].
+   * Os pontos de cada rio vão da cabeceira para a foz, então o trecho p1 -> p2 é rio abaixo.
+   * Rio fino corre mais rápido que rio largo; perto das margens a água anda mais devagar; na foz
+   * (últimos ~50m, entrando no mar ou na represa) a correnteza some aos poucos.
+   * Também, do rio dominante: out[3] = tempo de viagem da água desde a nascente (s) e out[4] =
+   * distância lateral ao eixo (m, com sinal) - as linhas de correnteza do shader andam nelas.
+   */
+  public riverFlowAt(x: number, z: number, out: number[]): void {
+    out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0; out[4] = 0;
+    // O rio de cima da cachoeira (água elevada, fora dos rios nativos): a mesma correnteza do jogo.
+    // Corre rio abaixo até o lábio; a fase (tempo de viagem) cresce no sentido da água, e a distância
+    // lateral ao eixo vira as faixas paralelas às margens.
+    for (const wf of this.nearbyWaterfalls(x, z)) {
+      const q = localWaterfall(wf, x, z);
+      if (q.z < -wf.length || q.z > 0) continue;
+      const c = waterfallCenter(wf, q.z), width = waterfallWidth(wf, q.z), half = width * 0.5;
+      const lateral = q.x - c, d = Math.abs(lateral);
+      if (d > half + 6.0) continue;
+      const speed = clamp(9.0 / Math.max(width, 6.0), 0.5, 1.6);
+      const bank = 0.45 + 0.55 * (1.0 - clamp(d / half, 0.0, 1.0) ** 2);
+      out[0] = wf.fx * speed * bank; out[1] = wf.fz * speed * bank;
+      out[2] = (1.0 - smoothstep(0.0, 6.0, d - half)) * smoothstep(40.0, 85.0, q.z + wf.length);   // sem correnteza no lago da nascente
+      out[3] = (q.z + wf.length) / 0.9;
+      out[4] = lateral;
+      return;
+    }
+    let domW = 0, domT = -1;
+    const baseSpacing = CONFIG.ISLAND_GRID_SIZE;
+    const cellX = Math.round(x / baseSpacing), cellZ = Math.round(z / baseSpacing);
+    let sx = 0, sz = 0, sw = 0, pres = 0;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const reach = DRAIN_HALF + VALLEY_REACH + 60.0;
+        if (Math.abs(x - (cellX + dx) * baseSpacing) > reach || Math.abs(z - (cellZ + dz) * baseSpacing) > reach) continue;
+        const data = this.getIslandHydrology(cellX + dx, cellZ + dz);
+        if (x < data.minX || x > data.maxX || z < data.minZ || z > data.maxZ) continue;
+        const list = data.segGrid.get(cellKey(Math.floor(x / SEG_CELL), Math.floor(z / SEG_CELL)));
+        if (!list) continue;
+        // trecho mais próximo de cada rio (pela borda)
+        const best = this.flowBest; best.length = 0;
+        let travel: Float32Array | null = null;
+        for (let k = 0; k < list.length; k += 2) {
+          const ri = list[k], i = list[k + 1];
+          const pts = data.rivers[ri].points;
+          const p1 = pts[i], p2 = pts[i + 1];
+          if (Math.max(p1.elevation, p2.elevation) - CONFIG.SEA_LEVEL > 0.05) continue; // cabeceira seca
+          const ax = p2.x - p1.x, az = p2.z - p1.z;
+          const len2 = ax * ax + az * az;
+          if (len2 === 0) continue;
+          const u = clamp(((x - p1.x) * ax + (z - p1.z) * az) / len2, 0.0, 1.0);
+          const d = dist2D(x, z, p1.x + u * ax, p1.z + u * az);
+          const width = lerp(p1.width, p2.width, u), half = width * 0.5;
+          if (d > half + 6.0) continue;
+          let slot = -1;
+          for (let s = 0; s < best.length; s += 8) if (best[s] === ri) { slot = s; break; }
+          if (slot >= 0 && d - half >= best[slot + 1]) continue;
+          if (slot < 0) { slot = best.length; best.length += 8; }
+          const len = Math.sqrt(len2);
+          // foz: some nos últimos 20 pontos (~50m)
+          const mouth = clamp((pts.length - 2 - i - u) / 20.0, 0.0, 1.0);
+          const speed = clamp(9.0 / width, 0.45, 1.6) * mouth;
+          const bank = 0.45 + 0.55 * (1.0 - clamp(d / half, 0.0, 1.0) ** 2);
+          best[slot] = ri; best[slot + 1] = d - half;
+          best[slot + 2] = ax / len * speed * bank; best[slot + 3] = az / len * speed * bank;
+          best[slot + 4] = (1.0 - smoothstep(0.0, 6.0, d - half)) * smoothstep(0.0, 0.3, mouth);
+          travel = this.riverTravel(data.rivers[ri]);
+          best[slot + 5] = travel[i] + u * (travel[i + 1] - travel[i]);
+          best[slot + 6] = (ax * (z - p1.z) - az * (x - p1.x)) / len >= 0 ? d : -d;
+        }
+        for (let s = 0; s < best.length; s += 8) {
+          const w = best[s + 4];
+          sx += best[s + 2] * w; sz += best[s + 3] * w; sw += w;
+          if (w > pres) pres = w;
+          // rio dominante: o de mais presença; empatados (rios que dividem o mesmo leito depois de
+          // se juntar), o que vem de mais longe (maior tempo de viagem): escolha estável ao longo do leito
+          if (w > domW + 0.05 || (w > domW - 0.05 && best[s + 5] > domT)) {
+            domW = Math.max(domW, w); domT = best[s + 5]; out[3] = best[s + 5]; out[4] = best[s + 6];
+          }
+        }
+      }
+    }
+    if (sw <= 0) return;
+    out[0] = sx / sw; out[1] = sz / sw; out[2] = pres;
+  }
+  private flowBest: number[] = [];
+  private travelCache = new WeakMap<RiverPath, Float32Array>();
+  /** Tempo de viagem da água (s) da nascente até cada ponto do rio (mesma velocidade de riverFlowAt, sem a foz). */
+  private riverTravel(r: RiverPath): Float32Array {
+    let t = this.travelCache.get(r);
+    if (t) return t;
+    const pts = r.points;
+    t = new Float32Array(pts.length);
+    for (let i = 1; i < pts.length; i++) {
+      const a = pts[i - 1], b = pts[i];
+      const v = clamp(9.0 / ((a.width + b.width) * 0.5), 0.45, 1.6);
+      t[i] = t[i - 1] + Math.hypot(b.x - a.x, b.z - a.z) / v;
+    }
+    this.travelCache.set(r, t);
+    return t;
+  }
 
   /**
    * Bacias fechadas: células abaixo do nível do mar que o oceano (a borda da janela) não alcança
@@ -1131,7 +1278,7 @@ export class Hydrology {
    * Efeito de rios e lagos num ponto: quanto o terreno desce (leito abaixo do mar e encosta do
    * vale), se é água, umidade e a faixa de areia úmida. currentElevation = altura do terreno seco.
    */
-  public queryHydrology(x: number, z: number, currentElevation: number = 16.0): HydrologyQueryResult {
+  private queryBaseHydrology(x: number, z: number, currentElevation: number = 16.0): HydrologyQueryResult {
     const baseSpacing = CONFIG.ISLAND_GRID_SIZE;
     const cellX = Math.round(x / baseSpacing);
     const cellZ = Math.round(z / baseSpacing);

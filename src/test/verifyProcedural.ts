@@ -169,49 +169,47 @@ for (let px = -600; px <= 600; px += 30) {
 }
 assert(maxPeakHeight > 60.0, `Picos montanhosos alpinos intactos na altitude de ${maxPeakHeight.toFixed(1)}m`);
 
-// Tundra / Gelo
-let icePt = terrain.getPoint(0, -750);
-for (let ix = -400; ix <= 400; ix += 25) {
-  for (let iz = -900; iz <= -650; iz += 25) {
+// Tundra / Gelo: procura terra firme no clima polar (as faixas de clima vão de norte = frio a
+// sul = quente; o gelo fica bem ao norte)
+const biomeMgr = terrain.getBiomeManager();
+let icePt = terrain.getPoint(0, 0);
+let iceFound = false;
+for (let iz = -6000; iz >= -24000 && !iceFound; iz -= 200) {
+  for (let ix = -4000; ix <= 4000 && !iceFound; ix += 200) {
+    if (biomeMgr.getBaseClimate(ix, iz).temperature > 0.12) continue;
     const p = terrain.getPoint(ix, iz);
-    if (p.height > 0.5 && (p.iceInfluence || 0) > 0.4) {
-      icePt = p;
-      break;
-    }
+    if (p.height > 0.5 && !p.isWater && (p.iceInfluence || 0) > 0.4) { icePt = p; iceFound = true; }
   }
-  if (icePt.height > 0.5 && (icePt.iceInfluence || 0) > 0.4) break;
 }
-assert(icePt.iceInfluence !== undefined && icePt.iceInfluence > 0.4, 'Zona ártica com alta influência de gelo ao nível do mar');
-assert(icePt.biome.type === BiomeType.FROZEN_TUNDRA, 'Bioma FROZEN_TUNDRA atribuído na costa norte congelada');
+assert(iceFound && icePt.iceInfluence !== undefined && icePt.iceInfluence > 0.4, 'Zona ártica com alta influência de gelo');
+assert(icePt.biome.type === BiomeType.FROZEN_TUNDRA, 'Bioma FROZEN_TUNDRA atribuído na zona polar');
 assert(icePt.biome.treeTypeDistribution.coastalPalm === 0.0, 'Bioma de gelo possui estritamente ZERO coqueiros (coastalPalm = 0.0)');
 
-// Manguezal (zonas estuarinas interiores e várzeas tropicais)
+// Manguezal: só nas costas tropicais úmidas (ao sul)
 let foundMangrove = false;
-for (let mx = -1800; mx <= 1800; mx += 30) {
-  for (let mz = -600; mz <= 2100; mz += 30) {
-    const p = terrain.getPoint(mx, mz);
-    if (p.biome.type === BiomeType.MANGROVE_SWAMP) {
-      foundMangrove = true;
-      break;
-    }
+for (let mz = 2000; mz <= 24000 && !foundMangrove; mz += 60) {
+  for (let mx = -3000; mx <= 3000 && !foundMangrove; mx += 60) {
+    const cl = biomeMgr.getBaseClimate(mx, mz);
+    if (cl.temperature < 0.66 || cl.moisture < 0.58) continue;
+    if (terrain.getPoint(mx, mz).biome.type === BiomeType.MANGROVE_SWAMP) foundMangrove = true;
   }
-  if (foundMangrove) break;
 }
-assert(foundMangrove, 'Bioma MANGROVE_SWAMP gerado com sucesso em zonas de várzea tropical');
+assert(foundMangrove, 'Bioma MANGROVE_SWAMP gerado nas costas tropicais úmidas');
 
-// Verificação Rigorosa das Praias e Orla Litorânea (Zonas Tropicais e Temperadas)
+// Orla: fora do gelo e do manguezal, toda faixa de praia é BiomeType.BEACH (coqueiros, zero cactos)
 let beachSampleCount = 0;
 let beachOnlyPalms = true;
-for (let bx = -600; bx <= 600; bx += 20) {
-  for (let bz = -440; bz <= 600; bz += 20) {
+for (let bx = -1500; bx <= 1500; bx += 20) {
+  for (let bz = -1500; bz <= 1500; bz += 20) {
+    const cl = biomeMgr.getBaseClimate(bx, bz);
+    const special = cl.temperature < 0.17 || (cl.temperature > 0.66 && cl.moisture > 0.58);
     const p = terrain.getPoint(bx, bz);
-    // Costa ártica (fronteira polar sinuosa) é tundra congelada por regra, não praia tropical
-    const isPolarCoast = terrain.getBiomeManager().polarLatitudeZ(bx, bz) <= -480.0;
-    if (!isPolarCoast && p.height > 0.05 && p.height <= CONFIG.BEACH_HEIGHT && p.slope < 0.50) {
+    if (!special && !p.isWater && p.height > 0.05 && p.height <= CONFIG.BEACH_HEIGHT && p.slope < 0.50
+      && !(p.volcanoInfluence && p.volcanoInfluence > 0.18) && !(p.geothermalInfluence && p.geothermalInfluence > 0.35)) {
       beachSampleCount++;
       if (p.biome.type !== BiomeType.BEACH || p.biome.treeTypeDistribution.cactus !== 0.0 || p.biome.treeTypeDistribution.coastalPalm !== 1.0) {
         beachOnlyPalms = false;
-        console.error(`Ponto fora do padrão de praia em (${bx}, ${bz}): h=${p.height}, biome=${p.biome.type}, cactus=${p.biome.treeTypeDistribution.cactus}`);
+        console.error(`Ponto fora do padrão de praia em (${bx}, ${bz}): h=${p.height}, biome=${p.biome.type}`);
       }
     }
   }
@@ -219,36 +217,27 @@ for (let bx = -600; bx <= 600; bx += 20) {
 assert(beachSampleCount > 10, `Amostras de praia avaliadas (${beachSampleCount} pontos)`);
 assert(beachOnlyPalms, 'Toda a orla da praia possui 100% BiomeType.BEACH com exclusividade de coqueiros e 0% cactos');
 
-// Verificação Rigorosa do Bioma de Gelo / Ártico (NENHUM coqueiro no gelo)
+// Ártico: nenhum coqueiro; tundra com pinheiro nevado e salgueiro ártico
 let arcticSampleCount = 0;
 let arcticZeroPalms = true;
-// A fronteira polar é sinuosa (até ±185m em torno de z=-520); amostra só o interior garantidamente polar.
-for (let ax = -600; ax <= 600; ax += 20) {
-  for (let az = -900; az <= -720; az += 20) {
+let hasSnowPineOrArcticWillow = false;
+for (let az = -6000; az >= -24000; az -= 300) {
+  for (let ax = -3000; ax <= 3000; ax += 300) {
+    if (biomeMgr.getBaseClimate(ax, az).temperature > 0.12) continue;
     const p = terrain.getPoint(ax, az);
-    if (p.height > 0.05 && !p.isWater) {
-      arcticSampleCount++;
-      if (p.biome.treeTypeDistribution.coastalPalm !== 0.0) {
-        arcticZeroPalms = false;
-        console.error(`Coqueiro indevido no bioma de gelo em (${ax}, ${az}): h=${p.height}, biome=${p.biome.type}`);
-      }
+    if (p.height <= 0.05 || p.isWater) continue;
+    arcticSampleCount++;
+    if (p.biome.treeTypeDistribution.coastalPalm !== 0.0) {
+      arcticZeroPalms = false;
+      console.error(`Coqueiro indevido no bioma de gelo em (${ax}, ${az}): h=${p.height}, biome=${p.biome.type}`);
+    }
+    if (p.biome.type === BiomeType.FROZEN_TUNDRA && (p.biome.treeTypeDistribution.snowPine || 0) > 0 && (p.biome.treeTypeDistribution.arcticWillow || 0) > 0) {
+      hasSnowPineOrArcticWillow = true;
     }
   }
 }
 assert(arcticSampleCount > 10, `Amostras árticas avaliadas (${arcticSampleCount} pontos)`);
 assert(arcticZeroPalms, 'O bioma ártico de gelo possui 0% de coqueiros em toda a sua extensão');
-
-let hasSnowPineOrArcticWillow = false;
-for (let ax = -600; ax <= 600; ax += 20) {
-  for (let az = -900; az <= -520; az += 20) {
-    const p = terrain.getPoint(ax, az);
-    if (p.biome.type === BiomeType.FROZEN_TUNDRA) {
-      if ((p.biome.treeTypeDistribution.snowPine || 0) > 0 && (p.biome.treeTypeDistribution.arcticWillow || 0) > 0) {
-        hasSnowPineOrArcticWillow = true;
-      }
-    }
-  }
-}
 assert(hasSnowPineOrArcticWillow, 'Tundra glacial possui pinheiro nevado (snowPine) e salgueiro ártico (arcticWillow)');
 
 // Verificação da Linha da Costa: do lado da terra, a orla fica no máximo ~1.5m acima do mar (sem falésias

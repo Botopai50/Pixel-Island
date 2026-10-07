@@ -396,9 +396,9 @@ export class ChunkManager {
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
     // O teto da qualidade (geração mais barata) não vale para os 9 chunks em volta do personagem:
     // são poucos e é onde os pixels grandes mais aparecem. Até o anel 4 o teto é no mínimo 4.
-    const cap = ring <= 1 ? Infinity : ring <= 4 ? Math.max(4, CONFIG.TEXTURE_DENSITY_CAP) : CONFIG.TEXTURE_DENSITY_CAP;
+    const cap = ring <= 2 ? Infinity : ring <= 4 ? Math.max(4, CONFIG.TEXTURE_DENSITY_CAP) : CONFIG.TEXTURE_DENSITY_CAP;
     const base = Math.min(this.forge.density, cap);
-    const factor = ring <= 1 ? 1.0 : ring <= 4 ? 0.5 : ring <= NEAR_RING ? 0.25 : 0.125;
+    const factor = ring <= 2 ? 1.0 : ring <= 4 ? 0.5 : ring <= NEAR_RING ? 0.25 : 0.125;
     const floor = ring <= 4 ? 3.0 : ring <= NEAR_RING ? 2.0 : 1.0;
     return Math.max(Math.min(base, floor), base * factor);
   }

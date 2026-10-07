@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { FOG_AMOUNT_GLSL, AERIAL } from '../../atmosphere/atmosphericFog.ts';
+import { FOG_AMOUNT_GLSL, AERIAL, SHADOW_GRID } from '../../atmosphere/atmosphericFog.ts';
+import { WAKE, WAKE_MAX } from '../../atmosphere/wake.ts';
+import { WAKE_SIM } from '../../atmosphere/wakeSim.ts';
 
 export interface WaterPreset {
   id?: string;
@@ -109,6 +111,8 @@ export const WATER_PRESETS: Record<string, WaterPreset> = {
 
 export const WaterShader = {
   uniforms: {
+    uCascadeImpacts: { value: Array.from({length:12},()=>new THREE.Vector4(0,0,0,0)) },
+    uCascadeDirections: { value: Array.from({length:12},()=>new THREE.Vector2(0,1)) },
     uTime: { value: 0 },
     uDeepColor: { value: new THREE.Color('#0284c7') },
     uShallowColor: { value: new THREE.Color('#00d2ff') },
@@ -142,8 +146,30 @@ export const WaterShader = {
     uBiomeMapOrigin: { value: new THREE.Vector2(0, 0) },
     uBiomeMapSpan: { value: 1.0 },
     uBiomeMapReady: { value: 0.0 },
+    // Correnteza dos rios (ver RiverFlowMap): RG = velocidade, B = presença de rio
+    uFlowMap: { value: null as THREE.Texture | null },
+    uFlowMapOrigin: { value: new THREE.Vector2(0, 0) },
+    uFlowMapSpan: { value: 1.0 },
+    uFlowMapReady: { value: 0.0 },
+    uFlowMaxSpeed: { value: 2.0 },
+    uFlowLines: { value: null as THREE.Texture | null },
+    uFlowPeriod: { value: 24.0 },
+    // reflexo em espaço de tela das fontes termais (a imagem da cena opaca e as matrizes da câmera)
+    tSceneColor: { value: null as THREE.Texture | null },
+    uSSRProj: { value: new THREE.Matrix4() },
+    uSSRInvProj: { value: new THREE.Matrix4() },
+    uSSRExposure: { value: 1.0 },
+    // claridade do dia (0 = noite, 1 = dia), do sol de verdade: a água não "acende" sozinha de noite
+    uNightDim: { value: 1.0 },
+    // 1 = água de fonte termal (geothermalManager.ts): mesma água, com a paleta e os detalhes de poça
+    uThermal: { value: 0.0 },
+    // Sombras do sol na água: mapas das 3 faixas de sombra (main.ts; as matrizes vêm de SHADOW_GRID)
+    tWShadow0: { value: null as THREE.Texture | null },
+    tWShadow1: { value: null as THREE.Texture | null },
+    tWShadow2: { value: null as THREE.Texture | null },
+    uWShadowOn: { value: 0.0 },
     // Ripple array: [x, z, radius, strength]
-    uRipples: { value: new Float32Array(8 * 4) },
+    uRipples: { value: new Float32Array(32 * 4) },
     uActiveRipples: { value: 0 },
     // Light direction
     uLightDir: { value: new THREE.Vector3(0.5, 0.8, 0.4).normalize() },
@@ -154,14 +180,18 @@ export const WaterShader = {
     uniform float uWaveHeight;
     uniform float uWaveFrequency;
     uniform float uWaveSpeed;
-    uniform vec4 uRipples[8];
+    uniform vec4 uRipples[32];
     uniform int uActiveRipples;
+    uniform float uThermal;
     uniform mat4 uReflectTextureMatrix;
     uniform sampler2D uBiomeMap;
     uniform vec2 uBiomeMapOrigin;
     uniform float uBiomeMapSpan;
     uniform float uBiomeMapReady;
 
+    // centro (x, z) e raio das poças termais (atributo da malha da poça; na água do mundo fica 0)
+    attribute vec3 aPool;
+    varying vec3 vPool;
     varying vec3 vWorldPosition;
     varying vec3 vNormal;
     varying vec2 vUv;
@@ -171,6 +201,7 @@ export const WaterShader = {
 
     void main() {
       vUv = uv;
+      vPool = aPool;
       vec3 pos = position;
 
       // When the water mesh has rotation.x = -Math.PI / 2:
@@ -191,7 +222,7 @@ export const WaterShader = {
       // Interactive ripples with compact displacement
       float rippleDisp = 0.0;
       vec2 rippleGrad = vec2(0.0);
-      for (int i = 0; i < 8; i++) {
+      for (int i = 0; i < 32; i++) {
         if (i >= uActiveRipples) break;
         vec4 rip = uRipples[i];
         vec2 ripPos = rip.xy;
@@ -212,7 +243,7 @@ export const WaterShader = {
       // Deslocamento físico vertical controlado: atenua suavemente para 0 antes da transição aos anéis externos
       float distFromCenter = length(pos.xy);
       float waveDispFade = 1.0 - smoothstep(400.0, 500.0, distFromCenter);
-      pos.z += (totalWave * min(uWaveHeight, 0.065) + rippleDisp) * waveDispFade;
+      pos.z += (totalWave * min(uWaveHeight, 0.1) + rippleDisp) * waveDispFade * (1.0 - 0.5 * uThermal);
       
       // Passa a altura de onda real para cálculo dos contrastes cel-shaded e agrupamento de espuma nas cristas
       vWaveHeight = totalWave * uWaveHeight;
@@ -232,8 +263,10 @@ export const WaterShader = {
     }
   `,
 
-  fragmentShader: /* glsl */ `
+  fragmentShader: THREE.ShaderChunk.packing + /* glsl */ `
     uniform float uTime;
+    uniform vec4 uCascadeImpacts[12];
+    uniform vec2 uCascadeDirections[12];
     uniform vec3 uDeepColor;
     uniform vec3 uShallowColor;
     uniform vec3 uFoamColor;
@@ -261,7 +294,33 @@ export const WaterShader = {
     uniform vec2 uBiomeMapOrigin;
     uniform float uBiomeMapSpan;
     uniform float uBiomeMapReady;
-    uniform vec4 uRipples[8];
+    uniform sampler2D uFlowMap;
+    uniform vec2 uFlowMapOrigin;
+    uniform float uFlowMapSpan;
+    uniform float uFlowMapReady;
+    uniform float uFlowMaxSpeed;
+    uniform sampler2D uFlowLines;
+    uniform float uFlowPeriod;
+    uniform float uThermal;
+    uniform float uNightDim;
+    uniform vec4 uWake[${WAKE_MAX}];
+    uniform vec3 uWakeArea;
+    uniform float uWakeSpeed;
+    uniform float uWakeSlab;
+    uniform vec4 uWakeIdle;
+    uniform sampler2D uWakeTex;
+    uniform vec3 uWakeGrid;
+    uniform float uWakeOn;
+    uniform sampler2D tSceneColor;
+    uniform mat4 uSSRProj;
+    uniform mat4 uSSRInvProj;
+    uniform float uSSRExposure;
+    uniform sampler2D tWShadow0;
+    uniform sampler2D tWShadow1;
+    uniform sampler2D tWShadow2;
+    uniform float uWShadowOn;
+    uniform mat4 uSM[3];
+    uniform vec4 uRipples[32];
     uniform int uActiveRipples;
 
     uniform vec3 uFogColor;
@@ -269,6 +328,7 @@ export const WaterShader = {
     uniform float uFogFar;
     uniform float uFogOn;
     ${FOG_AMOUNT_GLSL}
+    varying vec3 vPool;
     varying vec3 vWorldPosition;
     varying vec3 vNormal;
     varying vec2 vUv;
@@ -302,6 +362,139 @@ export const WaterShader = {
           vec2 r = g + o - f;
           float d = dot(r, r);
           m = min(m, d);
+        }
+      }
+      return sqrt(m);
+    }
+
+    // Linhas de correnteza: o rio é dividido em faixas paralelas às margens (distância lateral ao
+    // eixo, do mapa de linhas) e em algumas faixas corre um risco de espuma que desce o rio sem
+    // parar, seguindo as curvas. A posição ao longo do rio é o tempo de viagem da água (fase
+    // cos/sin com período uFlowPeriod), então o risco anda exatamente na velocidade da água ali.
+    // Devolve 0 = nada, 1 = cauda (mais apagada), 2 = cabeça do risco.
+    // phi = fase do tempo de viagem (0-1 por período), across = distância lateral (m)
+    float riverLines(float phi, float across, float t) {
+      // faixas de 0.7m; o risco é um fio fino (~1 pixel) no meio da faixa, não a faixa inteira
+      const float LANE = 0.7;
+      float lane = floor(across / LANE);
+      if (abs(fract(across / LANE) - 0.5) * LANE > 0.065) return 0.0;
+      float h = fract(sin(lane * 91.7 + 3.1) * 43758.5453);
+      if (h > 0.35) return 0.0; // só algumas faixas têm risco
+      float N = 1.0 + floor(fract(h * 13.7) * 2.0); // riscos por período (inteiro: a fase fecha a volta)
+      float k = 0.85 + fract(h * 7.3) * 0.3;       // cada faixa num ritmo um pouco diferente
+      float x = fract(N * (phi - k * t / uFlowPeriod) + h * 5.0);
+      float len = 0.18 + fract(h * 3.9) * 0.12;
+      if (x > len) return 0.0;
+      return x > len * 0.55 ? 2.0 : 1.0; // x cresce rio abaixo: a ponta da frente é a cabeça
+    }
+
+    // ---- Reflexo em espaço de tela (fontes termais). O reflexo planar da água do mundo é do nível do
+    // mar e não serve numa poça no alto do vale; aqui o raio refletido anda pela própria imagem da
+    // cena (como o das poças de chuva, puddleSSR.ts): cada ponto do raio é projetado na tela e para
+    // onde passa atrás do que o depth mostra; a cor dali (copa, rocha, fumaça, céu) é o reflexo.
+    vec3 ssrViewPos(vec2 uv, float d) {
+      vec4 v = uSSRInvProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+      return v.xyz / v.w;
+    }
+    vec3 ssrBlur(vec2 uv) {
+      vec2 o = vec2(0.0022, 0.0016);
+      return (texture2D(tSceneColor, uv).rgb * 2.0
+        + texture2D(tSceneColor, uv + vec2(o.x, 0.0)).rgb + texture2D(tSceneColor, uv - vec2(o.x, 0.0)).rgb
+        + texture2D(tSceneColor, uv + vec2(0.0, o.y)).rgb + texture2D(tSceneColor, uv - vec2(0.0, o.y)).rgb
+        + texture2D(tSceneColor, uv + o).rgb + texture2D(tSceneColor, uv - o).rgb) / 8.0;
+    }
+    // cor da cena (linear) -> cor da tela (a água é desenhada já em cores de tela): o mesmo ACES + sRGB do blit
+    vec3 ssrToDisplay(vec3 c) {
+      const mat3 ACESIn = mat3(vec3(0.59719, 0.07600, 0.02840), vec3(0.35458, 0.90834, 0.13383), vec3(0.04823, 0.01566, 0.83777));
+      const mat3 ACESOut = mat3(vec3(1.60475, -0.10208, -0.00327), vec3(-0.53108, 1.10813, -0.07276), vec3(-0.07367, -0.00605, 1.07602));
+      c *= uSSRExposure / 0.6;
+      c = ACESIn * c;
+      vec3 a = c * (c + 0.0245786) - 0.000090537;
+      vec3 b = c * (0.983729 * c + 0.4329510) + 0.238081;
+      c = clamp(ACESOut * (a / b), 0.0, 1.0);
+      return mix(pow(c, vec3(0.41666)) * 1.055 - vec3(0.055), c * 12.92, vec3(lessThanEqual(c, vec3(0.0031308))));
+    }
+    vec3 ssrThermal(vec3 Pw, vec3 N, vec3 V) {
+      vec3 R = reflect(-V, N);
+      R.y = max(R.y, 0.03);
+      vec3 hitCol = uFogColor;                   // raio que sai da tela: a cor do ar
+      float t = 0.35;
+      vec2 lastUv = vec2(-1.0);
+      bool hit = false;
+      // 56 passos crescentes: o raio alcança ~100m (a margem da poça e as árvores do outro lado)
+      for (int i = 0; i < 56; i++) {
+        vec3 Q = Pw + R * t;
+        vec4 qv = viewMatrix * vec4(Q, 1.0);
+        vec4 c = uSSRProj * qv;
+        if (c.w <= 0.0) break;
+        vec2 uv = c.xy / c.w * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+        lastUv = uv;
+        float sd = texture2D(tDepth, uv).x;
+        if (sd < 0.99999) {
+          float sceneDist = -ssrViewPos(uv, sd).z;
+          float rayDist = -qv.z;
+          if (sceneDist < rayDist && rayDist - sceneDist < max(0.6, t * 0.35)) {
+            hitCol = ssrToDisplay(ssrBlur(uv));
+            hit = true;
+            break;
+          }
+        }
+        t *= 1.1;
+      }
+      // sem bater em nada: o céu daquele ponto da tela
+      if (!hit && lastUv.x >= 0.0 && texture2D(tDepth, lastUv).x >= 0.99999) hitCol = ssrToDisplay(ssrBlur(lastUv));
+      return hitCol;
+    }
+
+    // Sombra do sol na água (1 = na sombra): faixa de sombra mais detalhada que cobre o ponto
+    float waterShadowAt(vec3 q) {
+      if (uWShadowOn < 0.5) return 0.0;
+      vec4 c0 = uSM[0] * vec4(q, 1.0);
+      if (c0.x > 0.01 && c0.x < 0.99 && c0.y > 0.01 && c0.y < 0.99 && c0.z < 1.0)
+        return 1.0 - step(c0.z - 0.0015, unpackRGBAToDepth(texture2D(tWShadow0, c0.xy)));
+      vec4 c1 = uSM[1] * vec4(q, 1.0);
+      if (c1.x > 0.01 && c1.x < 0.99 && c1.y > 0.01 && c1.y < 0.99 && c1.z < 1.0)
+        return 1.0 - step(c1.z - 0.003, unpackRGBAToDepth(texture2D(tWShadow1, c1.xy)));
+      vec4 c2 = uSM[2] * vec4(q, 1.0);
+      if (c2.x > 0.005 && c2.x < 0.995 && c2.y > 0.005 && c2.y < 0.995 && c2.z < 1.0)
+        return 1.0 - step(c2.z - 0.005, unpackRGBAToDepth(texture2D(tWShadow2, c2.xy)));
+      return 0.0;
+    }
+
+    // Ondas na praia: uma frente de espuma sobe a orla (avanço rápido e freando), deixa uma lâmina
+    // clara e recua devagar, apagando. depthQ = profundidade em degraus (pixel); a fase muda ao
+    // longo da costa (as frentes chegam em diagonal, não todas juntas). 1 = espuma, 0.4 = lâmina.
+    float beachWave(float depthQ, float t, float period, float ph) {
+      float p = fract(t / period + ph);
+      const float ADV = 0.45;
+      float front, fade;
+      if (p < ADV) {
+        float u = p / ADV;
+        front = mix(1.7, 0.05, 1.0 - (1.0 - u) * (1.0 - u));
+        fade = smoothstep(0.0, 0.15, u);
+      } else {
+        float u = (p - ADV) / (1.0 - ADV);
+        front = mix(0.05, 0.4, u * u);
+        fade = 1.0 - smoothstep(0.25, 1.0, u);
+      }
+      float w = 0.09;
+      float line = step(front - w, depthQ) * step(depthQ, front);
+      float wash = step(front - 0.55, depthQ) * step(depthQ, front - w) * step(0.2, front - 0.05);
+      return max(line, wash * 0.4) * fade;
+    }
+
+    // Voronoi que se repete a cada "period" células em x (a fase do rio dá a volta): sem emenda
+    float voronoiP(vec2 x, float period) {
+      vec2 n = floor(x);
+      vec2 f = fract(x);
+      float m = 8.0;
+      for (int j = -1; j <= 1; j++) {
+        for (int i = -1; i <= 1; i++) {
+          vec2 g = vec2(float(i), float(j));
+          vec2 o = hash2(vec2(mod(n.x + g.x, period), n.y + g.y));
+          vec2 r = g + o - f;
+          m = min(m, dot(r, r));
         }
       }
       return sqrt(m);
@@ -375,6 +568,43 @@ export const WaterShader = {
       float v2 = voronoi(sampleUv2);
       float vCombined = floor((v1 * 0.55 + v2 * 0.45) * 8.0) / 8.0; // 8 discrete quantized levels
 
+      // Correnteza dos rios (mapa de fluxo): linhas de espuma descendo o rio.
+      vec2 flowUv = (foamGrid - uFlowMapOrigin) / uFlowMapSpan;
+      vec2 flowEdge = min(flowUv, 1.0 - flowUv);
+      vec4 flowS = texture2D(uFlowMap, clamp(flowUv, 0.0, 1.0));
+      float river = uFlowMapReady * flowS.b * smoothstep(0.0, 0.03, min(flowEdge.x, flowEdge.y));
+      vec2 riverVel = (flowS.rg * 2.0 - 1.0) * uFlowMaxSpeed;
+      float riverSpd = length(riverVel);
+      float streakMask = 0.0;
+      float riverFoam = 0.0;
+      if (river > 0.01) {
+        // coordenadas do rio: fase do tempo de viagem da água (ao longo) e distância ao eixo
+        vec4 flowL = texture2D(uFlowLines, clamp(flowUv, 0.0, 1.0));
+        vec2 flowCS = flowL.rg * 2.0 - 1.0;
+        // fases diferentes misturadas (encontro de rios): leitura sem sentido ali
+        float flowOk = smoothstep(0.15, 0.35, dot(flowCS, flowCS));
+        float phi = atan(flowCS.y, flowCS.x) / 6.2831853;
+        float across = (flowL.b * 2.0 - 1.0) * 16.0;
+        // a água "anda" FLOW_VIS vezes mais rápido que a velocidade calculada (na escala do
+        // jogo, a velocidade real parecia parada)
+        const float FLOW_VIS = 2.4;
+        float flowT = animTime * FLOW_VIS / uFlowPeriod;
+        // espuma da água descendo o rio: o mesmo desenho celular, em coordenadas do rio (16
+        // células por período ao longo, ~1m), que correm rio abaixo sem parar nem voltar
+        float rw = river * flowOk;
+        riverFoam = rw;
+        if (rw > 0.01) {
+          float r1 = voronoiP(vec2(fract(phi - flowT) * 16.0, across * 0.95) + warp1 * 0.3, 16.0);
+          float r2 = voronoiP(vec2(fract(phi - flowT * 0.8 + 0.37) * 29.0, across * 1.7 + 2.1), 29.0);
+          v1 = mix(v1, r1, rw);
+          v2 = mix(v2, r2, rw);
+          vCombined = floor((v1 * 0.55 + v2 * 0.45) * 8.0) / 8.0;
+        }
+        // linhas de correnteza descendo o rio (somem onde a água quase não anda)
+        float lineVis = smoothstep(0.1, 0.4, riverSpd) * smoothstep(0.4, 0.9, river) * step(0.5, flowOk);
+        if (lineVis > 0.01) streakMask = riverLines(phi, across, animTime * FLOW_VIS) * lineVis;
+      }
+
       // 3. Avaliação analítica e exata das ondas em worldGrid:
       // Elimina 100% das arestas triangulares da malha 3D e substitui diferenças finitas por derivadas exatas
       float waveT = animTime * uWaveSpeed;
@@ -397,7 +627,7 @@ export const WaterShader = {
       // Derivadas analíticas exatas da superfície da onda
       float dhdx = (c1 * 0.4 - s2 * 0.36 + c3 * 0.4) * waveFreq * uWaveHeight;
       float dhdz = (c1 * 0.3 + s2 * 0.27 + c3 * 0.4) * waveFreq * uWaveHeight;
-      vec3 fragNormal = normalize(vec3(-dhdx * 1.5, 1.0, -dhdz * 1.5));
+      vec3 fragNormal = normalize(vec3(-dhdx * 2.4, 1.0, -dhdz * 2.4));
 
       // Sistema de espuma estilizada multicamadas (Fiel à referência media_1789951390077.png):
       // - Transição suave com transparência progressiva (sem cortes duros/secos)
@@ -405,7 +635,10 @@ export const WaterShader = {
       // - Corpo principal da espuma suave e translúcido (ciano/azul-céu pastel suave)
       float depthFadeStart = (uIsOrthographic > 0.5) ? 0.08 : 0.12;
       float depthFadeEnd = (uIsOrthographic > 0.5) ? 1.60 : 2.50;
-      float coastalGrad = 1.0 - smoothstep(depthFadeStart, depthFadeEnd, verticalDepth);
+      // alcance da espuma: no mar (e lagos) ela vai mais longe da praia, água mais funda adentro;
+      // nos rios fica mais junto das margens (lá quem mostra o movimento são as linhas de correnteza)
+      float foamDepth = verticalDepth * mix(0.55, 0.95, riverFoam);
+      float coastalGrad = 1.0 - smoothstep(depthFadeStart, depthFadeEnd, foamDepth);
 
       // 1. Corpo de espuma suave: cobre uma rede orgânica celular e dissipa com transparência suave
       float baseSoftThresh = (uIsOrthographic > 0.5) ? 0.52 : 0.44;
@@ -482,6 +715,12 @@ export const WaterShader = {
       vec3 activeShallow = mix(uShallowColor, biomeShallow, uBiomeColorEnabled);
       vec3 activeDeep    = mix(uDeepColor, biomeDeep, uBiomeColorEnabled);
       vec3 activeAbyss   = mix(uDeepColor * 0.35, biomeAbyss, uBiomeColorEnabled);
+      // Fonte termal: turquesa leitoso (minerais dissolvidos), mais claro e saturado que a água comum
+      if (uThermal > 0.5) {
+        activeShallow = vec3(0.56, 0.94, 0.86);
+        activeDeep    = vec3(0.10, 0.74, 0.74);
+        activeAbyss   = vec3(0.04, 0.52, 0.60);
+      }
 
       // 4. Estratificação e Escurecimento Progressivo em Partes Mais Fundas (Lagos & Mares)
       // Águas rasas na beira (0m a 1.5m): luz solar atravessa com translucidez cristalina
@@ -504,7 +743,7 @@ export const WaterShader = {
       depthColor *= depthAbsorption;
 
       // Modulação de ondas estilizadas cel-shaded
-      float waveBand = floor((0.60 + fragWaveH * 1.1 + shallowRamp * 0.40) * 6.0) / 6.0;
+      float waveBand = floor((0.60 + fragWaveH * 1.9 + shallowRamp * 0.40) * 6.0) / 6.0;
       waveBand = clamp(waveBand, 0.0, 1.0);
       vec3 waterBase = depthColor * (0.84 + waveBand * 0.18 + diffuse * 0.18);
 
@@ -516,7 +755,7 @@ export const WaterShader = {
       vec2 reflectUv = (vReflectCoord.xy / max(vReflectCoord.w, 0.0001));
       
       // Retro pixel-art wave displacement (normal contínua + deslocamento celular estável para erradicar flicadas ao caminhar)
-      vec2 waveWobble = fragNormal.xz * 0.024 + vec2(
+      vec2 waveWobble = fragNormal.xz * 0.04 + vec2(
         (floor(v1 * 6.0) / 6.0 - 0.5) * 0.014,
         (floor(v2 * 6.0) / 6.0 - 0.5) * 0.014
       );
@@ -528,15 +767,27 @@ export const WaterShader = {
       // e elegante aumento rasante para o horizonte
       float fresnel = pow(1.0 - max(dot(viewDir, vec3(0.0, 1.0, 0.0)), 0.0), 1.8);
       float reflStrength = clamp(0.08 + fresnel * 0.32, 0.0, 0.40);
+      // o reflexo planar é do nível do mar: numa poça no alto do vale ele sairia no lugar errado
+      reflStrength *= 1.0 - uThermal * 0.9;
       
       // Blend planar reflection into water
       finalColor = mix(finalColor, sampledReflectColor, reflStrength);
+      // fonte termal: reflexo em espaço de tela, difuso como o do mar, lido no centro do pixel da água
+      if (uThermal > 0.5 && uIsOrthographic < 0.5) {
+        vec3 ssrP = vec3(worldGrid.x + 0.5 / pixelDensity, vWorldPosition.y, worldGrid.y + 0.5 / pixelDensity);
+        // a ondulação entorta o reflexo só um pouco (com a normal inteira ele virava um borrão)
+        vec3 ssrN = normalize(vec3(fragNormal.x * 0.35, 1.0, fragNormal.z * 0.35));
+        vec3 ssrC = ssrThermal(ssrP, ssrN, viewDir);
+        finalColor = mix(finalColor, ssrC * vec3(0.82, 1.0, 1.0), clamp(0.26 + fresnel * 0.5, 0.0, 0.72));
+      }
 
       // Sun Specular Highlight: Secondary circular highlight + White faceted specular sparkles concentrated at core
       // 1. Secondary specular highlight band (smoothstep suave cel-shaded sem corte circular rígido)
       float baseNdotH = max(dot(fragNormal, halfDir), 0.0);
       float baseSpec = pow(baseNdotH, 56.0);
-      float secondaryCircle = smoothstep(0.55, 0.80, baseSpec);
+      // sombra na grade de pixels da água (como a do chão): sem brilho do sol na sombra
+      float waterShadow = waterShadowAt(vec3(worldGrid.x + 0.5 / pixelDensity, vWorldPosition.y, worldGrid.y + 0.5 / pixelDensity));
+      float secondaryCircle = smoothstep(0.55, 0.80, baseSpec) * (1.0 - waterShadow);
       if (secondaryCircle > 0.01) {
         finalColor = mix(finalColor, vec3(0.82, 0.94, 1.0), 0.45 * secondaryCircle);
       }
@@ -546,7 +797,7 @@ export const WaterShader = {
       vec3 facetedNormal = normalize(fragNormal + vec3((floor(v1 * 4.0)/4.0 - 0.5) * 0.45, 0.0, (floor(v2 * 4.0)/4.0 - 0.5) * 0.45));
       float facetNdotH = max(dot(facetedNormal, halfDir), 0.0);
       float facetSpec = pow(facetNdotH, 200.0);
-      float whiteFacetGlint = coreZone * step(0.86, facetSpec) * step(0.52, v2);
+      float whiteFacetGlint = coreZone * step(0.86, facetSpec) * step(0.52, v2) * (1.0 - waterShadow);
 
       if (whiteFacetGlint > 0.5) {
         finalColor = mix(finalColor, vec3(0.95, 0.98, 1.0), 0.90);
@@ -559,11 +810,11 @@ export const WaterShader = {
       // Opacidade da espuma suave (translucidez cel-shaded: a água azul transluz por baixo)
       // Na orla é ~0.55, caindo suavemente para 0.0 na água mais profunda
       // Alcance próprio (até ~2.2m): com 4m ela cobria os lagos inteiros e a água parecia rasa.
-      float softGrad = 1.0 - smoothstep(0.10, 2.2, verticalDepth);
-      float softAlpha = pow(softGrad, 0.85) * 0.50;
+      float softGrad = 1.0 - smoothstep(0.10, 2.2, foamDepth);
+      float softAlpha = pow(softGrad, 0.85) * 0.50 * (1.0 - 0.8 * uThermal);
 
       // Opacidade dos realces brancos (a parte mais clara): concentra-se na orla e some primeiro
-      float whiteAlpha = pow(coastalGrad, 1.8) * 0.88;
+      float whiteAlpha = pow(coastalGrad, 1.8) * 0.88 * (1.0 - 0.5 * uThermal);
 
       // Cores calibradas com base na paleta exata da referência (media_1789951390077.png):
       // Corpo suave: branco-azulado. O pastel anterior (#9fd0f5) tinha quase a mesma cor da água
@@ -582,8 +833,14 @@ export const WaterShader = {
         finalColor = mix(finalColor, whiteFoamColor, whiteAlpha);
       }
 
+      // Linhas de correnteza (nos rios): cabeça mais clara, cauda mais apagada
+      if (streakMask > 0.01) {
+        float lineA = streakMask > 1.0 ? 0.42 * (streakMask * 0.5) : 0.2 * streakMask;
+        finalColor = mix(finalColor, vec3(0.93, 0.97, 1.0), lineA);
+      }
+
       // 5. Ondulações interativas (Ripples) com anéis concêntricos bicolores
-      for (int i = 0; i < 8; i++) {
+      for (int i = 0; i < 32; i++) {
         if (i >= uActiveRipples) break;
         vec4 rip = uRipples[i];
         vec2 ripPos = rip.xy;
@@ -607,13 +864,142 @@ export const WaterShader = {
         }
       }
 
+      // Fonte termal: anéis de convecção subindo do centro para a borda, bolhas e a crosta mineral
+      // clareando a margem
+      if (uThermal > 0.5) {
+        // distância ao centro da poça (0 = centro, 1 = margem), medida no pixel da grade da água: os
+        // anéis e a borda saem em degraus de pixel, não em curvas lisas
+        float td = length(worldGrid + 0.5 / pixelDensity - vPool.xy) / max(vPool.z, 0.001);
+        float tring = fract(td * 2.4 - animTime * 0.2);
+        if (tring < 0.06 && td > 0.12 && td < 0.9) finalColor = mix(finalColor, vec3(0.62, 0.97, 0.90), 0.5);
+        // Bolhas: uma por célula de ~1.1m (só em parte delas, mais perto do centro), cada uma no seu
+        // ritmo: nasce pequena, cresce com borda clara e um brilho no canto e estoura num anel que
+        // abre e some. Tudo na grade de pixels da água (círculos em degraus).
+        {
+          vec2 bc = worldGrid * 0.6;
+          vec2 bcid = floor(bc);
+          vec2 hA = hash2(bcid);
+          vec2 hB = hash2(bcid + 17.3);
+          if (hA.x < mix(0.55, 0.22, td) && td < 0.9) {
+            float per = 2.4 + hB.x * 2.6;
+            float bu = fract(animTime / per + hB.y);
+            vec2 ctr = vec2(0.36 + 0.28 * hA.y, 0.36 + 0.28 * hB.x);
+            vec2 bd = fract(bc) - ctr;
+            float bdist = length(bd) / 0.6;
+            const float BR = 0.40;
+            vec3 bcol = vec3(1.0);
+            float ba = 0.0;
+            if (bu < 0.72) {
+              float br = mix(0.06, BR, smoothstep(0.0, 0.72, bu));
+              if (bdist < br) {
+                ba = 0.28; bcol = vec3(0.70, 0.98, 0.92);                       // miolo: água mais clara
+                if (bdist > br - 0.10) { ba = 0.92; bcol = vec3(0.92, 1.0, 0.97); } // borda clara
+                if (br > 0.2 && length(bd - vec2(-0.30, -0.30) * br * 0.6) / 0.6 < 0.07) { ba = 1.0; bcol = vec3(1.0); } // brilho
+              }
+            } else if (bu < 0.86) {
+              float k = (bu - 0.72) / 0.14;
+              if (abs(bdist - (BR + k * 0.16)) < 0.05) { ba = 0.85 * (1.0 - k); bcol = vec3(0.95, 1.0, 0.98); } // anel do estouro
+            }
+            finalColor = mix(finalColor, bcol, ba);
+          }
+        }
+        finalColor = mix(finalColor, vec3(0.93, 0.95, 0.86), smoothstep(0.90, 1.0, td) * 0.6);
+      }
+
       // 6. Espuma de contato na borda da praia: linha de contato branca pura (#ffffff) colada na areia com transição anti-aliased estável
       if (isContactFoam > 0.01) {
         finalColor = mix(finalColor, vec3(1.0, 1.0, 1.0), isContactFoam);
       }
 
+      // Ondas na praia (só mar e lagos; no rio a correnteza é quem mexe)
+      {
+        float dq = floor(verticalDepth / 0.07) * 0.07;
+        if (dq < 2.2) {
+          float cph = 0.35 * (sin(worldGrid.x * 0.09 + worldGrid.y * 0.04) * 0.5 + 0.5) + 0.3 * (sin(worldGrid.y * 0.11 - worldGrid.x * 0.07) * 0.5 + 0.5);
+          float bw = max(beachWave(dq, animTime, 6.0, cph), beachWave(dq, animTime, 8.5, cph * 0.7 + 0.5));
+          bw *= 1.0 - smoothstep(0.02, 0.3, river);
+          if (bw > 0.0) finalColor = mix(finalColor, vec3(0.95, 0.98, 1.0), bw > 0.7 ? 0.85 : 0.3);
+        }
+      }
+
+      // Esteira de quem anda na água: ondas de verdade (wakeSim.ts, simulação da superfície em volta
+      // do personagem, que se propagam, se cruzam e se curvam sozinhas quando ele muda de direção),
+      // desenhadas no estilo das ondas em volta do personagem parado: cada CRISTA vira uma linha fina
+      // branca com borda ciano, translúcida, esmaecendo com a força da onda. A distância até a crista
+      // é a diferença de altura dividida pela inclinação (a linha tem a mesma espessura em qualquer lugar).
+      if (uWakeOn > 0.5) {
+        vec2 wuv = (worldGrid + 0.5 / pixelDensity - uWakeGrid.xy) / uWakeGrid.z;
+        if (wuv.x > 0.01 && wuv.y > 0.01 && wuv.x < 0.99 && wuv.y < 0.99) {
+          vec2 whp = texture2D(uWakeTex, wuv).rg;
+          // força da onda (envoltória: altura e velocidade com que ela muda)
+          float wv = (whp.r - whp.g) * 2.2;
+          float wamp = sqrt(whp.r * whp.r + wv * wv);
+          float wstr = smoothstep(0.17, 0.34, wamp);
+          // crista = onde a altura está no topo da própria onda (altura ~ força): UMA linha por crista
+          // (a linha de nível anterior cortava cada crista dos dois lados e dobrava a linha)
+          float wcrest = whp.r / max(wamp, 1e-3);
+          // dentro do V (água agitada por onde a onda passou): um azul mais claro, como no Wakes
+          float wfill = smoothstep(0.05, 0.2, wamp);
+          finalColor = mix(finalColor, vec3(0.52, 0.76, 0.9), 0.28 * wfill);
+          // a crista: linha fina (só o topo da onda)
+          if (wstr > 0.02) {
+            if (wcrest > 0.93) finalColor = mix(finalColor, uCrestColor, 0.55 * wstr);
+            if (wcrest > 0.98) finalColor = mix(finalColor, vec3(1.0), 0.8 * min(1.0, wstr * 1.5));
+          }
+        }
+      }
+
+      // Ondas em volta do personagem parado na água: o MESMO desenho da onda de quando se clica na
+      // água (anel interno branco e anel externo ciano, em degraus de pixel), mas adaptado a quem
+      // está parado: 3 anéis em fases diferentes saem do personagem, se abrem devagar e esmaecem
+      // (mais translúcidos e mais finos que o clique, que é um estouro único); a intensidade sobe
+      // aos poucos quando ele para e a esteira de trás vai se desfazendo.
+      if (uWakeIdle.z > 0.01) {
+        float idr = distance(worldGrid, uWakeIdle.xy);
+        if (idr < 3.1) {
+          float iph = floor(uWakeIdle.w * 10.0) / 10.0 * 0.28;
+          for (int ik = 0; ik < 3; ik++) {
+            float ifr = fract(iph + float(ik) / 3.0);
+            float irad = 0.55 + ifr * 2.35;
+            float istr = (1.0 - ifr) * (1.0 - ifr) * uWakeIdle.z;
+            float iring = abs(idr - irad);
+            // anel externo ciano (mais largo) e interno branco (mais fino), translúcidos
+            if (iring < 0.15) finalColor = mix(finalColor, uCrestColor, 0.55 * istr);
+            if (iring < 0.075) finalColor = mix(finalColor, vec3(1.0), 0.8 * min(1.0, istr * 1.5));
+          }
+        }
+      }
+
+      // sombra: escurece a água e tudo por cima dela (espuma, linhas, aneis, espuma da beira),
+      // um pouco azulada, como a sombra do chão perto d'água
+      finalColor *= mix(vec3(1.0), vec3(0.58, 0.63, 0.72), waterShadow);
+      // noite: a paleta da água é fixa (cores de tela), então escurece e esfria com o sol baixo; de
+      // noite sobra só um azul escuro (luar), senão a água ficava brilhando no meio da escuridão
+      finalColor *= mix(vec3(0.15, 0.21, 0.36), vec3(1.0), uNightDim);
+
+      for(int c=0;c<12;c++){
+        vec4 hit=uCascadeImpacts[c];
+        if(hit.w>.5){
+          vec2 delta=foamGrid-hit.xy;
+          vec2 direction=uCascadeDirections[c];
+          vec2 local=vec2(dot(delta,vec2(direction.y,-direction.x)),dot(delta,direction));
+          float across=abs(local.x)/max(.01,hit.z*1.4);
+          float spread=5.6+(floor(v1*4.)/4.-.5)*1.4;
+          float front=local.y/spread;
+          float footprint=exp(-pow(across,6.)*1.6-front*front);
+          float core=exp(-pow(local.y/1.6,2.))*exp(-pow(across,6.)*2.);
+          float density=clamp(footprint*.75+core*.25,0.,1.);
+          float foamCells=step(.86-density*.72,vCombined)*step(.12,density);
+          float whiteCells=step(.97-density*.72,vCombined)*foamCells;
+          float onPool=1.-smoothstep(.15,1.5,abs(vWorldPosition.y));
+          finalColor=mix(finalColor,softFoamColor,foamCells*.82*onPool);
+          finalColor=mix(finalColor,uFoamColor,whiteCells*.94*onPool);
+        }
+      }
+      // Preserve the solid-contact border through the impact foam pass.
+      finalColor=mix(finalColor,uFoamColor,isContactFoam);
       // névoa (a água é desenhada à parte, sem a névoa da cena: mesma conta, valores copiados)
-      if (uFogOn > 0.5) finalColor = aerialPerspective(finalColor, vWorldPosition, uFogColor, uFogNear, uFogFar);
+      if (uFogOn > 0.5) finalColor = aerialPerspectiveK(finalColor, vWorldPosition, uFogColor, uFogNear, uFogFar, 0.8);
       gl_FragColor = vec4(finalColor, uOpacity);
     }
   `,
@@ -696,7 +1082,18 @@ export function createWaterMaterial(): THREE.ShaderMaterial {
 
   // direção do sol compartilhada; as cores da névoa da água vão já convertidas para a tela
   // (worldEngine.updateWaterUniforms), por isso a cor do sol é própria
+  mat.uniforms.uSM = SHADOW_GRID.uSM;
+  mat.uniforms.uWake = WAKE.uWake;
+  mat.uniforms.uWakeArea = WAKE.uWakeArea;
+  mat.uniforms.uWakeSpeed = WAKE.uWakeSpeed;
+  mat.uniforms.uWakeSlab = WAKE.uWakeSlab;
+  mat.uniforms.uWakeIdle = WAKE.uWakeIdle;
+  mat.uniforms.uWakeTex = WAKE_SIM.uWakeTex;
+  mat.uniforms.uWakeGrid = WAKE_SIM.uWakeGrid;
+  mat.uniforms.uWakeOn = WAKE_SIM.uWakeOn;
   mat.uniforms.uFogSunDir = AERIAL.uFogSunDir;
+  mat.uniforms.uFogBiome = AERIAL.uFogBiome;
+  mat.uniforms.uGFog = AERIAL.uGFog;
   mat.uniforms.uFogSunColor = { value: new THREE.Vector3(1, 0.9, 0.7) };
   mat.uniforms.tPlanarReflection.value = defaultTex;
   mat.uniforms.tDepth.value = defaultDepth;

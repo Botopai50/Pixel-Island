@@ -236,7 +236,7 @@ export class Chunk {
     // medição dos paredões (grama que escorre, terra no pé, rocha na metade de baixo) só até 2
     // chunks da câmera: é o que mais custa na malha e mais longe o detalhe não aparece. Um chunk
     // que se aproxima refaz a malha com ela.
-    const wantWalls = this.distance <= 2.5;
+    const wantWalls = this.distance <= 4.5;
     const segments = this.targetSegments > this.appliedSegments || (wantWalls && !this.appliedWalls && this.appliedSegments > 0)
       ? this.targetSegments : 0;
     if (density === 0 && segments === 0) return;
@@ -327,7 +327,9 @@ export class Chunk {
       if (!this.terrainMesh && this.terrainGeo && material) {
         this.terrainMesh = new THREE.Mesh(this.terrainGeo, material);
         this.terrainMesh.position.set(this.centerX, 0, this.centerZ);
-        this.terrainMesh.castShadow = !this.isSubmerged;
+        // o relevo não projeta sombra (só recebe): com o sol baixo o próprio barranco da praia
+        // jogava uma sombra preta e serrilhada na areia. Árvores, pedras e construções projetam.
+        this.terrainMesh.castShadow = false;
         this.terrainMesh.receiveShadow = true;
         this.group.add(this.terrainMesh);
         this.onSceneChanged?.();

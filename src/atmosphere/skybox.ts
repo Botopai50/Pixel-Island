@@ -230,7 +230,11 @@ export class CartoonSkybox {
           }
         }
 
-        // 3. ESTRELAS EM PIXEL ART NOTURNO (Pixels pontuais cintilantes)
+        // 3. ESTRELAS EM PIXEL ART NOTURNO (Pixels pontuais)
+        // Presas ao céu (uma por célula sorteada, no centro dela). O tamanho nunca fica menor que um
+        // pixel da tela (fwidth do raio): antes a estrela era menor que o pixel e, ao andar/girar,
+        // sumia e aparecia em outro pixel (parecia mudar de lugar). Sem piscar: o brilho só respira.
+        float starPx = length(fwidth(ray));
         if (uStarVisibility > 0.01 && height > 0.05) {
           vec3 starGrid = floor(ray * 420.0);
           float starSeed = fract(sin(dot(starGrid.xy, vec2(12.9898, 78.233)) + starGrid.z * 17.13) * 43758.5453);
@@ -238,10 +242,10 @@ export class CartoonSkybox {
           if (starSeed > 0.985) {
             vec3 starFract = (ray * 420.0) - starGrid - 0.5;
             float starDist = max(max(abs(starFract.x), abs(starFract.y)), abs(starFract.z));
-            float isStarPixel = step(starDist, 0.35);
-
-            float blink = floor(fract(uTime * 1.8 + starSeed * 20.0) * 4.0) / 4.0;
-            float starBrightness = step(0.20, blink) * mix(0.7, 1.4, fract(starSeed * 7.7));
+            // meio tamanho da estrela, em células: 0.35 como antes, ou no mínimo ~1 pixel da tela
+            float starR = max(0.35, starPx * 420.0 * 0.6);
+            float isStarPixel = step(starDist, min(starR, 0.48));
+            float starBrightness = mix(0.7, 1.4, fract(starSeed * 7.7)) * (0.88 + 0.12 * sin(uTime * 0.5 + starSeed * 40.0));
 
             sky += vec3(0.96, 0.98, 1.0) * isStarPixel * starBrightness * uStarVisibility;
           }
@@ -275,6 +279,10 @@ export class CartoonSkybox {
           }
         }
 
+        // quanto de nuvem tampa este ponto do céu: vai no alfa da imagem e os god rays e o lens
+        // flare (sunFX.ts) não passam por ela
+        float cloudOcc = 0.0;
+
         // 4. SISTEMA VOLUMÉTRICO DE NUVENS CÚMULUS EM 2 CAMADAS 3D (PIXEL ART RETRO)
         // Camada 1: Base / Sombra / Volume inferior (cor escura/sombra, sem o branco puro)
         // Camada 2: Cristas e Volume Iluminado Superior em camada 3D separada com paralaxe volumétrico
@@ -283,7 +291,8 @@ export class CartoonSkybox {
           // só dependia do azimute e escorria em listras verticais ("cachoeira") no horizonte
           float planeH = max(height, 0.035);
           float hFade = smoothstep(0.05, 0.17, height);
-          float coverageThresh = mix(0.58, 0.38, uCloudCoverage);
+          // abaixo de 0.5 o céu limpa de verdade (deserto); de 0.5 para cima, igual a antes
+          float coverageThresh = uCloudCoverage < 0.5 ? mix(0.74, 0.48, uCloudCoverage * 2.0) : mix(0.48, 0.38, uCloudCoverage * 2.0 - 1.0);
           vec2 sunDir2D = normalize(normSunDir.xz + vec2(0.001, 0.001));
           float cloudGridRes = 320.0 * uPixelScale;
 
@@ -298,6 +307,7 @@ export class CartoonSkybox {
           float billowVal1 = billowFBM(pixelUV1);
           float cloudShape1 = billowVal1 * (0.35 + 0.65 * macroMask1);
           float cloudDensity1 = (cloudShape1 - coverageThresh) / max(1.0 - coverageThresh, 0.001);
+          cloudOcc = max(cloudOcc, clamp(cloudDensity1 * 7.0, 0.0, 1.0) * hFade);
 
           if (cloudDensity1 > 0.0 && hFade > 0.01) {
             // Sombra direcional da base
@@ -333,6 +343,7 @@ export class CartoonSkybox {
           float billowVal2 = billowFBM(pixelUV2);
           float cloudShape2 = billowVal2 * (0.35 + 0.65 * macroMask2);
           float cloudDensity2 = (cloudShape2 - coverageThresh) / max(1.0 - coverageThresh, 0.001);
+          cloudOcc = max(cloudOcc, clamp(cloudDensity2 * 7.0, 0.0, 1.0) * hFade);
 
           // Dither Bayer 4x4 para a borda da camada clara
           float cDither2 = (bayer4x4(floor(planeUV2 * 320.0 / aaD2)) - 0.5) * 0.12;
@@ -347,11 +358,14 @@ export class CartoonSkybox {
 
             // Realce cel solar na borda da crista iluminada
             float sunFacing = dot(ray, normSunDir);
-            float isSunRim = step(0.60, sunFacing);
-            float sunsetGlow = clamp((0.45 - normSunDir.y) * 2.5, 0.0, 1.0);
-            if (isSunRim > 0.5) {
-              layer2Color = mix(layer2Color, uCoronaColor, sunsetGlow * 0.55);
-            }
+            // cresce aos poucos em direção ao sol, em 3 degraus com pontilhado (antes ligava de uma
+            // vez dentro de um círculo de ~53°: a borda virava um corte reto atravessando as nuvens)
+            float rimK = smoothstep(0.35, 0.95, sunFacing);
+            float rimQ = clamp(floor(rimK * 3.0 + 0.5 + cDither2 * 4.0) / 3.0, 0.0, 1.0);
+            // só com o sol acima do horizonte: à noite a cor do brilho do sol é preta e o realce
+            // escurecia todas as cristas num círculo enorme em volta do sol (embaixo do horizonte)
+            float sunsetGlow = clamp((0.45 - normSunDir.y) * 2.5, 0.0, 1.0) * smoothstep(-0.08, 0.04, normSunDir.y);
+            layer2Color = mix(layer2Color, uCoronaColor, sunsetGlow * 0.55 * rimQ);
 
             // A camada 2 compõe por cima da camada 1 (e do céu onde a crista projeta além da base)
             sky = mix(sky, layer2Color, hFade);
@@ -363,7 +377,9 @@ export class CartoonSkybox {
         float qFog = floor(clamp(hFog + snesDither * 0.15, 0.0, 1.0) * 4.0) / 4.0;
         sky = mix(sky, uFogColor, clamp(qFog * 0.9, 0.0, 1.0));
 
-        gl_FragColor = vec4(sky, 1.0);
+        // céu fechado (cobertura alta): o sol fica tampado mesmo nos buracos ralos entre as nuvens
+        cloudOcc = max(cloudOcc, smoothstep(0.75, 0.98, uCloudCoverage));
+        gl_FragColor = vec4(sky, 1.0 - 0.5 * cloudOcc);
       }
     `;
 
@@ -442,9 +458,88 @@ export class CartoonSkybox {
     this.targetCloudCoverage = cloudCov;
   }
 
+  /**
+   * Cor do ar do bioma (biomeAmbience.ts): cor = manter * cor + luminância(cor) * matiz. Vale
+   * para a névoa e o horizonte; como parte do brilho do próprio céu, funciona de dia e de noite.
+   */
+  private biomeKeep = 1;
+  private biomeHue = new THREE.Color(0, 0, 0);
+  private tintedFogColor = new THREE.Color();
+  public setBiomeFog(keep: number, r: number, g: number, b: number): void {
+    this.biomeKeep = keep;
+    this.biomeHue.setRGB(r, g, b);
+  }
+  /**
+   * Puxa uma cor para o tom do ar do bioma (o mesmo da névoa), na fração k: as luzes de sombra
+   * (skyAtmosphere.ts) usam isso para as sombras ficarem levemente coloridas pelo bioma.
+   */
+  public tintTowardBiome(c: THREE.Color, k: number): THREE.Color {
+    const l = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
+    const tr = c.r * this.biomeKeep + this.biomeHue.r * l;
+    const tg = c.g * this.biomeKeep + this.biomeHue.g * l;
+    const tb = c.b * this.biomeKeep + this.biomeHue.b * l;
+    return c.setRGB(c.r + (tr - c.r) * k, c.g + (tg - c.g) * k, c.b + (tb - c.b) * k);
+  }
+
+  private tintBiome(c: THREE.Color): THREE.Color {
+    const l = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
+    return c.multiplyScalar(this.biomeKeep).add(new THREE.Color(this.biomeHue.r * l, this.biomeHue.g * l, this.biomeHue.b * l));
+  }
+
+  /**
+   * Nuvens do bioma (biomeAmbience.ts), por cima das da hora do dia: cobertura somada, cor das
+   * nuvens com o mesmo matiz que mantém o brilho (vale no pôr do sol e de noite), brilho da parte
+   * iluminada e da sombra, vento e céu acinzentado (encoberto).
+   */
+  private bCloudCov = 0;
+  private bCloudKeep = 1;
+  private bCloudHue = new THREE.Color(0, 0, 0);
+  private bCloudLit = 1;
+  private bCloudShade = 1;
+  private bWind = 1;
+  private bGrey = 0;
+  /** Direção do vento do mundo (wind.ts): as nuvens vão para o mesmo lado das partículas. */
+  public setWindDirection(x: number, z: number): void {
+    // o padrão das nuvens anda para o lado oposto ao do deslocamento da textura
+    const s = this.windSpeed.length();
+    this.windSpeed.set(-x * s, -z * s);
+  }
+
+  /** Clima escolhido no HUD (skyWidget): cobertura fixa e céu cinza; null volta ao automático. */
+  private cloudOverride: number | null = null;
+  private greyOverride = 0;
+  private overrideMix = 0;
+  private lastOverrideCov = 0.5;
+  public setCloudOverride(cov: number | null, grey: number): void {
+    this.cloudOverride = cov;
+    this.greyOverride = grey;
+  }
+
+  public setBiomeClouds(cov: number, keep: number, r: number, g: number, b: number, lit: number, shade: number, wind: number, grey: number): void {
+    this.bCloudCov = cov; this.bCloudKeep = keep; this.bCloudHue.setRGB(r, g, b);
+    this.bCloudLit = lit; this.bCloudShade = shade; this.bWind = wind; this.bGrey = grey;
+  }
+  private tintCloud(c: THREE.Color, bright: number): THREE.Color {
+    const l = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
+    return c.setRGB(
+      (c.r * this.bCloudKeep + this.bCloudHue.r * l) * bright,
+      (c.g * this.bCloudKeep + this.bCloudHue.g * l) * bright,
+      (c.b * this.bCloudKeep + this.bCloudHue.b * l) * bright);
+  }
+  private greySky(c: THREE.Color): THREE.Color {
+    const l = c.r * 0.2126 + c.g * 0.7152 + c.b * 0.0722;
+    const g = this.bGrey + (this.greyOverride - this.bGrey) * this.overrideMix, d = 1 - 0.12 * g;
+    return c.setRGB((c.r + (l - c.r) * g) * d, (c.g + (l - c.g) * g) * d, (c.b + (l - c.b) * g) * d);
+  }
+
   /** Cor atual da névoa do horizonte (a névoa da cena usa a mesma: o relevo distante some no céu). */
   public getCurrentFogColor(): THREE.Color {
-    return this.currentFogColor;
+    return this.greySky(this.tintBiome(this.tintedFogColor.copy(this.currentFogColor)));
+  }
+
+  /** Cobertura de nuvens que o céu está desenhando agora (0-1). */
+  public getCloudCoverage(): number {
+    return this.material.uniforms.uCloudCoverage.value;
   }
 
   /** Cor atual do brilho em volta do sol (a luz do ar na direção do sol usa a mesma). */
@@ -455,12 +550,13 @@ export class CartoonSkybox {
   public update(delta: number, cameraPosition: THREE.Vector3): void {
     this.mesh.position.copy(cameraPosition);
 
-    this.windOffset.x = (this.windOffset.x + this.windSpeed.x * delta) % 1000.0;
-    this.windOffset.y = (this.windOffset.y + this.windSpeed.y * delta) % 1000.0;
+    const wd = delta * this.bWind;
+    this.windOffset.x = (this.windOffset.x + this.windSpeed.x * wd) % 1000.0;
+    this.windOffset.y = (this.windOffset.y + this.windSpeed.y * wd) % 1000.0;
 
     // Vento da camada superior (shear de altitude sutil de 12%)
-    this.windOffset2.x = (this.windOffset2.x + this.windSpeed.x * 1.12 * delta) % 1000.0;
-    this.windOffset2.y = (this.windOffset2.y + this.windSpeed.y * 1.12 * delta) % 1000.0;
+    this.windOffset2.x = (this.windOffset2.x + this.windSpeed.x * 1.12 * wd) % 1000.0;
+    this.windOffset2.y = (this.windOffset2.y + this.windSpeed.y * 1.12 * wd) % 1000.0;
 
     const lerpSpeed = Math.min(delta * 4.0, 1.0);
     this.currentZenithColor.lerp(this.targetZenithColor, lerpSpeed);
@@ -479,17 +575,21 @@ export class CartoonSkybox {
     u.uTime.value += delta;
     u.uSunDir.value.copy(this.currentSunDir);
     u.uMoonDir.value.copy(this.currentMoonDir);
-    u.uZenithColor.value.copy(this.currentZenithColor);
-    u.uHorizonColor.value.copy(this.currentHorizonColor);
+    this.greySky(u.uZenithColor.value.copy(this.currentZenithColor));
+    this.greySky(this.tintBiome(u.uHorizonColor.value.copy(this.currentHorizonColor)));
     u.uGroundColor.value.copy(this.currentGroundColor);
-    u.uCloudColor.value.copy(this.currentCloudColor);
-    u.uCloudShadowColor.value.copy(this.currentCloudShadowColor);
+    this.tintCloud(u.uCloudColor.value.copy(this.currentCloudColor), this.bCloudLit);
+    this.tintCloud(u.uCloudShadowColor.value.copy(this.currentCloudShadowColor), this.bCloudShade);
     u.uSunColor.value.copy(this.currentSunColor);
     u.uCoronaColor.value.copy(this.currentCoronaColor);
-    u.uFogColor.value.copy(this.currentFogColor);
+    this.greySky(this.tintBiome(u.uFogColor.value.copy(this.currentFogColor)));
     u.uStarVisibility.value = this.currentStarVis;
     u.uMoonVisibility.value = this.currentMoonVis;
-    u.uCloudCoverage.value = this.currentCloudCoverage;
+    // clima do HUD entra/sai em ~2s; no automático vale o preset + o bioma
+    this.overrideMix += ((this.cloudOverride !== null ? 1 : 0) - this.overrideMix) * Math.min(delta * 1.5, 1);
+    if (this.cloudOverride !== null) this.lastOverrideCov = this.cloudOverride;
+    const autoCov = THREE.MathUtils.clamp(this.currentCloudCoverage + this.bCloudCov, 0, 1);
+    u.uCloudCoverage.value = autoCov + (this.lastOverrideCov - autoCov) * this.overrideMix;
     u.uWindOffset.value.copy(this.windOffset);
     u.uWindOffset2.value.copy(this.windOffset2);
     u.uCameraPos.value.copy(cameraPosition);

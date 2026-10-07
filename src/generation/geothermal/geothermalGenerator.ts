@@ -15,6 +15,16 @@ export interface ThermalSpring {
   waterLevel: number;
 }
 
+/** Respiradouro menor do vale: fumarola (vapor e enxofre) ou poça de lama borbulhante. */
+export interface ThermalVent {
+  x: number;
+  z: number;
+  radius: number;
+  kind: 'fumarole' | 'mudpot';
+  /** fase própria (s) para o vapor não pulsar todo junto */
+  phase: number;
+}
+
 export interface GeothermalValley {
   x: number;
   z: number;
@@ -36,6 +46,7 @@ export class GeothermalGenerator {
   private volcanoGen?: VolcanoGenerator;
   private valley!: GeothermalValley;
   private springs: ThermalSpring[] = [];
+  private vents: ThermalVent[] = [];
 
   constructor(seed: number = 0, macroGeo?: MacroGeography, volcanoGen?: VolcanoGenerator) {
     this.seed = seed;
@@ -158,6 +169,40 @@ export class GeothermalGenerator {
         }
       }
     }
+
+    this.initVents(prng);
+  }
+
+  /**
+   * Fumarolas (buracos de vapor com enxofre) e poças de lama no vale, longe das fontes e entre si.
+   * Sorteados DEPOIS das fontes, com o mesmo PRNG: as fontes continuam exatamente nos mesmos lugares.
+   */
+  private initVents(prng: PRNG): void {
+    this.vents = [];
+    const { x: vx, z: vz, radius: vr } = this.valley;
+    const wantMud = 2 + Math.floor(prng.range(0, 1.99));
+    const wantFum = 5 + Math.floor(prng.range(0, 2.99));
+    const want = wantMud + wantFum;
+    for (let attempt = 0; attempt < 240 && this.vents.length < want; attempt++) {
+      const kind: ThermalVent['kind'] = this.vents.length < wantMud ? 'mudpot' : 'fumarole';
+      const radius = kind === 'mudpot' ? prng.range(3.0, 4.6) : prng.range(1.2, 2.0);
+      const a = prng.range(0, Math.PI * 2);
+      const d = prng.range(8.0, vr * 0.52); // só no piso do vale (fora dele o bioma já é outro)
+      const x = vx + Math.cos(a) * d, z = vz + Math.sin(a) * d;
+      let ok = true;
+      for (const s of this.springs) {
+        if (Math.hypot(x - s.x, z - s.z) < s.radius * 1.7 + radius + 3.0) { ok = false; break; }
+      }
+      if (ok) for (const o of this.vents) {
+        if (Math.hypot(x - o.x, z - o.z) < o.radius + radius + 6.0) { ok = false; break; }
+      }
+      if (!ok) continue;
+      this.vents.push({ x, z, radius, kind, phase: prng.range(0, 20) });
+    }
+  }
+
+  public getVents(): ThermalVent[] {
+    return this.vents;
   }
 
   public query(x: number, z: number, currentElevation: number): GeothermalQueryResult {
@@ -182,14 +227,19 @@ export class GeothermalGenerator {
       const s = closestSpring;
       const norm = minNorm;
       if (norm < 1.0) {
-        // Bacia côncava com água geotermal profunda
-        const basinBed = (s.waterLevel + 1.2 - s.poolDepth) + s.poolDepth * 0.4 * Math.pow(norm, 2.0);
+        // Bacia côncava: o fundo sobe do ponto mais fundo (centro) até o NÍVEL DA ÁGUA exatamente na
+        // margem (norm = 1), sem degrau. Antes o relevo dava um salto de ~2m na margem: entre dois
+        // vértices da malha (que tem células de vários metros) a altura da água cruzava o relevo num
+        // ponto qualquer do triângulo, e a margem da poça saía como um polígono serrilhado.
+        const basinBed = s.waterLevel - s.poolDepth * (1.0 - norm * norm);
         const offset = basinBed - currentElevation;
         return { heightOffset: offset, influence: 1.0, isThermalPool: true, ringFactor: norm };
       } else {
         // Terraço mineral e borda de travertino sinterizado
+        // (sobe a partir do nível da água, em ~0.12 do raio, até o perfil da borda: contínuo na margem)
         const rimProg = (norm - 1.0) / 0.45;
-        const rimHeight = (s.waterLevel + 1.2) + 1.3 * Math.sin(rimProg * Math.PI);
+        const rise = Math.min(1.0, (norm - 1.0) / 0.12);
+        const rimHeight = s.waterLevel + rise * (1.2 + 1.3 * Math.sin(rimProg * Math.PI));
         const offset = rimHeight - currentElevation;
         return { heightOffset: offset, influence: 1.0 - rimProg * 0.5, isThermalPool: false, ringFactor: 1.0 };
       }

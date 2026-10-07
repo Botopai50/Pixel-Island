@@ -279,6 +279,10 @@ export class PlayerController {
     this.observerCamera.updateProjection();
   }
 
+  public setObserverOrientation(yaw:number,pitch:number):void{
+    this.observerCamera.setOrientation(yaw,pitch);
+  }
+
   public setRotation(yaw: number): void {
     this.observerCamera.yaw = yaw;
     (this.observerCamera as any).targetYaw = yaw;

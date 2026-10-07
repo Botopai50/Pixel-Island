@@ -19,6 +19,14 @@ export class FirstPersonController {
   private damping: number = 9.0;
   public eyeHeight: number = 1.75 * CONFIG.PLAYER_SCALE;
 
+  /** Multiplicador da velocidade (lama e água quente < 1); quem define é o ambiente, a cada quadro */
+  public speedMul: number = 1;
+  /** Piso mínimo (m): numa poça funda o personagem boia na superfície em vez de andar no fundo */
+  public minFloor: number = -1e9;
+  // Voo (gêiser): altura acima do piso e velocidade vertical
+  private airH: number = 0;
+  private airV: number = 0;
+
   // Head bobbing sutil para imersão
   private bobTimer: number = 0;
   private currentBob: number = 0;
@@ -100,11 +108,23 @@ export class FirstPersonController {
     this.camera.updateProjectionMatrix();
   }
 
+  /** Empurrão horizontal (m/s), somado à velocidade atual. */
+  public addVelocity(vx: number, vz: number): void {
+    this.velocity.x += vx;
+    this.velocity.z += vz;
+  }
+
+  /** Lança o personagem para cima (m/s): ele sobe, desacelera e cai. */
+  public launch(vy: number): void {
+    this.airV = vy;
+    this.airH = Math.max(this.airH, 0.01);
+  }
+
   public setPosition(x: number, z: number, terrain?: ITerrainHeightQueryable): void {
     this.position.x = x;
     this.position.z = z;
     const h = terrain ? terrain.getHeight(x, z) : 0;
-    this.position.y = Math.max(h, CONFIG.SEA_LEVEL) + this.eyeHeight;
+    this.position.y = Math.max(h, terrain?.getWaterSurfaceY?.(x,z)??CONFIG.SEA_LEVEL) + this.eyeHeight;
     this.velocity.set(0, 0, 0);
     this.camera.position.set(this.position.x, this.position.y, this.position.z);
   }
@@ -134,9 +154,12 @@ export class FirstPersonController {
       moveDirZ /= len;
     }
 
+    // pulo: só com os pés no chão (ou na água)
+    if (this.airH <= 0 && input.consumeJump()) this.launch(6.5 * Math.sqrt(this.scale));
+
     // 2. Velocidade e Aceleração
     const isSprinting = input.isSprinting();
-    const baseSpeed = isSprinting ? this.sprintSpeed : this.walkSpeed;
+    const baseSpeed = (isSprinting ? this.sprintSpeed : this.walkSpeed) * this.speedMul;
     const targetSpeed = len > 0 ? baseSpeed * inputMagnitude : 0;
 
     const targetVelX = moveDirX * targetSpeed;
@@ -195,7 +218,14 @@ export class FirstPersonController {
 
     // 4. Acompanhamento do piso com garantia absoluta anti-penetração (Hard Ground Clamp)
     const terrainH = terrain.getHeight(this.position.x, this.position.z);
-    const targetY = Math.max(terrainH, CONFIG.SEA_LEVEL - 0.3) + this.eyeHeight;
+    // voo: sobe com a velocidade do impulso e cai com a gravidade até pousar
+    if (this.airH > 0 || this.airV !== 0) {
+      this.airV -= 18.0 * dt;
+      this.airH += this.airV * dt;
+      if (this.airH <= 0) { this.airH = 0; this.airV = 0; }
+    }
+    const waterY = terrain.getWaterSurfaceY?.(this.position.x, this.position.z) ?? CONFIG.SEA_LEVEL;
+    const targetY = Math.max(terrainH, waterY - 0.3, this.minFloor) + this.eyeHeight + this.airH;
 
     // Se estiver abaixo do piso, sobe INSTANTANEAMENTE (elimina qualquer clipping sob o relevo)
     if (this.position.y < targetY) {

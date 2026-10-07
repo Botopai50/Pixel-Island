@@ -50,7 +50,45 @@ export const REDROCK: [number, number, number][]   = [[70,36,28],[104,54,38],[13
 export const SCRUB: [number, number, number][]     = [[58,58,28],[82,82,36],[110,106,46],[140,132,58],[170,160,78],[200,190,110]];
 export const ACC_D: [number, number, number][]     = [[226,190,96],[240,214,140],[196,118,70]];
 
+// Savana: capim dourado sobre terra laterítica vermelho-alaranjada, rocha morna
+export const SAV_SAND: [number, number, number][] = [[150,96,60],[190,132,80],[214,166,104],[232,194,132],[242,214,156],[250,232,186]];
+export const LATERITE: [number, number, number][] = [[74,38,30],[120,58,40],[160,86,52],[192,116,66],[214,148,86],[232,178,112]];
+export const SAV_ROCK: [number, number, number][] = [[48,36,34],[82,64,56],[116,98,84],[150,132,112],[184,168,142],[214,202,176]];
+export const GOLDGRASS: [number, number, number][] = [[60,56,24],[98,88,34],[138,124,44],[176,156,58],[206,186,82],[230,212,118]];
+export const ACC_S: [number, number, number][]    = [[236,206,110],[214,170,90],[170,120,64]];
+
+// Tropical (selva e manguezal): verde profundo e saturado, solo escuro e úmido, rocha com musgo
+export const TROP_SAND: [number, number, number][] = [[120,90,60],[160,124,82],[196,160,108],[220,190,134],[234,210,156],[246,228,182]];
+export const WETSOIL: [number, number, number][]   = [[34,26,22],[58,40,30],[84,58,38],[110,78,48],[136,100,60],[164,126,78]];
+export const MOSSROCK: [number, number, number][]  = [[22,28,26],[40,52,44],[62,78,64],[88,104,84],[118,132,106],[150,162,132]];
+export const JUNGLE: [number, number, number][]    = [[8,40,28],[16,68,36],[26,98,44],[40,128,50],[70,156,56],[110,184,72]];
+export const ACC_T: [number, number, number][]     = [[220,72,64],[236,190,60],[150,200,80]];
+
+// Taiga: musgo verde-azulado escuro, chão de agulhas marrom, granito cinza-azulado
+export const GREY_SAND: [number, number, number][] = [[96,96,92],[130,128,120],[162,158,146],[188,184,170],[208,204,190],[226,224,212]];
+export const NEEDLES: [number, number, number][]   = [[36,28,26],[62,44,36],[90,64,46],[116,86,60],[140,108,74],[164,132,92]];
+export const MOSS: [number, number, number][]      = [[14,30,30],[22,50,44],[32,72,56],[48,96,66],[72,122,80],[104,150,100]];
+export const ACC_TG: [number, number, number][]    = [[180,190,170],[210,214,196],[150,90,70]];
+
+// Bosque outonal: capim oliva-dourado, terra marrom rica, folhas caídas laranja e vermelhas
+export const LEAFSOIL: [number, number, number][]  = [[54,32,26],[92,52,34],[132,76,44],[168,104,56],[194,132,70],[216,160,92]];
+export const OLIVEGRASS: [number, number, number][] = [[50,48,26],[86,82,34],[128,116,42],[170,146,52],[204,170,64],[230,196,96]];
+export const ACC_A: [number, number, number][]     = [[220,96,40],[236,152,44],[196,56,40]];
+
+// Fontes termais: planície de travertino creme e branca, tapete de algas oliva-amarelado. A terra e
+// a rocha (índices 1 e 2) são as do temperado de propósito: os paredões do vale usam o MESMO atlas
+// do bioma em volta, senão a divisa de bioma cortava as falésias em faixas verticais de outra
+// textura ("esticada"). Os anéis de enxofre/ferrugem em volta das poças são pintados no shader.
+export const TRAV_SAND: [number, number, number][] = [[176,150,120],[204,180,146],[226,206,170],[240,226,194],[248,240,214],[255,252,236]];
+export const TRAV_MAT: [number, number, number][]  = [[60,70,40],[90,100,50],[124,134,62],[156,164,78],[190,190,96],[216,214,128]];
+export const ACC_TH: [number, number, number][]    = [[236,200,60],[244,226,120],[214,110,50]];
+
+// Tundra (alpina e a fria e seca): tapete baixo de liquens verde-acinzentados, cascalho cinza, rocha de tálus
+export const LICHEN: [number, number, number][] = [[30,40,34],[52,64,52],[78,92,70],[104,118,88],[136,146,110],[170,176,140]];
+export const SCREE_SAND: [number, number, number][] = [[70,70,70],[100,100,98],[132,130,126],[160,158,152],[186,184,178],[210,208,204]];
+
 export const B_TEMP = 0, B_MOUNT = 1, B_POLAR = 2, B_DESERT = 3;
+export const B_SAVANNA = 4, B_TROPICAL = 5, B_TAIGA = 6, B_AUTUMN = 7, B_ALPINE = 8, B_THERMAL = 9;
 
 export interface BiomeForgeDef {
   key: string;
@@ -65,25 +103,56 @@ export interface BiomeForgeDef {
   rockBias: number;
   vegDens: number;
   bushes: boolean;
+  /**
+   * Chão "exuberante" como o temperado: grama em manchas grandes e lisas (sem tufos no miolo nem
+   * buracos), terra lisa e rocha em tons mais claros. false = chão ralo (montanha, gelo, deserto).
+   */
+  lush: boolean;
+  /** slider de quantidade de grama que vale para este bioma (none = sem grama) */
+  grassKey: 'grass' | 'mountain' | 'polar' | 'none';
 }
 
 export const BIOMES: BiomeForgeDef[] = [
   { key:'temperado', label:'Temperado', swatch:'#dea83e',
     ramps:[SAND,  DIRT,  ROCK,    GRASS,   ACC  ],
     ground:'canais', wallHi:'terra',   wallLo:'bloco',
-    veg:'tufo',     vegBias: 0.00, rockBias: 0.00, vegDens:1.00, bushes:true },
+    veg:'tufo',     vegBias: 0.00, rockBias: 0.00, vegDens:1.00, bushes:true,  lush:true,  grassKey:'grass' },
   { key:'montanha',  label:'Vulcânico', swatch:'#4a3a36',
     ramps:[ASHSAND, ASH, BASALT, DRYGRASS, ASH_ACC],
     ground:'cinza',  wallHi:'basalto',  wallLo:'basalto',
-    veg:'alpino',   vegBias:-0.20, rockBias: 0.34, vegDens:0.45, bushes:false },
+    veg:'alpino',   vegBias:-0.20, rockBias: 0.34, vegDens:0.45, bushes:false, lush:false, grassKey:'mountain' },
   { key:'polar',     label:'Polar', swatch:'#d6e4f0',
     ramps:[ICE,   SNOW,  FROZEN,  CONIFER, ACC_P],
     ground:'neve',   wallHi:'gelo',    wallLo:'seixo',
-    veg:'conifera', vegBias:-0.30, rockBias: 0.12, vegDens:0.30, bushes:false },
+    veg:'conifera', vegBias:-0.30, rockBias: 0.12, vegDens:0.30, bushes:false, lush:false, grassKey:'polar' },
   { key:'deserto',   label:'Deserto', swatch:'#d08a4a',
     ramps:[DUNE,  SANDSTONE, REDROCK, SCRUB, ACC_D],
     ground:'dunas',  wallHi:'fratura', wallLo:'bloco',
-    veg:'tufo',     vegBias:-0.35, rockBias: 0.10, vegDens:0.20, bushes:false },
+    veg:'tufo',     vegBias:-0.35, rockBias: 0.10, vegDens:0.20, bushes:false, lush:false, grassKey:'none' },
+  { key:'savana',    label:'Savana', swatch:'#c9a848',
+    ramps:[SAV_SAND, LATERITE, SAV_ROCK, GOLDGRASS, ACC_S],
+    ground:'canais', wallHi:'terra',   wallLo:'fratura',
+    veg:'tufo',     vegBias: 0.04, rockBias: 0.02, vegDens:1.00, bushes:false, lush:true,  grassKey:'grass' },
+  { key:'tropical',  label:'Tropical', swatch:'#1e6a2e',
+    ramps:[TROP_SAND, WETSOIL, MOSSROCK, JUNGLE, ACC_T],
+    ground:'canais', wallHi:'terra',   wallLo:'bloco',
+    veg:'tufo',     vegBias: 0.10, rockBias:-0.04, vegDens:1.00, bushes:true,  lush:true,  grassKey:'grass' },
+  { key:'taiga',     label:'Taiga', swatch:'#2f5a4a',
+    ramps:[GREY_SAND, NEEDLES, GRANITE, MOSS, ACC_TG],
+    ground:'canais', wallHi:'terra',   wallLo:'seixo',
+    veg:'conifera', vegBias:-0.04, rockBias: 0.08, vegDens:0.80, bushes:true,  lush:true,  grassKey:'grass' },
+  { key:'outonal',   label:'Outonal', swatch:'#d9822b',
+    ramps:[SAND,  LEAFSOIL, ROCK,  OLIVEGRASS, ACC_A],
+    ground:'canais', wallHi:'terra',   wallLo:'bloco',
+    veg:'tufo',     vegBias: 0.00, rockBias: 0.00, vegDens:1.00, bushes:true,  lush:true,  grassKey:'grass' },
+  { key:'alpino',    label:'Alpino', swatch:'#8a9a8a',
+    ramps:[SCREE_SAND, SCREE, TALUS, LICHEN, ACC_M],
+    ground:'cinza',  wallHi:'seixo',   wallLo:'seixo',
+    veg:'alpino',   vegBias: 0.02, rockBias: 0.04, vegDens:0.70, bushes:false, lush:false, grassKey:'grass' },
+  { key:'termal',    label:'Fontes Termais', swatch:'#e6d6a8',
+    ramps:[TRAV_SAND, DIRT, ROCK, TRAV_MAT, ACC_TH],
+    ground:'dunas',  wallHi:'terra',   wallLo:'bloco',
+    veg:'tufo',     vegBias:-0.40, rockBias: 0.10, vegDens:0.08, bushes:false, lush:false, grassKey:'none' },
 ];
 
 export const NB = BIOMES.length;
@@ -97,19 +166,21 @@ export const RAMPS = BIOMES.map(b => b.ramps);
  * pintado de areia/terra temperada. Usar a MESMA fonte de verdade elimina essa divergência.
  */
 export const BIOME_TYPE_TO_FORGE: Partial<Record<BiomeType, number>> = {
-  [BiomeType.FROZEN_TUNDRA]: 2,
-  [BiomeType.SNOW_SUMMIT]: 2,
+  [BiomeType.FROZEN_TUNDRA]: B_POLAR,
+  [BiomeType.SNOW_SUMMIT]: B_POLAR,
   [BiomeType.CANYON_DESERT]: B_DESERT,
   [BiomeType.DESERT_DUNES]: B_DESERT,
-  [BiomeType.VOLCANIC_FIELD]: 1,
-  [BiomeType.VOLCANIC_CALDERA]: 1,
-  // Deliberadamente de fora: ROCKY_PEAKS dispara em QUALQUER encosta íngreme (slope > 0.56),
-  // não só em maciços de verdade — a parede já ganha rocha própria no shader via biplanar,
-  // independente do bioma. ALPINE_TUNDRA e GEOTHERMAL_VALLEY cobrem áreas enormes e contínuas
-  // (qualquer terreno alto e frio, ou perto de qualquer fonte termal) — virar talus/granito
-  // cinza sólido numa região tão grande ficava monótono e nada natural; melhor deixar essas
-  // no chão temperado normal e confiar só na vegetação (líquens, pinheiros esparsos) pra
-  // comunicar "tundra alpina", como o resto do jogo já faz.
+  [BiomeType.VOLCANIC_FIELD]: B_MOUNT,
+  [BiomeType.VOLCANIC_CALDERA]: B_MOUNT,
+  [BiomeType.GEOTHERMAL_VALLEY]: B_THERMAL,
+  [BiomeType.SAVANNAH]: B_SAVANNA,
+  [BiomeType.TROPICAL_RAINFOREST]: B_TROPICAL,
+  [BiomeType.MANGROVE_SWAMP]: B_TROPICAL,
+  [BiomeType.BOREAL_TAIGA]: B_TAIGA,
+  [BiomeType.AUTUMN_FOREST]: B_AUTUMN,
+  [BiomeType.ALPINE_TUNDRA]: B_ALPINE,
+  [BiomeType.ROCKY_PEAKS]: B_ALPINE,
+  // temperado (paleta 0): floresta mista, campos e a praia (a areia vem da faixa de praia)
 };
 
 /* =========================================================================
@@ -575,7 +646,7 @@ export function genWallTexture(P: ForgeParams, kind: string, shade: number, bioI
         // faces de frente cinza-sálvia, as de baixo caem para o cinza escuro e os vãos entre
         // blocos são roxo-amarronzados / quase pretos. Riscos verticais quebram as facetas.
         const i = y * W + x, L = relief!.lum[i], g = relief!.gap[i];
-        const base = (bioIdx | 0) === B_TEMP ? 3 : 2;
+        const base = BIOMES[bioIdx | 0]?.lush ? 3 : 2;
         const st = tfbm2(x, y, 2, 16, W, H, sd + 313);
         const l = L + (st - 0.5) * 0.14 + (relief!.cid[i] - 0.5) * 0.16;
         let v = l > 0.84 ? base + 2 : l > 0.64 ? base + 1 : l > 0.42 ? base : l > 0.12 ? base - 1 : Math.max(1, base - 2);
@@ -1060,7 +1131,7 @@ export function genChunkTexture(
         // amostragem grossa demais. Dither suave na borda em vez de um corte duro.
         if (specialRock[idx] > 0.02 || canyonT[idx] > 0.02) {
           const rockDither = (cluster(PX + lx + 201.0, PY + ly + 77.0, sd + 85) - 0.5) * 0.30;
-          if (canyonT[idx] + rockDither > 0.15) b = B_DESERT;
+          if (canyonT[idx] + rockDither > 0.15 && (b === B_DESERT || b === B_SAVANNA)) b = B_DESERT;
           if (specialRock[idx] + rockDither > 0.15) b = B_MOUNT;
         }
 
@@ -1116,17 +1187,17 @@ export function genChunkTexture(
         // cada bioma (temperado/montanha/polar), em vez de um único slider global escalado.
         // Isso evita que subir a grama do temperado tire a neve da montanha (e vice-versa) —
         // cada bioma tem seu próprio intervalo de ajuste, independente dos outros.
-        const biomeGrassAmt = b === B_MOUNT ? P.grassMountain
-          : b === B_POLAR ? P.grassPolar
-          : b === B_DESERT ? 0
+        const biomeGrassAmt = BI.grassKey === 'mountain' ? P.grassMountain
+          : BI.grassKey === 'polar' ? P.grassPolar
+          : BI.grassKey === 'none' ? 0
           : P.grass;
-        const mBase = b === B_TEMP ? macroPatch[i] * 0.55 + 0.5 : macroM[i];
+        const mBase = BI.lush ? macroPatch[i] * 0.55 + 0.5 : macroM[i];
         let m = mBase + (hn - 0.40) * 0.30 - clamp(sl - 0.95, 0, 2) * 0.20 + biomeGrassAmt + BI.vegBias;
         gv[i] = m;
 
         // Quantização com dither em cluster
         // Temperado: manchas de grama com contorno limpo (bolhas), sem a borda salpicada
-        const d = m + (cluster(tx, ty, sd) - 0.5) * (b === B_TEMP ? ditA * 0.3 : ditA);
+        const d = m + (cluster(tx, ty, sd) - 0.5) * (BI.lush ? ditA * 0.3 : ditA);
         gl[i] = d > 0.70 ? 4 : d > 0.61 ? 3 : d > 0.535 ? 2 : d > 0.475 ? 1 : 0;
 
         // Rocha: encosta + ruído
@@ -1164,7 +1235,7 @@ export function genChunkTexture(
         const g = gl[i];
         if (g >= 2) {
           const hole = cluster(tx + 23, ty + 37, sd + 13);
-          const holeThr = bio[i] === B_TEMP ? -1 : g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
+          const holeThr = BIOMES[bio[i]].lush ? -1 : g === 2 ? 0.10 : (g === 3 ? 0.05 : 0.02);
           if (hole > holeThr) {
             mat[i] = M_GRASS;
             const wide = macroWide[i];
@@ -1187,7 +1258,7 @@ export function genChunkTexture(
         if (mat[i] === M_ROCK) {
           const cell = ROCK_CELL;
           const c = cobble(tx, ty, cell, sd + 301);
-          let v = cobbleTone(c, bio[i] === B_TEMP ? 3 : 2, 0.71, -0.71);
+          let v = cobbleTone(c, BIOMES[bio[i]].lush ? 3 : 2, 0.71, -0.71);
           if (big > 0.22) v += 1; else if (big < -0.22) v -= 1;
           idx[i] = clamp(v, 0, RL - 1);
           // Rocha polar polvilhada: montinhos de neve assentados por cima da pedra
@@ -1250,7 +1321,7 @@ export function genChunkTexture(
           idx[i] = clamp(v, 0, RL - 1);
 
         } else {
-          if (bio[i] === B_TEMP) {
+          if (BI.lush) {
             // Terra do diorama: ocre liso, variação só em manchas grandes e poucos sulcos marcados
             let v = 4;
             if (big + bay * 0.10 > 0.30) v = 5;
@@ -1320,7 +1391,7 @@ export function genChunkTexture(
         const clump = per.fbm(wx * 0.5 + 31, wy * 0.5 + 17, 2) * 0.5 + 0.5;
         if (ihash(x, y, sd + 63) > P.dirt * (0.25 + 1.5 * clump) * 0.58) continue;
         // Chão do diorama limpo: poucos detalhes escuros em qualquer bioma (temperado ainda menos)
-        if (ihash(x, y, sd + 60) > (bio[i] === B_TEMP ? 0.10 : 0.18)) continue;
+        if (ihash(x, y, sd + 60) > (BIOMES[bio[i]].lush ? 0.10 : 0.18)) continue;
 
         const kind = ihash(x, y, sd + 64);
         if (kind < 0.40) {
@@ -1413,7 +1484,7 @@ export function genChunkTexture(
         }
 
         // Temperado: miolo da grama liso - só os tufos que escorrem pela borda (dão o recorte irregular)
-        if (bio[i] === B_TEMP && !spill) continue;
+        if (BIOMES[bio[i]].lush && !spill) continue;
         const BI = BIOMES[bio[i]];
         let p = (spill ? 0.46 * P.spill : ptuft[lvl]) * (0.30 + 1.45 * clump) * P.tuft * BI.vegDens;
         if (mat[i] === M_ROCK) p *= 0.45;
@@ -1693,6 +1764,7 @@ export function genChunkTexture(
           const dm = (grassDistMap ? grassDistMap[j] : 6) / D;
           let p = (onSnow ? 0.11 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
           if (bio[j] === B_MOUNT) p *= 0.35;                    // vulcão: capim seco e ralo
+          if (bio[j] === B_ALPINE) p *= 0.40;                   // tundra: capim baixo e esparso entre os liquens
           // Concentração: moitas cheias onde o ruído é alto, vazios onde é baixo
           if (tuftClump > 0) {
             const wxc = minWorldX + cx + jx, wzc = minWorldZ + cz + jz;
