@@ -22,12 +22,12 @@ export class InlandWaterManager {
  private pixelScale={value:800};
  private impacts={value:Array.from({length:12},()=>new THREE.Vector4(0,0,0,0))};
  private impactDirections={value:Array.from({length:12},()=>new THREE.Vector2(0,1))};
- private surfaceTarget=new THREE.WebGLRenderTarget(512,512,{minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
+ private surfaceTarget=new THREE.WebGLRenderTarget(256,256,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
  private surfaceCamera=new THREE.PerspectiveCamera();
  private surfaceMatrix={value:new THREE.Matrix4()};
  private surfacePlane={value:new THREE.Vector4()};
  private surfaceReady={value:0};
- private springTarget=new THREE.WebGLRenderTarget(512,512,{minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter});
+ private springTarget=new THREE.WebGLRenderTarget(256,256,{minFilter:THREE.NearestFilter,magFilter:THREE.NearestFilter});
  private springMatrix={value:new THREE.Matrix4()};
  private springHeight={value:0};
  private springReady={value:0};

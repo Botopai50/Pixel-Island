@@ -21,12 +21,12 @@ export interface QualityLevel {
 }
 
 export const QUALITY_LEVELS: QualityLevel[] = [
-  { name: 'alta',        renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 8, shadowStep: 0.6, reflectionSize: 512, textureDensityCap: Infinity },
-  { name: 'alta-',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, vegetationRadius: 7, shadowStep: 0.8, reflectionSize: 512, textureDensityCap: Infinity },
-  { name: 'média',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 7, shadowStep: 1.0, reflectionSize: 384, textureDensityCap: Infinity },
-  { name: 'média-',      renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 6, shadowStep: 1.5, reflectionSize: 384, textureDensityCap: 3 },
-  { name: 'baixa',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 6, shadowStep: 2.0, reflectionSize: 256, textureDensityCap: 2.5 },
-  { name: 'muito baixa', renderScale: 1.00, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 5, shadowStep: 3.0, reflectionSize: 256, textureDensityCap: 2 },
+  { name: 'alta',        renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 8, shadowStep: 0.6, reflectionSize: 256, textureDensityCap: Infinity },
+  { name: 'alta-',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, vegetationRadius: 7, shadowStep: 0.8, reflectionSize: 256, textureDensityCap: Infinity },
+  { name: 'média',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 7, shadowStep: 1.0, reflectionSize: 192, textureDensityCap: Infinity },
+  { name: 'média-',      renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 6, shadowStep: 1.5, reflectionSize: 192, textureDensityCap: 3 },
+  { name: 'baixa',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 6, shadowStep: 2.0, reflectionSize: 160, textureDensityCap: 2.5 },
+  { name: 'muito baixa', renderScale: 1.00, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 5, shadowStep: 3.0, reflectionSize: 160, textureDensityCap: 2 },
 ];
 
 /** Nível inicial pelo hardware (índice em QUALITY_LEVELS). */

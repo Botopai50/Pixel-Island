@@ -187,25 +187,29 @@ export class FirstPersonController {
 
       const MAX_WALKABLE_SLOPE = 0.85; // Inclinação máxima transponível a pé (~40°)
 
-      if (slope > MAX_WALKABLE_SLOPE) {
-        // Encosta muito íngreme ou despenhadeiro/paredão de montanha: impede atravessar a rocha
-        // Calcula a normal horizontal do terreno (gradiente ascendente/descendente)
+      // degrau baixo (barranco, quina da malha, borda de pedra) o personagem sobe andando: só uma subida
+      // alta E íngreme bloqueia (antes qualquer degrau de ~0,5 m já passava de 40° na sondagem curta e
+      // o personagem ficava "enganchado" em quinas e margens)
+      const STEP_UP = 0.6 * this.scale;
+      if (slope > MAX_WALKABLE_SLOPE && deltaH > STEP_UP) {
+        // paredão ou encosta íngreme: tira da velocidade só a parte que vai de encontro à subida e
+        // mantém o resto (desliza ao longo da parede, sem perder a velocidade nem ficar preso)
         const eps = 0.4 * this.scale;
-        const hL = terrain.getHeight(this.position.x - eps, this.position.z);
-        const hR = terrain.getHeight(this.position.x + eps, this.position.z);
-        const hD = terrain.getHeight(this.position.x, this.position.z - eps);
-        const hU = terrain.getHeight(this.position.x, this.position.z + eps);
+        const hL = terrain.getHeight(probeX - eps, probeZ);
+        const hR = terrain.getHeight(probeX + eps, probeZ);
+        const hD = terrain.getHeight(probeX, probeZ - eps);
+        const hU = terrain.getHeight(probeX, probeZ + eps);
         const gradX = (hR - hL) / (2 * eps);
         const gradZ = (hU - hD) / (2 * eps);
         const gradLen = Math.hypot(gradX, gradZ);
 
         if (gradLen > 0.001) {
-          // Tangente à curva de nível da montanha (desliza lateralmente ao longo da encosta)
-          const tangX = -gradZ / gradLen;
-          const tangZ = gradX / gradLen;
-          const dot = this.velocity.x * tangX + this.velocity.z * tangZ;
-          this.velocity.x = tangX * dot * 0.65;
-          this.velocity.z = tangZ * dot * 0.65;
+          const nx = gradX / gradLen, nz = gradZ / gradLen;     // para onde o terreno sobe
+          const into = this.velocity.x * nx + this.velocity.z * nz;
+          if (into > 0) {
+            this.velocity.x -= nx * into;
+            this.velocity.z -= nz * into;
+          }
         } else {
           this.velocity.x = 0;
           this.velocity.z = 0;

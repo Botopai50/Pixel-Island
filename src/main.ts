@@ -257,9 +257,9 @@ class App {
     const aspect = window.innerWidth / window.innerHeight;
 
     // Configuração dos Render Targets e Câmeras de Reflexão Planar (LinearFilter para eliminar shimmer/flicker)
-    this.reflectionRenderTarget = new THREE.WebGLRenderTarget(512, 512, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
+    this.reflectionRenderTarget = new THREE.WebGLRenderTarget(256, 256, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
       format: THREE.RGBAFormat,
     });
     this.reflectionCameraPerspective = new THREE.PerspectiveCamera(75, aspect, 0.1, 14000);
