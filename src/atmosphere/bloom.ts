@@ -32,7 +32,10 @@ export class Bloom {
           vec3 c = texture2D(tSrc, uv).rgb;
           float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
           float sat = (mx - mn) / max(mx, 1e-3);
-          return c * smoothstep(0.62, 0.95, mx) * smoothstep(0.35, 0.7, sat);
+          // só cores quentes ou verdes (lava, brasas, vaga-lumes, sol): o céu e a névoa azul/ciano claros
+          // passavam no corte de brilho e saturação e o céu ficava borrado de brilho
+          float warm = 1.0 - smoothstep(0.0, 0.06, c.b - c.r);
+          return c * smoothstep(0.62, 0.95, mx) * smoothstep(0.35, 0.7, sat) * warm;
         }
         void main() {
           // média de 4 amostras (o alvo tem 1/4 da resolução)
