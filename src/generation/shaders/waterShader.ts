@@ -918,6 +918,14 @@ export const WaterShader = {
           float cph = 0.35 * (sin(worldGrid.x * 0.09 + worldGrid.y * 0.04) * 0.5 + 0.5) + 0.3 * (sin(worldGrid.y * 0.11 - worldGrid.x * 0.07) * 0.5 + 0.5);
           float bw = max(beachWave(dq, animTime, 6.0, cph), beachWave(dq, animTime, 8.5, cph * 0.7 + 0.5));
           bw *= 1.0 - smoothstep(0.02, 0.3, river);
+          // só junto da margem: a onda segue uma linha de profundidade constante, e no fundo plano e
+          // redondo de um lago essa linha fecha num anel solto no meio da água. Ali a profundidade quase
+          // não muda de um ponto para o vizinho (declive baixo); na orla ela muda rápido.
+          {
+            vec2 wpx = vec2(length(vec2(dFdx(vWorldPosition.x), dFdx(vWorldPosition.z))), length(vec2(dFdy(vWorldPosition.x), dFdy(vWorldPosition.z))));
+            float dsl = length(vec2(dFdx(verticalDepth), dFdy(verticalDepth))) / max(length(wpx), 1e-4);
+            bw *= smoothstep(0.10, 0.28, dsl);
+          }
           if (bw > 0.0) finalColor = mix(finalColor, vec3(0.95, 0.98, 1.0), bw > 0.7 ? 0.85 : 0.3);
         }
       }

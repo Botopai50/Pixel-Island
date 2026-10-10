@@ -211,7 +211,7 @@ export class GeothermalManager {
 
   constructor(scene: THREE.Scene, geothermalGen: GeothermalGenerator) {
     this.generator = geothermalGen;
-    this.springs = this.generator.getSprings();
+    this.pickValley(this.generator.nearestValley(0, 0)?.index ?? -1);
     this.group = new THREE.Group();
     this.group.name = 'geothermal_features';
     scene.add(this.group);
@@ -229,7 +229,37 @@ export class GeothermalManager {
 
   public reseed(seed: number): void {
     this.generator.reseed(seed);
-    this.springs = this.generator.getSprings();
+    this.activeValley = -2;   // força a escolha de novo
+    this.pickValley(this.generator.nearestValley(0, 0)?.index ?? -1);
+    this.rebuildAll();
+  }
+
+  /** Vale que tem malhas e efeitos agora (o mais perto do observador); os outros só têm o relevo. */
+  private activeValley = -1;
+  private ventList: ThermalVent[] = [];
+  private baseElev = 15;
+
+  private pickValley(i: number): void {
+    this.activeValley = i;
+    this.springs = i >= 0 ? this.generator.getSpringsOf(i) : [];
+    this.ventList = i >= 0 ? this.generator.getVentsOf(i) : [];
+    this.baseElev = i >= 0 ? this.generator.getValleys()[i].baseElevation : 15;
+  }
+
+  /** Troca o vale ativo quando o observador se aproxima de outro (as malhas são refeitas). */
+  public setObserver(x: number, z: number): void {
+    const n = this.generator.nearestValley(x, z);
+    const SHOW = 1800;
+    let want = this.activeValley;
+    if (!n || n.dist > SHOW + 300) want = -1;
+    else if (this.activeValley < 0) want = n.dist < SHOW ? n.index : -1;
+    else if (n.index !== this.activeValley) {
+      const cur = this.generator.getValleys()[this.activeValley];
+      const dc = Math.hypot(x - cur.x, z - cur.z);
+      if (n.dist + 400 < dc || dc > SHOW + 300) want = n.dist < SHOW ? n.index : -1;
+    }
+    if (want === this.activeValley) return;
+    this.pickValley(want);
     this.rebuildAll();
   }
 
@@ -245,7 +275,7 @@ export class GeothermalManager {
       if (s) arr[i].set(s.x, s.z, s.radius, 0); else arr[i].set(0, 0, 0, 0);
     }
     const va = THERMAL.uVent.value;
-    const vents = this.generator.getVents();
+    const vents = this.ventList;
     for (let i = 0; i < MAX_VENTS; i++) {
       const v = vents[i];
       if (v) va[i].set(v.x, v.z, v.radius, v.kind === 'mudpot' ? 1 : 0); else va[i].set(0, 0, 0, 0);
@@ -454,8 +484,8 @@ export class GeothermalManager {
 
   /** Vapor fino das fumarolas e da lama: o mesmo sistema de nuvens, em escala pequena. */
   private buildVentSteam(): void {
-    const base = this.generator.getValley().baseElevation + 0.15;
-    for (const v of this.generator.getVents()) {
+    const base = this.baseElev + 0.15;
+    for (const v of this.ventList) {
       const count = v.kind === 'mudpot' ? 14 : 22;
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(count * 3), 3));
@@ -536,7 +566,7 @@ export class GeothermalManager {
       }
     }
 
-    for (const v of this.generator.getVents()) {
+    for (const v of this.ventList) {
       const dx = x - v.x, dz = z - v.z;
       const d = Math.hypot(dx, dz);
       if (d > v.radius * 2.6) continue;

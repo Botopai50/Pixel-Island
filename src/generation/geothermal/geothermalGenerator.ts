@@ -3,6 +3,7 @@ import { PRNG } from '../math/prng.ts';
 import { MacroGeography } from '../geography/macroGeography.ts';
 import { VolcanoGenerator } from '../volcanology/volcanoGenerator.ts';
 import { smoothstep } from '../math/mathUtils.ts';
+import { CONFIG } from '../../config.ts';
 
 export interface ThermalSpring {
   x: number;
@@ -44,7 +45,12 @@ export class GeothermalGenerator {
   private seed: number;
   private macroGeo?: MacroGeography;
   private volcanoGen?: VolcanoGenerator;
+  /** o vale original (o mais perto da origem) */
   private valley!: GeothermalValley;
+  /** todos os vales do mundo, cada um com as suas fontes e fumarolas */
+  private valleys: GeothermalValley[] = [];
+  private valleySprings: ThermalSpring[][] = [];
+  private valleyVents: ThermalVent[][] = [];
   private springs: ThermalSpring[] = [];
   private vents: ThermalVent[] = [];
 
@@ -65,12 +71,16 @@ export class GeothermalGenerator {
   private initGeothermal(): void {
     const prng = new PRNG(this.seed ^ 0x48f2d91b);
     this.springs = [];
+    this.vents = [];
+    this.valleys = [];
+    this.valleySprings = [];
+    this.valleyVents = [];
 
+    // Vale 0: o original, o mesmo sorteio e o mesmo lugar de antes.
     // Busca procedural de um vale continental abrigado em terra firme (coastDist > 90m)
     // Afastado com segurança da zona de erupção vulcânica
     let valleyX = -240.0;
     let valleyZ = -190.0;
-    let found = false;
 
     if (this.macroGeo) {
       for (let attempt = 0; attempt < 48; attempt++) {
@@ -78,43 +88,59 @@ export class GeothermalGenerator {
         const dist = prng.range(200.0, 520.0);
         const candX = Math.cos(angle) * dist;
         const candZ = Math.sin(angle) * dist;
-        const { coastDist } = this.macroGeo.getLandmassMask(candX, candZ);
-
-        if (coastDist > 90.0) {
-          if (this.volcanoGen) {
-            const vList = this.volcanoGen.getVolcanoes();
-            let tooClose = false;
-            for (const v of vList) {
-              const ddx = candX - v.x;
-              const ddz = candZ - v.z;
-              if (Math.sqrt(ddx * ddx + ddz * ddz) < (v.baseRadius + 180.0)) {
-                tooClose = true;
-                break;
-              }
-            }
-            if (tooClose) continue;
-          }
+        if (this.validValleySite(candX, candZ)) {
           valleyX = candX;
           valleyZ = candZ;
-          found = true;
           break;
         }
       }
     }
+    this.buildValley(prng, valleyX, valleyZ);
+    this.valley = this.valleys[0];
 
-    if (!found && !this.macroGeo) {
-      valleyX = -240.0;
-      valleyZ = -190.0;
+    // Outros vales: um por placa continental com chance de ~60%, cada um com o próprio sorteio
+    // (determinístico pela seed e pela placa), longe de vulcões, da costa e dos vales já criados
+    if (this.macroGeo) {
+      const G = CONFIG.ISLAND_GRID_SIZE;
+      for (let cz = -4; cz <= 4; cz++) {
+        for (let cx = -4; cx <= 4; cx++) {
+          if (cx === 0 && cz === 0) continue;
+          const p = new PRNG(`${this.seed}/geothermal/${cx}/${cz}`);
+          if (p.next() > 0.6) continue;
+          for (let attempt = 0; attempt < 48; attempt++) {
+            const x = cx * G + p.range(-1100, 1100);
+            const z = cz * G + p.range(-1100, 1100);
+            if (!this.validValleySite(x, z)) continue;
+            let near = false;
+            for (const v of this.valleys) if (Math.hypot(x - v.x, z - v.z) < 700) { near = true; break; }
+            if (near) continue;
+            this.buildValley(p, x, z);
+            break;
+          }
+        }
+      }
     }
+  }
 
+  /** Terra firme afastada da costa e de vulcões. */
+  private validValleySite(x: number, z: number): boolean {
+    if (!this.macroGeo) return true;
+    const { coastDist } = this.macroGeo.getLandmassMask(x, z);
+    if (coastDist <= 90.0) return false;
+    if (this.volcanoGen) {
+      for (const v of this.volcanoGen.getVolcanoes()) {
+        if (Math.hypot(x - v.x, z - v.z) < v.baseRadius + 180.0) return false;
+      }
+    }
+    return true;
+  }
+
+  /** Cria um vale com as suas fontes hidrotermais e fumarolas em volta de (valleyX, valleyZ). */
+  private buildValley(prng: PRNG, valleyX: number, valleyZ: number): void {
     const valleyRadius = prng.range(100.0, 130.0);
     const baseElevation = prng.range(14.5, 18.0);
-    this.valley = {
-      x: valleyX,
-      z: valleyZ,
-      radius: valleyRadius,
-      baseElevation
-    };
+    const valley: GeothermalValley = { x: valleyX, z: valleyZ, radius: valleyRadius, baseElevation };
+    const springs: ThermalSpring[] = [];
 
     // Gera 2 a 4 fontes hidrotermais procedurais perfeitamente espaçadas (zero sobreposição)
     const targetSprings = Math.floor(prng.range(2.0, 4.99));
@@ -137,15 +163,10 @@ export class GeothermalGenerator {
 
         // Garante separação estrita: as bordas de travertino (radius * 1.45) nunca se tocam nem se cortam
         let collides = false;
-        for (const existing of this.springs) {
-          const dx = sx - existing.x;
-          const dz = sz - existing.z;
-          const dist = Math.sqrt(dx * dx + dz * dz);
+        for (const existing of springs) {
+          const dist = Math.hypot(sx - existing.x, sz - existing.z);
           const minSafeDist = (sRadius * 1.45 + existing.radius * 1.45) + 12.0;
-          if (dist < minSafeDist) {
-            collides = true;
-            break;
-          }
+          if (dist < minSafeDist) { collides = true; break; }
         }
 
         if (!collides) {
@@ -154,52 +175,61 @@ export class GeothermalGenerator {
           const geyserInterval = prng.range(6.5, 11.5);
           const geyserDuration = prng.range(2.5, 4.0);
           const waterLevel = baseElevation - prng.range(0.8, 1.2);
-
-          this.springs.push({
-            x: sx,
-            z: sz,
-            radius: sRadius,
-            poolDepth: sDepth,
-            isGeyser,
-            geyserInterval,
-            geyserDuration,
-            waterLevel
-          });
+          springs.push({ x: sx, z: sz, radius: sRadius, poolDepth: sDepth, isGeyser, geyserInterval, geyserDuration, waterLevel });
           break;
         }
       }
     }
 
-    this.initVents(prng);
+    const vents = this.initVents(prng, valley, springs);
+    this.valleys.push(valley);
+    this.valleySprings.push(springs);
+    this.valleyVents.push(vents);
+    this.springs.push(...springs);
+    this.vents.push(...vents);
   }
 
   /**
    * Fumarolas (buracos de vapor com enxofre) e poças de lama no vale, longe das fontes e entre si.
    * Sorteados DEPOIS das fontes, com o mesmo PRNG: as fontes continuam exatamente nos mesmos lugares.
    */
-  private initVents(prng: PRNG): void {
-    this.vents = [];
-    const { x: vx, z: vz, radius: vr } = this.valley;
+  private initVents(prng: PRNG, valley: GeothermalValley, springs: ThermalSpring[]): ThermalVent[] {
+    const vents: ThermalVent[] = [];
+    const { x: vx, z: vz, radius: vr } = valley;
     const wantMud = 2 + Math.floor(prng.range(0, 1.99));
     const wantFum = 5 + Math.floor(prng.range(0, 2.99));
     const want = wantMud + wantFum;
-    for (let attempt = 0; attempt < 240 && this.vents.length < want; attempt++) {
-      const kind: ThermalVent['kind'] = this.vents.length < wantMud ? 'mudpot' : 'fumarole';
+    for (let attempt = 0; attempt < 240 && vents.length < want; attempt++) {
+      const kind: ThermalVent['kind'] = vents.length < wantMud ? 'mudpot' : 'fumarole';
       const radius = kind === 'mudpot' ? prng.range(3.0, 4.6) : prng.range(1.2, 2.0);
       const a = prng.range(0, Math.PI * 2);
       const d = prng.range(8.0, vr * 0.52); // só no piso do vale (fora dele o bioma já é outro)
       const x = vx + Math.cos(a) * d, z = vz + Math.sin(a) * d;
       let ok = true;
-      for (const s of this.springs) {
+      for (const s of springs) {
         if (Math.hypot(x - s.x, z - s.z) < s.radius * 1.7 + radius + 3.0) { ok = false; break; }
       }
-      if (ok) for (const o of this.vents) {
+      if (ok) for (const o of vents) {
         if (Math.hypot(x - o.x, z - o.z) < o.radius + radius + 6.0) { ok = false; break; }
       }
       if (!ok) continue;
-      this.vents.push({ x, z, radius, kind, phase: prng.range(0, 20) });
+      vents.push({ x, z, radius, kind, phase: prng.range(0, 20) });
     }
+    return vents;
   }
+
+  /** Vale mais perto de (x, z), com a distância até o centro; null se não há nenhum. */
+  public nearestValley(x: number, z: number): { index: number; dist: number } | null {
+    let best = -1, bd = Infinity;
+    for (let i = 0; i < this.valleys.length; i++) {
+      const d = Math.hypot(x - this.valleys[i].x, z - this.valleys[i].z);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best < 0 ? null : { index: best, dist: bd };
+  }
+  public getValleys(): GeothermalValley[] { return this.valleys; }
+  public getSpringsOf(i: number): ThermalSpring[] { return this.valleySprings[i] ?? []; }
+  public getVentsOf(i: number): ThermalVent[] { return this.valleyVents[i] ?? []; }
 
   public getVents(): ThermalVent[] {
     return this.vents;
@@ -208,10 +238,17 @@ export class GeothermalGenerator {
   public query(x: number, z: number, currentElevation: number): GeothermalQueryResult {
     // 1. Escultura de cada piscina termal individual com borda de travertino sinterizado
     // Avalia pela fonte de maior proximidade normalizada para transição simétrica perfeita
+    let vi = -1;
+    for (let i = 0; i < this.valleys.length; i++) {
+      const v = this.valleys[i];
+      if (Math.abs(x - v.x) < v.radius + 60.0 && Math.abs(z - v.z) < v.radius + 60.0) { vi = i; break; }
+    }
+    if (vi < 0) return { heightOffset: 0, influence: 0, isThermalPool: false, ringFactor: 0 };
+    const valley = this.valleys[vi];
     let closestSpring: ThermalSpring | null = null;
     let minNorm = 999999;
 
-    for (const s of this.springs) {
+    for (const s of this.valleySprings[vi]) {
       const dx = x - s.x;
       const dz = z - s.z;
       const dist = Math.sqrt(dx * dx + dz * dz);
@@ -246,13 +283,13 @@ export class GeothermalGenerator {
     }
 
     // 2. Aplainamento suave do vale geotérmico geral para a cota base
-    const dxV = x - this.valley.x;
-    const dzV = z - this.valley.z;
+    const dxV = x - valley.x;
+    const dzV = z - valley.z;
     const dValley = Math.sqrt(dxV * dxV + dzV * dzV);
 
-    if (dValley < this.valley.radius) {
-      const valleyFactor = smoothstep(this.valley.radius, this.valley.radius * 0.4, dValley);
-      const offset = (this.valley.baseElevation - currentElevation) * valleyFactor * 0.85;
+    if (dValley < valley.radius) {
+      const valleyFactor = smoothstep(valley.radius, valley.radius * 0.4, dValley);
+      const offset = (valley.baseElevation - currentElevation) * valleyFactor * 0.85;
       return { heightOffset: offset, influence: valleyFactor * 0.6, isThermalPool: false, ringFactor: 0 };
     }
 

@@ -327,9 +327,9 @@ export class Chunk {
       if (!this.terrainMesh && this.terrainGeo && material) {
         this.terrainMesh = new THREE.Mesh(this.terrainGeo, material);
         this.terrainMesh.position.set(this.centerX, 0, this.centerZ);
-        // o relevo não projeta sombra (só recebe): com o sol baixo o próprio barranco da praia
-        // jogava uma sombra preta e serrilhada na areia. Árvores, pedras e construções projetam.
-        this.terrainMesh.castShadow = false;
+        // o relevo projeta sombra (morros e paredões sombreiam o que está atrás). O serrilhado que o
+        // barranco da praia dava na areia com o sol baixo é contido com o normalBias maior (shadowClipmap).
+        this.terrainMesh.castShadow = true;
         this.terrainMesh.receiveShadow = true;
         this.group.add(this.terrainMesh);
         this.onSceneChanged?.();

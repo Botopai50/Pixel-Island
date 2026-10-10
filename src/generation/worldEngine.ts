@@ -371,6 +371,7 @@ export class WorldEngine {
     this.waterMaterial.uniforms.uRipples.value = rippleData;
     this.waterMaterial.uniforms.uActiveRipples.value = this.ripples.length;
 
+    this.geothermalMgr.setObserver(this.lastObserverX, this.lastObserverZ);
     this.geothermalMgr.setView(this.thermalViewH);
     this.geothermalMgr.update(dt);
     this.lavaFluidMgr.update(dt);

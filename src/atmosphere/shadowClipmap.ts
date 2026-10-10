@@ -18,7 +18,7 @@ export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
     radius: 35,
     mapSize: 2048,
     bias: -0.00002,
-    normalBias: 0.05,
+    normalBias: 0.12,
     near: 1,
     far: 1050,
     lightDistance: 800
@@ -30,7 +30,7 @@ export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
     radius: 200,
     mapSize: 2048,
     bias: -0.00005,
-    normalBias: 0.25,
+    normalBias: 0.40,
     near: 1,
     far: 1200,
     lightDistance: 800
@@ -42,7 +42,7 @@ export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
     radius: 600,
     mapSize: 2048,
     bias: -0.00010,
-    normalBias: 0.75,
+    normalBias: 1.00,
     near: 1,
     far: 2000,
     lightDistance: 1000
