@@ -1,6 +1,19 @@
 import * as THREE from 'three';
 import { PRNG } from '../math/prng.ts';
 import { TerrainGenerator } from '../terrain/terrainGenerator.ts';
+import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
+/** O arco de rocha (o mesmo de CaveFeatureManager.buildSeaArch) numa geometria só, de escala `scale`, para a galeria. */
+export function seaArchGeometry(scale = 1): THREE.BufferGeometry {
+  const arch = new THREE.TorusGeometry(scale * 0.52, scale * 0.22, 6, 12, Math.PI);
+  arch.translate(0, scale * 0.52, 0);
+  const pillar = (sx: number) => {
+    const g = new THREE.CylinderGeometry(scale * 0.24, scale * 0.38, scale * 1.1, 6);
+    g.translate(sx * scale * 0.52, scale * 0.15, 0);
+    return g;
+  };
+  return BufferGeometryUtils.mergeGeometries([arch, pillar(-1), pillar(1)].map((g) => g.toNonIndexed()))!;
+}
 
 export class CaveFeatureManager {
   private group: THREE.Group;
