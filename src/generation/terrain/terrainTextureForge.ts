@@ -83,12 +83,24 @@ export const TRAV_SAND: [number, number, number][] = [[176,150,120],[204,180,146
 export const TRAV_MAT: [number, number, number][]  = [[60,70,40],[90,100,50],[124,134,62],[156,164,78],[190,190,96],[216,214,128]];
 export const ACC_TH: [number, number, number][]    = [[236,200,60],[244,226,120],[214,110,50]];
 
+// Manguezal: lama cinza-esverdeada encharcada, barro escuro, raízes e algas verde-oliva sujas
+export const MUDFLAT: [number, number, number][]   = [[24,26,22],[38,40,32],[52,54,42],[66,68,52],[80,80,62],[96,94,72]];
+export const MUD: [number, number, number][]       = [[22,20,16],[38,32,24],[54,46,34],[72,62,44],[90,78,56],[110,96,68]];
+export const MANGROCK: [number, number, number][]  = [[26,30,26],[44,52,42],[64,74,56],[86,98,70],[110,122,88],[136,146,108]];
+export const SWAMPGRASS: [number, number, number][] = [[18,32,20],[30,52,28],[46,74,34],[66,98,40],[92,120,50],[122,142,66]];
+export const ACC_MG: [number, number, number][]    = [[150,170,90],[190,196,120],[120,86,56]];
+
+// Bosque de cerejeiras: capim verde-primavera, terra marrom-rosada, pétalas rosa pelo chão
+export const SPRINGGRASS: [number, number, number][] = [[52,84,58],[84,124,72],[122,158,92],[168,188,122],[214,196,168],[240,200,214]];
+export const SAKURASOIL: [number, number, number][]  = [[58,38,40],[96,64,62],[132,92,86],[166,122,112],[196,152,138],[220,184,170]];
+export const ACC_SK: [number, number, number][]       = [[250,200,214],[244,168,196],[255,226,234]];
+
 // Tundra (alpina e a fria e seca): tapete baixo de liquens verde-acinzentados, cascalho cinza, rocha de tálus
 export const LICHEN: [number, number, number][] = [[30,40,34],[52,64,52],[78,92,70],[104,118,88],[136,146,110],[170,176,140]];
 export const SCREE_SAND: [number, number, number][] = [[70,70,70],[100,100,98],[132,130,126],[160,158,152],[186,184,178],[210,208,204]];
 
 export const B_TEMP = 0, B_MOUNT = 1, B_POLAR = 2, B_DESERT = 3;
-export const B_SAVANNA = 4, B_TROPICAL = 5, B_TAIGA = 6, B_AUTUMN = 7, B_ALPINE = 8, B_THERMAL = 9;
+export const B_SAVANNA = 4, B_TROPICAL = 5, B_TAIGA = 6, B_AUTUMN = 7, B_ALPINE = 8, B_THERMAL = 9, B_MANGROVE = 10, B_SAKURA = 11;
 
 export interface BiomeForgeDef {
   key: string;
@@ -153,6 +165,14 @@ export const BIOMES: BiomeForgeDef[] = [
     ramps:[TRAV_SAND, DIRT, ROCK, TRAV_MAT, ACC_TH],
     ground:'dunas',  wallHi:'terra',   wallLo:'bloco',
     veg:'tufo',     vegBias:-0.40, rockBias: 0.10, vegDens:0.08, bushes:false, lush:false, grassKey:'none' },
+  { key:'manguezal', label:'Manguezal', swatch:'#5a5a3a',
+    ramps:[MUDFLAT, MUD, MANGROCK, SWAMPGRASS, ACC_MG],
+    ground:'canais', wallHi:'terra',   wallLo:'bloco',
+    veg:'tufo',     vegBias:-0.06, rockBias:-0.10, vegDens:0.60, bushes:false, lush:false, grassKey:'grass' },
+  { key:'sakura', label:'Bosque de Cerejeiras', swatch:'#f2a6c4',
+    ramps:[SAND,  SAKURASOIL, ROCK, SPRINGGRASS, ACC_SK],
+    ground:'canais', wallHi:'terra',   wallLo:'bloco',
+    veg:'tufo',     vegBias:-0.10, rockBias: 0.00, vegDens:0.38, bushes:true,  lush:true,  grassKey:'grass' },
 ];
 
 export const NB = BIOMES.length;
@@ -175,9 +195,10 @@ export const BIOME_TYPE_TO_FORGE: Partial<Record<BiomeType, number>> = {
   [BiomeType.GEOTHERMAL_VALLEY]: B_THERMAL,
   [BiomeType.SAVANNAH]: B_SAVANNA,
   [BiomeType.TROPICAL_RAINFOREST]: B_TROPICAL,
-  [BiomeType.MANGROVE_SWAMP]: B_TROPICAL,
+  [BiomeType.MANGROVE_SWAMP]: B_MANGROVE,
   [BiomeType.BOREAL_TAIGA]: B_TAIGA,
   [BiomeType.AUTUMN_FOREST]: B_AUTUMN,
+  [BiomeType.SAKURA_GROVE]: B_SAKURA,
   [BiomeType.ALPINE_TUNDRA]: B_ALPINE,
   [BiomeType.ROCKY_PEAKS]: B_ALPINE,
   // temperado (paleta 0): floresta mista, campos e a praia (a areia vem da faixa de praia)
@@ -988,7 +1009,11 @@ export function genChunkTexture(
         // MESMA fonte de verdade (em vez de um limiar de altura/temperatura próprio e independente)
         // garante que o chão nunca discorde da vegetação (ex.: pinheiros nevados sobre areia).
         const gPt = terrainGen.getPointFast(wx, wy);
-        bioGridCat[gRow + gx] = BIOME_TYPE_TO_FORGE[gPt.biome.type] ?? B_TEMP;
+        let cat = BIOME_TYPE_TO_FORGE[gPt.biome.type] ?? B_TEMP;
+        // as poças e as margens do manguezal (água rasa e a "praia" que a hidrologia desenha em volta)
+        // são lama como o resto dele: senão viravam areia clara do temperado
+        if ((gPt.biome.type === BiomeType.SHALLOWS || gPt.biome.type === BiomeType.BEACH) && gPt.height < 4.0 && terrainGen.isMangroveZone(wx, wy)) cat = B_MANGROVE;
+        bioGridCat[gRow + gx] = cat;
       }
     }
   })();
@@ -1216,7 +1241,8 @@ export function genChunkTexture(
         const isSand = (h < CONFIG.SEA_LEVEL + sandLim + 1.5 * (1 - sandT * sandT * (3 - 2 * sandT)) && sl < 1.45)
                     || wetT[i] + (cluster(tx + 17, ty + 29, sd + 11) - 0.5) * 0.30 > 0.42;
 
-        if (isSand) { mat[i] = M_SAND; gl[i] = Math.min(gl[i], 1); }
+        // manguezal: em volta da água é lama, nunca areia
+        if (isSand && b !== B_MANGROVE) { mat[i] = M_SAND; gl[i] = Math.min(gl[i], 1); }
         else if (isRock) { mat[i] = M_ROCK; gl[i] = Math.min(gl[i], 2); }
         else mat[i] = M_DIRT;
       }
@@ -1759,10 +1785,12 @@ export function genChunkTexture(
           const j = ly * W + lx;
           // Bioma de gelo: tufos nevados espalhados sobre a neve (em menor quantidade)
           const onSnow = bio[j] === B_POLAR && mat[j] === M_DIRT;
-          if (!onSnow && (mat[j] !== M_GRASS || gl[j] < 2)) continue;
+          // deserto: capim seco esparso sobre a areia (touceiras isoladas)
+          const onDesertSand = bio[j] === B_DESERT && mat[j] === M_SAND;
+          if (!onSnow && !onDesertSand && (mat[j] !== M_GRASS || gl[j] < 2)) continue;
           // Distância até a borda em metros: beirada = mais tufos, miolo = menos
           const dm = (grassDistMap ? grassDistMap[j] : 6) / D;
-          let p = (onSnow ? 0.11 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
+          let p = (onDesertSand ? 0.022 : onSnow ? 0.11 : dm <= 0.85 ? 0.55 : dm <= 1.2 ? 0.32 : 0.12) * tuftAmount;
           if (bio[j] === B_MOUNT) p *= 0.35;                    // vulcão: capim seco e ralo
           if (bio[j] === B_ALPINE) p *= 0.40;                   // tundra: capim baixo e esparso entre os liquens
           // Concentração: moitas cheias onde o ruído é alto, vazios onde é baixo

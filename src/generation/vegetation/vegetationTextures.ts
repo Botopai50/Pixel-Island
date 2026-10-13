@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { buildGrassTuftPixels, GRASS_TUFT_SHAPES, GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
+import { buildGrassTuftPixels, GRASS_TUFT_SHAPES, GRASS_MARSH_SHAPES, GRASS_STYLES, GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 
 /**
  * Utilitário para geração de texturas procedurais estilizadas em Pixel Art
@@ -239,15 +239,23 @@ export class VegetationTextures {
    * (a mesma da grama pintada no chão), nevada e seca.
    */
   private static grassSets: Record<string, THREE.CanvasTexture[]> = {};
-  public static getGrassVariantTextures(kind: 'green' | 'snow' | 'dry'): THREE.CanvasTexture[] {
+  public static getGrassVariantTextures(kind: 'green' | 'snow' | 'dry' | 'marsh' | 'jungle' | 'taiga' | 'savanna' | 'autumn' | 'sakura' | 'tundra' | 'desert'): THREE.CanvasTexture[] {
     if (this.grassSets[kind]) return this.grassSets[kind];
     const TONES: Record<string, number[][]> = {
       green: [[32, 56, 64], [48, 112, 64], [72, 140, 90], [90, 186, 50], [160, 194, 72], [206, 222, 110]],
       snow: [[104, 116, 146], [140, 156, 184], [172, 188, 212], [206, 218, 236], [230, 238, 248], [255, 255, 255]],
       dry: [[52, 38, 30], [84, 62, 44], [112, 86, 58], [158, 124, 78], [194, 160, 104], [222, 194, 138]],
+      marsh: [[24, 28, 12], [44, 50, 18], [70, 78, 28], [100, 108, 40], [132, 136, 56], [166, 160, 80]],
+      jungle: [[6, 34, 22], [12, 62, 34], [22, 92, 44], [38, 126, 52], [64, 156, 58], [104, 188, 74]],
+      taiga: [[16, 34, 36], [28, 56, 52], [42, 80, 66], [62, 104, 80], [88, 128, 96], [120, 152, 116]],
+      savanna: [[70, 52, 24], [112, 86, 36], [158, 124, 52], [200, 164, 72], [228, 196, 102], [246, 224, 142]],
+      autumn: [[60, 34, 20], [102, 58, 28], [148, 86, 34], [188, 118, 44], [214, 150, 62], [232, 184, 96]],
+      sakura: [[44, 78, 56], [72, 114, 76], [108, 148, 92], [150, 180, 116], [220, 196, 178], [248, 206, 224]],
+      tundra: [[34, 44, 38], [56, 68, 56], [82, 94, 74], [108, 120, 92], [138, 148, 112], [170, 176, 138]],
+      desert: [[78, 60, 38], [116, 92, 56], [156, 128, 78], [192, 162, 98], [216, 188, 122], [236, 212, 150]],
     };
-    const seeds: Record<string, number> = { green: 7919, snow: 4217, dry: 3301 };
-    return (this.grassSets[kind] = GRASS_TUFT_SHAPES.map((shape, i) => {
+    const seeds: Record<string, number> = { green: 7919, snow: 4217, dry: 3301, marsh: 5113, jungle: 6101, taiga: 6203, savanna: 6307, autumn: 6409, sakura: 6521, tundra: 6613, desert: 6727 };
+    return (this.grassSets[kind] = (kind === 'marsh' ? GRASS_MARSH_SHAPES : (GRASS_STYLES[kind] ?? GRASS_TUFT_SHAPES)).map((shape, i) => {
       const canvas = document.createElement('canvas');
       canvas.width = GRASS_SPRITE_W; canvas.height = GRASS_SPRITE_H;
       const ctx = canvas.getContext('2d')!;

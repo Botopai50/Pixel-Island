@@ -139,8 +139,8 @@ export class BiomeManager {
 
     // 3. Polar: gelo e tundra ártica (clima de base muito frio ou mar congelado)
     if ((specialEnv?.iceInfluence ?? 0) > 0.15 || temperature < 0.17) {
-      return this.make(BiomeType.FROZEN_TUNDRA, 0.75, temperature, isSteepSlope ? 0.0 : 0.04,
-        { ...NO_TREES, snowPine: 0.65, arcticWillow: 0.35 }, 0.20, 0.55, 0.05, '#d2e7f5');
+      return this.make(BiomeType.FROZEN_TUNDRA, 0.75, temperature, isSteepSlope ? 0.0 : 0.05,
+        { ...NO_TREES, snowPine: 0.78, arcticWillow: 0.22 }, 0.20, 0.55, 0.05, '#d2e7f5');
     }
 
     // 4. Andares de altitude: só acima da linha das árvores de cada clima
@@ -149,21 +149,21 @@ export class BiomeManager {
       return this.make(BiomeType.SNOW_SUMMIT, 0.8, 0.05, 0.0, NO_TREES, 0.02, 0.55, 0.0, '#f0f4f8');
     }
     if (elevation > snowLine - 20) {
-      return this.make(BiomeType.ALPINE_TUNDRA, moisture, temperature, isSteepSlope ? 0.0 : 0.03,
-        { ...NO_TREES, pine: 0.8, birch: 0.2 }, 0.22, 0.58, 0.05, '#586252');
+      return this.make(BiomeType.ALPINE_TUNDRA, moisture, temperature, isSteepSlope ? 0.0 : 0.05,
+        { ...NO_TREES, pine: 0.65, birch: 0.2, arcticWillow: 0.15 }, 0.22, 0.58, 0.05, '#586252');
     }
 
     // 5. Cânions: rocha de deserto só em clima quente e seco (em outros climas o cânion é só relevo)
     if ((specialEnv?.canyonInfluence ?? 0) > 0.45 && elevation > CONFIG.BEACH_HEIGHT && temperature > 0.5 && moisture < 0.55) {
       return this.make(BiomeType.CANYON_DESERT, 0.22, 0.75, isSteepSlope ? 0.0 : 0.12,
-        { ...NO_TREES, acacia: 0.35, cactus: 0.65 }, 0.15, 0.55, 0.08, '#b85c38');
+        { ...NO_TREES, cactus: 0.75, deadBurntTree: 0.25 }, 0.0, 0.55, 0.01, '#b85c38');
     }
 
     // 6. Costa: manguezal nas costas tropicais úmidas, praia no resto
     if (elevation <= CONFIG.BEACH_HEIGHT && slope < 0.55) {
       if (temperature > 0.66 && moisture > 0.58) {
         return this.make(BiomeType.MANGROVE_SWAMP, moisture, temperature, 0.45,
-          { ...NO_TREES, coastalPalm: 0.15, mangrove: 0.85 }, 0.35, 0.08, 0.40, '#2b3820');
+          { ...NO_TREES, mangrove: 1.0 }, 0.12, 0.0, 0.55, '#2b3820');
       }
       const isPalmCluster = clusterNoise > 0.60 && gladeNoise > 0.05;
       const warm = smoothstep(0.35, 0.55, temperature);
@@ -175,8 +175,8 @@ export class BiomeManager {
     if (temperature < 0.30) {
       if (moisture < 0.35) {
         // tundra fria e seca: líquens, capim baixo, quase sem árvores
-        return this.make(BiomeType.ALPINE_TUNDRA, moisture, temperature, isSteepSlope ? 0.0 : 0.04,
-          { ...NO_TREES, pine: 0.7, birch: 0.3 }, 0.22, 0.50, 0.05, '#586252');
+        return this.make(BiomeType.ALPINE_TUNDRA, moisture, temperature, isSteepSlope ? 0.0 : 0.06,
+          { ...NO_TREES, pine: 0.62, birch: 0.23, arcticWillow: 0.15 }, 0.22, 0.50, 0.05, '#586252');
       }
       const density = smoothstep(0.2, 0.6, clusterNoise) * 0.72;
       return this.make(BiomeType.BOREAL_TAIGA, moisture, temperature, gladeNoise > 0.7 ? 0.15 : density,
@@ -194,13 +194,19 @@ export class BiomeManager {
         return this.make(BiomeType.AUTUMN_FOREST, moisture, temperature, gladeNoise > 0.75 ? 0.18 : density,
           { ...NO_TREES, oak: 0.15, pine: 0.10, birch: 0.20, autumnMaple: 0.55 }, 0.50, 0.15, 0.38, '#6d5330');
       }
+      // bosque de cerejeiras: manchas grandes (algumas centenas de metros) dentro da faixa temperada
+      if (this.noise.fbm2D(x * 0.0016 + 300.0, z * 0.0016 - 90.0, 2) > 0.26) {
+        const sd = smoothstep(0.2, 0.55, clusterNoise) * 0.70;
+        return this.make(BiomeType.SAKURA_GROVE, moisture, temperature, gladeNoise > 0.72 ? 0.2 : sd,
+          { ...NO_TREES, oak: 0.08, birch: 0.12 }, 0.40, 0.08, 0.14, '#c9a0b4');
+      }
       const density = smoothstep(0.25, 0.65, clusterNoise) * 0.72;
       return this.make(BiomeType.TEMPERATE_FOREST, moisture, temperature, gladeNoise > 0.7 ? 0.18 : density,
         { ...NO_TREES, oak: 0.55, pine: 0.2, birch: 0.25 }, 0.45, 0.18, 0.25, '#486f34');
     }
     if (moisture < 0.30) {
       return this.make(BiomeType.DESERT_DUNES, moisture, temperature, 0.06,
-        { ...NO_TREES, acacia: 0.25, cactus: 0.75 }, 0.08, 0.30, 0.12, '#dfaf64');
+        { ...NO_TREES, cactus: 0.75, deadBurntTree: 0.25 }, 0.0, 0.30, 0.02, '#dfaf64');
     }
     if (moisture < 0.56) {
       const density = smoothstep(0.3, 0.7, clusterNoise) * 0.35;

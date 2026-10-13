@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { SHADOW_CASCADE_CAMS, setShadowCascade } from '../generation/vegetation/instancePool.ts';
+import { FAR } from '../generation/farLayer.ts';
 
 export interface ClipmapCascadeConfig {
   radius: number;        // Raio/extensão ortográfica em metros (ex: 35m, 120m, 450m)
@@ -57,6 +59,12 @@ export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
  * Mantém 3 níveis de resolução de sombras centrados dinamicamente no observador/jogador,
  * aplicando Texel Snapping em tempo real para erradicar qualquer cintilação (swimming/shimmering).
  */
+/**
+ * Faixas distantes refeitas só de vez em quando (ver farState). Desligado: o mapa guarda só as árvores que a câmera enxerga, e entre uma
+ * atualização e outra ficavam árvores sem sombra (sumiam do nada ao girar ou andar). As três faixas voltam a se refazer juntas, como no original.
+ */
+const THROTTLE_FAR_CASCADES = false;
+
 export class ShadowClipmap {
   private scene: THREE.Scene;
   private lights: THREE.DirectionalLight[] = [];
@@ -64,6 +72,10 @@ export class ShadowClipmap {
   private currentSunDir: THREE.Vector3 = new THREE.Vector3(0.5, 0.8, 0.35).normalize();
   private lastTargetPos: THREE.Vector3 = new THREE.Vector3();
   private sunIntensity: number = 1.35;
+  // Faixas distantes (1 e 2): o mapa de sombra delas só é refeito quando o centro (em passos grossos, que são múltiplos
+  // do texel, então a imagem é a mesma) ou o sol mudam de verdade, ou de tempos em tempos para pegar o que carregou.
+  // Antes as 3 faixas desenhavam TODAS as árvores (milhões de triângulos) a cada ~0,6 m andado.
+  private farState: { u: number; v: number; dir: THREE.Vector3; at: number; forced: boolean }[] = [];
 
   constructor(scene: THREE.Scene, configs: ClipmapCascadeConfig[] = DEFAULT_CLIPMAP_CONFIGS) {
     this.scene = scene;
@@ -95,7 +107,67 @@ export class ShadowClipmap {
       this.scene.add(light);
       this.scene.add(light.target);
       this.lights.push(light);
+      SHADOW_CASCADE_CAMS.push(light.shadow.camera);
+      // As três faixas só são desenhadas quando o clipmap manda, UMA por quadro (ver requestAll/tick): refazer as três de uma vez custava
+      // ~25 ms num quadro só, e era isso que dava as travadinhas ao andar. Cada faixa continua inteira e coerente (mapa e matriz juntos),
+      // só que o intervalo entre a primeira e a última é de dois quadros.
+      light.shadow.autoUpdate = false;
+      light.shadow.needsUpdate = true;
+      if (i >= 1 && THROTTLE_FAR_CASCADES) {
+        light.shadow.autoUpdate = false;       // só é refeita quando o clipmap pedir (shadow.needsUpdate)
+        light.shadow.needsUpdate = true;
+        this.farState[i] = { u: NaN, v: NaN, dir: new THREE.Vector3(), at: 0, forced: true };
+      }
     }
+  }
+
+  private pending: boolean[] = [true, true, true];
+
+  /** Pede que as três faixas refaçam o mapa (uma por quadro, da mais próxima para a mais distante). */
+  public requestAll(): void {
+    this.pending.fill(true);
+  }
+
+  /** Chamar uma vez por quadro, antes de desenhar: põe na fila a próxima faixa pendente. Devolve true se alguma será refeita. */
+  private liteHooked = false;
+  public tick(renderer: THREE.WebGLRenderer): boolean {
+    if (!this.liteHooked) {
+      // as cópias leves das árvores só entram no desenho dos mapas de sombra
+      this.liteHooked = true;
+      const sm = renderer.shadowMap;
+      const orig = sm.render.bind(sm);
+      sm.render = (lights, scene, camera) => {
+        // o campo distante desenha uma fatia: os objetos de perto estão escondidos, então os mapas de sombra esperam o desenho principal
+        if (FAR.inPass) return;
+        // cada grupo de árvores se prepara para a faixa que será refeita neste quadro (uma só, na maioria dos quadros)
+        const todo: number[] = [];
+        this.lights.forEach((l, i) => { if (l.shadow.needsUpdate || l.shadow.autoUpdate) todo.push(i); });
+        if (todo.length === 0) { orig(lights, scene, camera); return; }
+        setShadowCascade(todo.length === 1 ? todo[0] : -1);
+        FAR.shadowBegin();
+        try { orig(lights, scene, camera); } finally { FAR.shadowEnd(); setShadowCascade(-2); }
+      };
+    }
+    for (let i = 0; i < this.lights.length; i++) {
+      if (!this.pending[i]) continue;
+      this.pending[i] = false;
+      this.lights[i].shadow.needsUpdate = true;
+      renderer.shadowMap.needsUpdate = true;
+      return true;
+    }
+    return false;
+  }
+
+  /** Pede só uma faixa (0 = a mais próxima): as distantes mudam pouco com poucos metros andados e custam bem mais. */
+  public requestCascade(i: number): void {
+    this.pending[i] = true;
+  }
+
+  /** Pede que as faixas distantes refaçam o mapa de sombra no próximo quadro (a vista mudou, e os mapas só levam o que a câmera enxergava). */
+  public markFarDirty(): void {
+    // (não move a luz: refaz o mapa já no mesmo quadro com a mesma posição, só com as árvores da vista de agora)
+    if (!THROTTLE_FAR_CASCADES) return;
+    for (let i = 1; i < this.lights.length; i++) { this.lights[i].shadow.needsUpdate = true; this.farState[i].at = performance.now(); }
   }
 
   public setSunDirection(sunDir: THREE.Vector3): void {
@@ -132,20 +204,33 @@ export class ShadowClipmap {
 
     const target = new THREE.Vector3(x, y, z);
 
+    const nowMs = performance.now();
     for (let i = 0; i < this.lights.length; i++) {
       const light = this.lights[i];
       const cfg = this.configs[i];
 
       // Tamanho do texel no espaço de mundo
       const worldTexelSize = (2 * cfg.radius) / cfg.mapSize;
+      // Faixas distantes: o centro anda em passos grossos (80 texels, múltiplo do texel)
+      const step = i >= 1 && THROTTLE_FAR_CASCADES ? worldTexelSize * 80 : worldTexelSize;
 
       // Projeção do ponto alvo sobre os eixos ortogonais da sombra
       const u = target.dot(right);
       const v = target.dot(up);
 
-      // Quantização (Texel Snapping) para múltiplos inteiros do tamanho do texel
-      const uSnapped = Math.floor(u / worldTexelSize) * worldTexelSize;
-      const vSnapped = Math.floor(v / worldTexelSize) * worldTexelSize;
+      // Quantização (Texel Snapping) para múltiplos inteiros do passo
+      const uSnapped = Math.floor(u / step) * step;
+      const vSnapped = Math.floor(v / step) * step;
+
+      if (i >= 1 && THROTTLE_FAR_CASCADES) {
+        const st = this.farState[i];
+        const maxAge = i === 1 ? 2500 : 7000;
+        const sunMoved = st.dir.dot(sunDir) < 0.99995;           // ~0,6 grau
+        const due = st.forced || uSnapped !== st.u || vSnapped !== st.v || sunMoved || nowMs - st.at > maxAge;
+        if (!due) continue;
+        st.u = uSnapped; st.v = vSnapped; st.dir.copy(sunDir); st.at = nowMs; st.forced = false;
+        light.shadow.needsUpdate = true;
+      }
 
       // Centro ajustado estritamente alinhado aos texels de mundo
       const snappedCenter = target.clone()
@@ -180,6 +265,8 @@ export class ShadowClipmap {
       light.shadow.map?.dispose();
       (light.shadow as any).map = null;
     }
+    this.pending.fill(true);
+    if (THROTTLE_FAR_CASCADES) for (let i = 1; i < this.lights.length; i++) { this.farState[i].forced = true; this.lights[i].shadow.needsUpdate = true; }
     this.updatePositions(this.lastTargetPos.x, this.lastTargetPos.y, this.lastTargetPos.z);
   }
 

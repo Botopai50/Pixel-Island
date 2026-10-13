@@ -11,7 +11,7 @@ import type { Wind } from './wind.ts';
  * ao mundo: andar ou girar a câmera não muda para onde elas vão. A quantidade visível é a mistura do bioma (0-1): cada
  * ponto tem um sorteio e só aparece se o sorteio for menor que ela.
  */
-export const PARTICLE_KINDS = ['snow', 'leaves', 'pollen', 'fireflies', 'dust', 'sand', 'ash', 'embers', 'motes', 'steam'] as const;
+export const PARTICLE_KINDS = ['snow', 'leaves', 'pollen', 'fireflies', 'dust', 'sand', 'ash', 'embers', 'motes', 'steam', 'petals'] as const;
 export type ParticleKind = typeof PARTICLE_KINDS[number];
 
 interface KindDef {
@@ -35,6 +35,7 @@ interface KindDef {
 const KINDS: Record<ParticleKind, KindDef> = {
   snow: { count: 3000, box: 40, boxH: 22, drop: 4, fall: -1.3, wind: 1, sway: 0.6, swayF: 0.7, size: 0.11, maxPx: 5, minPx: 2, colors: ['#f6f9ff', '#e4ecf8'], alpha: 0.95 },
   leaves: { count: 1200, box: 36, boxH: 16, drop: 3, fall: -0.85, wind: 1.4, sway: 1.1, swayF: 0.9, size: 0.17, maxPx: 5, minPx: 2, colors: ['#d8762a', '#b8402a', '#e2b03a', '#a8582a'], alpha: 1.0 },
+  petals: { count: 1500, box: 36, boxH: 16, drop: 3, fall: -0.7, wind: 1.3, sway: 1.3, swayF: 0.8, size: 0.16, maxPx: 5, minPx: 2, colors: ['#ffc4d8', '#f6a2c2', '#ffe0ea', '#f08cb2'], alpha: 1.0 },
   pollen: { count: 1000, box: 30, boxH: 8, drop: 2.5, fall: 0.05, wind: 0.35, sway: 0.7, swayF: 0.35, size: 0.08, maxPx: 3, minPx: 2, colors: ['#fff4b8', '#ffffff'], alpha: 0.85, night: -1 },
   fireflies: { count: 520, box: 36, boxH: 6, drop: 2.0, fall: 0.02, wind: 0.05, sway: 1.3, swayF: 0.22, size: 0.12, maxPx: 4, colors: ['#d8ff6a', '#f4ff9a'], alpha: 1.0, glow: true, night: 1 },
   dust: { count: 1000, box: 40, boxH: 8, drop: 2.5, fall: 0.06, wind: 1.6, sway: 0.35, swayF: 0.3, size: 0.09, maxPx: 4, minPx: 2, colors: ['#ead0a0', '#d8b47a'], alpha: 0.6 },

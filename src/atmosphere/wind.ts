@@ -15,6 +15,12 @@ export const WIND_U = {
   uWindT: { value: 0 },
 };
 
+/**
+ * Quem empurra a grama e as plantas baixas ao passar: xyz = pés do personagem, w = raio (w = 0 desliga). Compartilhado por referência:
+ * main.ts → worldEngine.setGrassPusher() → vegetationManager atualiza a cada quadro.
+ */
+export const GRASS_PUSHER = { value: new THREE.Vector4(0, -9999, 0, 0) };
+
 export class Wind {
   /** direção no plano xz (unitária) */
   public x = 1;

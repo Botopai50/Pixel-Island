@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { buildLilyPadsPixel, buildDuckweedPixel } from './aquaticPixel.ts';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 // Previne emissão repetida de warnings quando toNonIndexed() é chamado em geometrias já não-indexadas
@@ -1700,6 +1701,131 @@ export class BotanicalGeometryFactory {
   /**
    * Cacho de juncos / taboas aquáticas de margem.
    */
+  /** Vitória-régia em pixel art (o gerador do pacote geradores-vitoria-regia-lentilha-dagua): folhas de 24 células com corte e nervuras, e flores rosa; cor de vértice. */
+  public static buildLilyPads(): { body: THREE.BufferGeometry } {
+    return { body: buildLilyPadsPixel() };
+  }
+
+  private static paintAll(g: THREE.BufferGeometry, r: number, gr: number, b: number): THREE.BufferGeometry {
+    const n = g.attributes.position.count, col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) { col[i * 3] = r; col[i * 3 + 1] = gr; col[i * 3 + 2] = b; }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  }
+
+  /** Tapete de pétalas caídas: retalhos rosa e brancos espalhados no chão (disco de ~1,6 m). */
+  public static buildPetalCarpet(): { body: THREE.BufferGeometry } {
+    const parts: THREE.BufferGeometry[] = [];
+    let s = 11;
+    const rnd = () => { s = (s * 16807) % 2147483647; return s / 2147483647; };
+    const tones = [[0.98, 0.70, 0.80], [0.96, 0.58, 0.72], [1.0, 0.86, 0.90], [0.92, 0.50, 0.66]];
+    for (let i = 0; i < 26; i++) {
+      const a = rnd() * Math.PI * 2, d = Math.sqrt(rnd()) * 1.6, w = 0.10 + rnd() * 0.16;
+      const q = new THREE.PlaneGeometry(w, w * (0.6 + rnd() * 0.6)).toNonIndexed();
+      q.rotateX(-Math.PI / 2); q.rotateY(rnd() * Math.PI);
+      q.translate(Math.cos(a) * d, 0.018 + rnd() * 0.012, Math.sin(a) * d);
+      const t = tones[Math.floor(rnd() * tones.length)];
+      parts.push(this.paintAll(q, t[0], t[1], t[2]));
+    }
+    return { body: BufferGeometryUtils.mergeGeometries(parts)! };
+  }
+
+  /** Lanterna de pedra japonesa (tōrō): base, haste, caixa de luz com abertura e telhado em pirâmide. ~1,5 m. */
+  public static buildStoneLantern(): { body: THREE.BufferGeometry } {
+    const parts: THREE.BufferGeometry[] = [];
+    const add = (g: THREE.BufferGeometry, y: number, c: number) => { g.translate(0, y, 0); parts.push(this.paintAll(g.toNonIndexed(), c, c * 0.98, c * 0.92)); };
+    add(new THREE.CylinderGeometry(0.34, 0.40, 0.14, 8), 0.07, 0.42);
+    add(new THREE.CylinderGeometry(0.13, 0.16, 0.62, 8), 0.45, 0.50);
+    add(new THREE.CylinderGeometry(0.34, 0.24, 0.12, 8), 0.82, 0.46);
+    add(new THREE.BoxGeometry(0.34, 0.32, 0.34), 1.04, 0.52);
+    const glow = new THREE.BoxGeometry(0.2, 0.18, 0.36); glow.translate(0, 1.04, 0);
+    parts.push(this.paintAll(glow.toNonIndexed(), 0.98, 0.78, 0.42));
+    const roof = new THREE.ConeGeometry(0.46, 0.26, 4); roof.rotateY(Math.PI / 4);
+    add(roof, 1.33, 0.40);
+    add(new THREE.SphereGeometry(0.08, 8, 6), 1.5, 0.48);
+    return { body: BufferGeometryUtils.mergeGeometries(parts)! };
+  }
+
+  /** Cacto-barril: bola canelada (12 costelas) verde, com uma coroa de flores rosa no alto. ~0,9 m. */
+  public static buildBarrelCactus(): { body: THREE.BufferGeometry } {
+    const body = new THREE.SphereGeometry(0.45, 24, 14).toNonIndexed();
+    const pos = body.attributes.position, n = pos.count, col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const th = Math.atan2(z, x), rib = Math.cos(th * 12);
+      const k = 1 + 0.09 * rib;
+      pos.setXYZ(i, x * k, y * 1.05 + 0.45, z * k);
+      const v = 0.55 + 0.45 * (rib * 0.5 + 0.5);
+      col[i * 3] = 0.16 * v; col[i * 3 + 1] = 0.40 * v + 0.05; col[i * 3 + 2] = 0.17 * v;
+    }
+    body.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    body.computeVertexNormals();
+    const flowers: THREE.BufferGeometry[] = [body];
+    for (let k = 0; k < 5; k++) {
+      const a = k * 1.256, f = new THREE.ConeGeometry(0.07, 0.16, 5, 1, true).toNonIndexed();
+      f.translate(Math.cos(a) * 0.14, 0.97, Math.sin(a) * 0.14);
+      flowers.push(this.paintAll(f, 0.95, 0.38, 0.55));
+    }
+    return { body: BufferGeometryUtils.mergeGeometries(flowers)! };
+  }
+
+  /** Figueira-da-índia: pás achatadas encaixadas umas nas outras, com frutos vermelhos. ~1,2 m. */
+  public static buildPricklyPear(): { body: THREE.BufferGeometry } {
+    const parts: THREE.BufferGeometry[] = [];
+    const pad = (x: number, y: number, z: number, rz: number, ry: number, s: number) => {
+      const g = new THREE.SphereGeometry(0.5, 10, 8).toNonIndexed();
+      g.scale(0.34 * s, 0.46 * s, 0.07 * s);
+      g.rotateZ(rz); g.rotateY(ry); g.translate(x, y, z);
+      parts.push(this.paintAll(g, 0.20, 0.46, 0.24));
+    };
+    pad(0, 0.34, 0, 0.05, 0.3, 1.0);
+    pad(0.2, 0.74, 0.04, -0.45, 0.9, 0.9);
+    pad(-0.2, 0.72, -0.04, 0.5, -0.4, 0.9);
+    pad(0.38, 1.06, 0.1, -0.2, 0.2, 0.75);
+    pad(-0.1, 1.1, -0.1, 0.25, 1.2, 0.75);
+    for (const [x, y, z] of [[0.55, 1.45, 0.12], [-0.12, 1.48, -0.1], [0.74, 1.12, 0.1]]) {
+      const f = new THREE.SphereGeometry(0.07, 6, 5).toNonIndexed();
+      f.translate(x, y, z);
+      parts.push(this.paintAll(f, 0.78, 0.16, 0.2));
+    }
+    return { body: BufferGeometryUtils.mergeGeometries(parts)! };
+  }
+
+  /** Bola-de-feno (tumbleweed): anéis finos e secos cruzados em todas as direções. ~0,9 m. */
+  public static buildTumbleweed(): { body: THREE.BufferGeometry } {
+    const parts: THREE.BufferGeometry[] = [];
+    for (let k = 0; k < 9; k++) {
+      const t = new THREE.TorusGeometry(0.34 + (k % 3) * 0.05, 0.016, 4, 14).toNonIndexed();
+      t.rotateX(k * 0.97); t.rotateY(k * 1.71); t.rotateZ(k * 0.53);
+      t.translate(0, 0.42, 0);
+      parts.push(this.paintAll(t, 0.45 + (k % 3) * 0.05, 0.34, 0.20));
+    }
+    return { body: BufferGeometryUtils.mergeGeometries(parts)! };
+  }
+
+  /** Lentilha-d'água em pixel art (o gerador do pacote): retalhos redondos de células em quatro verdes, com filhotes; cor de vértice. */
+  public static buildDuckweed(): { body: THREE.BufferGeometry } {
+    return { body: buildDuckweedPixel() };
+  }
+
+  /** Montinho de lama com musgo (ilhota baixa), onde crescem samambaias: base marrom, topo verde. */
+  public static buildMudMound(): { body: THREE.BufferGeometry } {
+    const g = new THREE.IcosahedronGeometry(0.7, 2).toNonIndexed();
+    const pos = g.attributes.position, n = pos.count, col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      // relevo irregular de ilhota (ruído por posição, igual nos vértices que se tocam) e musgo manchado
+      const bump = 1 + Math.sin(x * 9.3 + z * 4.1) * 0.10 + Math.sin(z * 11.7 - x * 6.9) * 0.08;
+      pos.setXYZ(i, x * 1.2 * bump, Math.max(y, -0.05) * 0.5 * (0.9 + 0.2 * bump) + 0.02, z * 1.2 * bump);
+      const top = Math.min(1, Math.max(0, (y + 0.1) / 0.7));
+      const moss = 0.75 + 0.25 * Math.sin(x * 17.0 + z * 13.0);
+      col[i * 3] = 0.20 - top * 0.06 * moss; col[i * 3 + 1] = 0.14 + top * 0.18 * moss; col[i * 3 + 2] = 0.09 + top * 0.02;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.computeVertexNormals();
+    return { body: g };
+  }
+
   public static buildReeds(): { body: THREE.BufferGeometry } {
     const reeds: THREE.BufferGeometry[] = [];
     for (let r = 0; r < 8; r++) {

@@ -58,6 +58,8 @@ type RingUniforms = { uCenter: { value: THREE.Vector2 }; uInner: { value: number
 
 export class HorizonTerrain {
   private group = new THREE.Group();
+  /** o grupo com todas as peças do horizonte (o campo distante o desenha à parte) */
+  public getGroup(): THREE.Group { return this.group; }
   private tiles = new Map<string, HorizonTile>();
   private materials: THREE.MeshToonMaterial[] = [];
   private uniforms: RingUniforms[] = [];
@@ -77,6 +79,9 @@ export class HorizonTerrain {
   constructor(scene: THREE.Scene, gradientMap: THREE.Texture, seed: number) {
     this.seed = seed;
     this.group.name = 'horizon';
+    // o grupo fica na origem e as peças nunca se mexem (as posições vêm da malha): o three não recalcula as ~150 matrizes a cada quadro
+    this.group.matrixAutoUpdate = false;
+    this.group.matrixWorldAutoUpdate = false;
     scene.add(this.group);
     for (let l = 0; l < LEVELS.length; l++) {
       const u: RingUniforms = {
@@ -305,6 +310,8 @@ export class HorizonTerrain {
             mesh.updateMatrix();
             tile.mesh = mesh;
             this.group.add(mesh);
+            mesh.updateMatrixWorld(true);
+            mesh.matrixWorldAutoUpdate = false;
           }).catch(() => {});
         }
       }
@@ -372,6 +379,8 @@ export class HorizonTerrain {
     tm.updateMatrix();
     tile.trees = tm;
     this.group.add(tm);
+    tm.updateMatrixWorld(true);
+    tm.matrixWorldAutoUpdate = false;
   }
 
   private dropTile(tile: HorizonTile): void {

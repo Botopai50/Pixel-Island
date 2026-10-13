@@ -201,7 +201,7 @@ export class WorldEngine {
     FADE.uFadeCam.value.set(x, z);
     FADE.uChunkFade.value.set(chunkEnd - 110, chunkEnd);
     FADE.uVegFade.value.set(vegEnd - 90, vegEnd);
-    FADE.uTreeSwap.value.set(vegEnd - 0.05, vegEnd);
+    FADE.uTreeSwap.value.set(vegEnd - 60, vegEnd);
     FADE.uGrassFade.value.set(grassEnd - 50, grassEnd);
     // o horizonte começa um pouco antes dos chunks começarem a sumir (fica por baixo deles)
     this.horizon.update(x, z, chunkEnd - 120);
@@ -403,6 +403,16 @@ export class WorldEngine {
   /** Grupo com toda a vegetação instanciada (para o mapa de oclusão de contato). */
   public getVegetationRoot(): THREE.Object3D {
     return this.vegetationMgr.instances.root;
+  }
+
+  /** os grupos que formam o campo distante (ver farLayer.ts) */
+  public getFarContainers(): { vegRoot: THREE.Object3D; nearPools: THREE.Object3D; farPools: THREE.Object3D; horizon: THREE.Object3D; chunks: THREE.Object3D } {
+    const inst = this.vegetationMgr.instances;
+    return { vegRoot: inst.root, nearPools: inst.nearRoot, farPools: inst.farRoot, horizon: this.horizon.getGroup(), chunks: this.chunkMgr.farGroup };
+  }
+
+  public updateFarMembership(): void {
+    this.chunkMgr.updateFarMembership(this.lastObserverX, this.lastObserverZ);
   }
 
   public cullVegetation(camera: THREE.Camera): boolean {

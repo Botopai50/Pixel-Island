@@ -17,11 +17,17 @@
     figcaption span { color: #9aa7b8; font-size: 12px; }
     figcaption code { color: #7f8ea3; font-size: 11px; }
     figcaption a { color: #8cc4ff; font-size: 12px; margin-top: 4px; }
+    figure { position: relative; }
+    figure.is-new { outline: 2px solid #f59e0b; box-shadow: 0 0 18px rgba(245, 158, 11, 0.25); }
+    .badge-new { position: absolute; top: 10px; left: -4px; background: #f59e0b; color: #1b1405; font-weight: 800; font-size: 12px; letter-spacing: 0.08em; padding: 4px 12px 4px 10px; border-radius: 0 6px 6px 0; box-shadow: 0 2px 6px rgba(0,0,0,0.4); }
+    .news { margin-top: 6px; padding: 6px 8px; background: rgba(245, 158, 11, 0.14); border-left: 3px solid #f59e0b; border-radius: 4px; color: #fcd9a0; font-size: 12px; }
+    .legend { display: inline-block; background: #f59e0b; color: #1b1405; font-weight: 800; font-size: 11px; padding: 2px 8px; border-radius: 4px; margin-right: 6px; }
   </style>
 </head>
 <body>
   <h1>Elementos do mundo</h1>
-  <p class="sub"><span id="count">0</span> elementos renderizados com a mesma geometria, material e cor usados no jogo.</p>
+  <p class="sub"><span id="count">0</span> elementos renderizados com a mesma geometria, material e cor usados no jogo.
+    <br><span class="legend">NOVO</span><span id="count-new">0</span> itens novos, com contorno laranja e uma nota do que mudou.</p>
   <div id="gallery"></div>
   <script type="module" src="/src/tools/vegetationGallery.ts"></script>
 </body>

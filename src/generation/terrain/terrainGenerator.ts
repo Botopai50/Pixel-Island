@@ -64,12 +64,31 @@ export class TerrainGenerator {
     return this.biomeMgr.getClimate(x, z, elevation, hydro.moistureBonus);
   }
 
+  /** 0..1: quão dentro do deserto (clima de base quente e seco, longe do mar). Em cache grosso (o clima muda em km). */
+  private desertCache = new Map<number, number>();
+  public desertMask(x: number, z: number): number {
+    const key = (Math.floor(x / 32) + 4096) * 8192 + (Math.floor(z / 32) + 4096);
+    const hit = this.desertCache.get(key);
+    if (hit !== undefined) return hit;
+    const c = this.biomeMgr.getBaseClimate(x, z);
+    const v = smoothstep(0.62, 0.67, c.temperature) * (1 - smoothstep(0.25, 0.30, c.moisture));
+    if (this.desertCache.size > 30000) this.desertCache.clear();
+    this.desertCache.set(key, v);
+    return v;
+  }
+
+  /** Costa baixa, quente e úmida, a mais de 8 m do mar aberto: onde o manguezal e suas águas rasas ficam. */
+  public isMangroveZone(x: number, z: number): boolean {
+    const clim = this.biomeMgr.getBaseClimate(x, z);
+    return clim.temperature > 0.66 && clim.moisture > 0.58 && this.macroGeo.getLandmassMask(x, z).coastDist > 8.0;
+  }
+
   public getHeight(x: number, z: number): number {
     const dry = this.getDryHeight(x, z);
     // Rios e lagos esculpem o relevo por último (leito, margens e o dique natural em volta da
     // água), sobre o relevo já completo - senão um cânion aplicado depois rebaixava as margens
     const hydro = this.hydrology.queryHydrology(x, z, dry);
-    return clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
+    return clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro, x, z)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
   }
 
 
@@ -80,7 +99,7 @@ export class TerrainGenerator {
   public getHeightAndWetness(x: number, z: number): { height: number; wetness: number } {
     const dry = this.getDryHeight(x, z);
     const hydro = this.hydrology.queryHydrology(x, z, dry);
-    return { height: clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT), wetness: hydro.wetness };
+    return { height: clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro, x, z)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT), wetness: hydro.wetness };
   }
 
   /**
@@ -137,6 +156,37 @@ export class TerrainGenerator {
     // Em terra firme (dentro da linha da costa) o relevo não desce abaixo do nível do mar:
     // depressões rasas perto da costa viravam poças soltas de água do oceano (quase só espuma)
     if (coastDist > 0.0) rawElevation = Math.max(rawElevation, 0.05);
+    // Deserto: dunas (só somam altura)
+    if (coastDist > 60.0) {
+      const dm = this.desertMask(x, z);
+      if (dm > 0.001) {
+        const cs = Math.cos(0.5), sn = Math.sin(0.5);
+        const u = x * cs + z * sn;
+        const warp = this.noise.fbm2D(x * 0.0035 + 3.0, z * 0.0035 - 7.0, 2) * 40.0;
+        const crest = 1 - Math.abs(Math.sin((u + warp) * 0.035));
+        const big = 0.6 + 0.4 * (this.noise.noise2D(x * 0.002, z * 0.002) * 0.5 + 0.5);
+        const dune = crest * crest * 4.2 * big + (this.noise.noise2D(x * 0.03, z * 0.03) * 0.5 + 0.5) * 0.6;
+        rawElevation += dune * dm;
+      }
+    }
+    // Manguezal (costa baixa, quente e úmida): canais sinuosos e poças de água rasa entre as ilhotas
+    // de lama. Só usa o clima de base (sem a altura), então não depende do relevo que está sendo feito.
+    if (coastDist > 4.0 && rawElevation < 3.9) {
+      const lowland = smoothstep(2.0, 12.0, coastDist) * (1 - smoothstep(3.0, 3.9, rawElevation));
+      const clim = this.biomeMgr.getBaseClimate(x, z);
+      const mangrove = smoothstep(0.62, 0.67, clim.temperature) * smoothstep(0.52, 0.58, clim.moisture) * lowland;
+      if (mangrove > 0.001) {
+        // a lama é uma planície quase rasa (suaviza o relevo), com canais e poças pouco fundos e de margem
+        // mansa: se as margens fossem íngremes, o bioma virava praia e saíam pedras nelas
+        const flat = 0.24 + this.noise.noise2D(x * 0.07, z * 0.07) * 0.06;
+        rawElevation = lerp(rawElevation, flat, mangrove * 0.92);
+        // a água é uma só mancha grande e suave (nível de um ruído de baixa frequência): lagoas e braços
+        // ligados, de contorno liso, em vez de poças soltas e pontudas
+        const wf = this.noise.fbm2D(x * 0.011 + 9.0, z * 0.011 - 4.0, 2) + this.noise.noise2D(x * 0.03 - 3.0, z * 0.03 + 8.0) * 0.06;
+        const w = smoothstep(0.10, 0.24, wf) * smoothstep(0.35, 0.8, mangrove);
+        rawElevation = lerp(rawElevation, -0.6, w);
+      }
+    }
     return { h: rawElevation, deepOcean: false };
   }
 
@@ -249,7 +299,10 @@ export class TerrainGenerator {
    * Lagos e rios moldando o relevo: a hidrologia devolve quanto a altura sobe ou desce naquele
    * ponto (leito, margens e o dique natural que segura a água no lado mais baixo do terreno).
    */
-  private applyHydrology(elevation: number, hydro: { heightOffset: number }): number {
+  private applyHydrology(elevation: number, hydro: { heightOffset: number }, x: number, z: number): number {
+    // água rasa do manguezal (relevo seco entre -0,7 e +0,05 m, só dentro da zona do manguezal: a enseada do mar aberto mantém a profundidade da hidrologia): a hidrologia a via como bacia e
+    // aprofundava até 2 m; aqui o leito só afunda um pouco
+    if (elevation > -0.7 && elevation <= 0.05 && hydro.heightOffset < -0.12 && this.isMangroveZone(x, z)) return elevation - 0.12;
     return elevation + hydro.heightOffset;
   }
 

@@ -1,7 +1,13 @@
 import * as THREE from 'three';
+import { warmGameTreesStep } from './generation/vegetation/pixelTrees/gameTrees.ts';
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js';
 import { installAtmosphericFog } from './atmosphere/atmosphericFog.ts';
 import { getTextureWorkerPool } from './generation/terrain/textureWorkerPool.ts';
+import { setUploadRenderer, pumpTextureUploads } from './generation/terrain/textureUploadQueue.ts';
+import { installRenderOptimizations, updateRenderOptimizations } from './renderOptimizations.ts';
+import { installMultiDraw } from './generation/vegetation/multiDraw.ts';
+import { FarLayer } from './generation/farLayer.ts';
+import { beginFrameBudget } from './generation/frameBudget.ts';
 import { WorldEngine } from './generation/worldEngine.ts';
 import { PlayerController, CameraMode } from './player/playerController.ts';
 import { SkyAtmosphere } from './atmosphere/skyAtmosphere.ts';
@@ -20,6 +26,8 @@ import { DropReticle } from './player/dropReticle.ts';
 import { PegmanWidget } from './ui/pegmanWidget.ts';
 import { TextureForgeWidget } from './ui/textureForgeWidget.ts';
 import { SkyWidget } from './ui/skyWidget.ts';
+import { TerrainHeightField } from './generation/terrain/terrainHeightField.ts';
+import { BiomeWidget } from './ui/biomeWidget.ts';
 import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
 import { setForgeTextureAnisotropy, DEFAULT_D } from './generation/terrain/terrainTextureForge.ts';
@@ -56,6 +64,7 @@ class App {
   private atmosphere!: SkyAtmosphere;
   /** oclusão de contato estilizada (mapa visto de cima da base da vegetação) */
   private ambience!: BiomeAmbience;
+  private heightField = new TerrainHeightField();
   private sunFX = new SunFX();
   private volLight = new VolumetricLight();
   private footprints = new Footprints();
@@ -110,13 +119,23 @@ class App {
   private reflectTextureMatrix: THREE.Matrix4 = new THREE.Matrix4();
   private reflectionClipPlane: THREE.Plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private reflectionClipPlanes: THREE.Plane[] = [this.reflectionClipPlane];
-  private noClipPlanes: THREE.Plane[] = [];
+  // Fora do reflexo a lista de planos de corte NÃO fica vazia: um plano tão distante que nada é cortado. O Three recompila o
+  // programa (getProgram/getParameters) de todos os materiais sempre que o número de planos muda, e isso acontecia duas vezes por quadro.
+  private noClipPlanes: THREE.Plane[] = [new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e6)];
   private lastRipplePos: THREE.Vector3 | null = null;
   private shadowsNeedUpdate: boolean = true;
   private lastShadowSceneVersion: number = -1;
   private lastSceneShadowRefresh: number = 0;
   private lastVegShadowRefresh: number = 0;
   private lastShadowPos: THREE.Vector3 = new THREE.Vector3();
+  /** só a faixa de sombra mais próxima precisa ser refeita (andou pouco, o conjunto da vista mudou) */
+  private shadowsNearOnly = false;
+  private lastShadowPos1 = new THREE.Vector3(1e9, 0, 1e9);
+  private lastShadowPos2 = new THREE.Vector3(1e9, 0, 1e9);
+  private farShadowDir = new THREE.Vector3(0, 0, -1);
+  private farShadowAt = 0;
+  private vegShadowPending = false;
+  private _camDirTmp = new THREE.Vector3();
 
   private clock: THREE.Clock = new THREE.Clock();
 
@@ -124,6 +143,23 @@ class App {
   private quality!: AdaptiveQuality;
   private renderScale: number = 1.0;
   private shadowStepSq: number = 0.36;
+  private reflTick = 0;
+  /** campo distante reaproveitado entre quadros (ver farLayer.ts): liga sozinho quando o jogo roda abaixo de ~100 FPS; ?far=0 desliga e ?far=1 mantém ligado */
+  private farLayer!: FarLayer;
+  private farEma = 0.016;
+  private farOn = false;
+  private farFrame = 0;
+  private farMode: 'auto' | 'on' | 'off' = 'auto';
+  /** o reflexo é montado em duas metades (terreno e céu num quadro, vegetação no seguinte) numa imagem de trabalho, e só vira a imagem usada pela água quando completa */
+  private reflBuild!: THREE.WebGLRenderTarget;
+  private reflDone!: THREE.WebGLRenderTarget;
+  private reflBuildMatrix = new THREE.Matrix4();
+  private reflOpen = false;
+  private reflEma = 0.016;
+  private reflHalf = false;
+  private reflList: THREE.InstancedMesh[] = [];
+  private reflVersion = -1;
+  private reflAge = 0;
 
   constructor() {
     this.init();
@@ -144,6 +180,7 @@ class App {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
+    this.renderer.clippingPlanes = this.noClipPlanes;
     this.renderer.shadowMap.autoUpdate = false; // Controle sob demanda (evita duplicação por rCam e poupa 40ms/frame)
     this.renderer.shadowMap.needsUpdate = true;
     this.renderer.shadowMap.type = THREE.BasicShadowMap;
@@ -162,7 +199,14 @@ class App {
     this.ambience = new BiomeAmbience(this.scene);
 
     // Inicialização do Motor de Geração Procedural do Mundo
+    installMultiDraw(this.renderer);   // antes do mundo: as árvores escolhem o multi-draw ao serem plantadas
     this.worldEngine = new WorldEngine(this.scene);
+    {
+      const fm = new URLSearchParams(window.location.search).get('far');
+      this.farMode = fm === '0' ? 'off' : fm === '1' ? 'on' : 'auto';
+      this.farLayer = new FarLayer(this.scene, this.renderer, this.worldEngine.getFarContainers());
+      this.farLayer.onChunkSlice = () => this.worldEngine.updateFarMembership();
+    }
     // pingos de chuva na água viram anelzinhos (as mesmas ondulações do clique, bem menores)
     this.ambience.setRainRippleSink((x, z) => this.worldEngine.addRipple(x, z, 0.7, 0.8, 1.8, 0.955));
     this.worldEngine.initTreeImpostors(this.renderer);
@@ -207,11 +251,17 @@ class App {
       depthBuffer: true,
     });
     this.blitToDisplayMaterial = new THREE.ShaderMaterial({
-      uniforms: { tScene: { value: this.waterRenderTarget.texture }, uExposure: { value: 1.0 } },
+      uniforms: { tScene: { value: this.waterRenderTarget.texture }, uExposure: { value: 1.0 }, uHeat: GRADE.uHeat, uHeatT: GRADE.uHeatT,
+        tDepth: { value: null as THREE.Texture | null }, uNear: { value: 0.1 }, uFar: { value: 1000 } },
       vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
       fragmentShader: `
         uniform sampler2D tScene;
         uniform float uExposure;
+        uniform float uHeat;
+        uniform float uHeatT;
+        uniform sampler2D tDepth;
+        uniform float uNear;
+        uniform float uFar;
         varying vec2 vUv;
         vec3 RRTAndODTFitD(vec3 v) {
           vec3 a = v * (v + 0.0245786) - 0.000090537;
@@ -228,7 +278,24 @@ class App {
           return clamp(color, 0.0, 1.0);
         }
         void main() {
-          vec3 t = acesD(texture2D(tScene, vUv).rgb);
+          // ar tremido do calor (deserto): ondas finas e horizontais numa faixa em volta do horizonte
+          vec2 huv = vUv;
+          if (uHeat > 0.001) {
+            // só o que está longe treme: a distância vem do depth (perspectiva), de ~70 m (nada) a ~250 m (cheio)
+            float dRaw = texture2D(tDepth, vUv).r;
+            float dist = uNear * uFar / (uFar - dRaw * (uFar - uNear));
+            float far = smoothstep(110.0, 320.0, dist);
+            float band = far * smoothstep(0.18, 0.42, vUv.y) * (1.0 - smoothstep(0.56, 0.86, vUv.y));
+            huv.x += (sin(vUv.y * 260.0 + uHeatT * 2.4) * 0.6 + sin(vUv.y * 90.0 - uHeatT * 1.3) * 0.4) * 0.0028 * uHeat * band;
+            huv.y += sin(vUv.x * 140.0 + uHeatT * 1.7) * 0.0008 * uHeat * band;
+          }
+          if (uHeat > 0.001 && huv != vUv) {
+            // nunca puxa a cor de algo perto para dentro do que está longe (as bordas dos objetos de perto não ondulam)
+            float dRaw2 = texture2D(tDepth, huv).r;
+            float dist2 = uNear * uFar / (uFar - dRaw2 * (uFar - uNear));
+            if (dist2 < 90.0) huv = vUv;
+          }
+          vec3 t = acesD(texture2D(tScene, huv).rgb);
           vec3 srgb = mix(pow(t, vec3(0.41666)) * 1.055 - vec3(0.055), t * 12.92, vec3(lessThanEqual(t, vec3(0.0031308))));
           gl_FragColor = vec4(srgb, 1.0);
         }`,
@@ -262,12 +329,16 @@ class App {
       magFilter: THREE.NearestFilter,
       format: THREE.RGBAFormat,
     });
+    this.reflBuild = new THREE.WebGLRenderTarget(256, 256, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, format: THREE.RGBAFormat });
+    this.reflDone = this.reflectionRenderTarget;
     this.reflectionCameraPerspective = new THREE.PerspectiveCamera(75, aspect, 0.1, 14000);
 
     if (new URLSearchParams(window.location.search).get('pixel') === '1') {
       CONFIG.PIXEL_SIZE = CONFIG.PIXELATION_SIZE;
       this.renderer.domElement.style.imageRendering = 'pixelated';
     }
+    setUploadRenderer(this.renderer);
+    installRenderOptimizations(this.renderer);
     this.quality = new AdaptiveQuality(detectInitialQuality(this.renderer.getContext()), (level) => this.applyQuality(level));
 
     // Pixelização da cena: painel de Texturas (evento) ou tecla P
@@ -345,6 +416,15 @@ class App {
     // Inicialização do Widget de Ajuste e Exportação de Texturas
     this.textureForgeWidget = new TextureForgeWidget(this.worldEngine);
     new SkyWidget(this.atmosphere, () => { this.shadowsNeedUpdate = true; }, (kind) => this.ambience.setWeather(kind));
+    // lista de biomas: clicar teleporta para o mais próximo
+    new BiomeWidget(
+      this.worldEngine.getTerrainGenerator(),
+      () => { const p = this.playerController.getPosition(); return { x: p.x, z: p.z }; },
+      (x, z) => {
+        this.playerController.teleportToFirstPerson(x, z, this.worldEngine.getTerrainGenerator(), 0.8, -0.05);
+        this.worldEngine.updateObserverPosition(x, z);
+      },
+    );
 
     // Globais para depuração e automação de testes
     const waterfallView=new URLSearchParams(location.search).get('waterfall');
@@ -434,6 +514,7 @@ class App {
     this.waterRenderTarget.setSize(buf.x, buf.y);
     this.resizeFxaa(buf.x, buf.y);
     this.reflectionRenderTarget.setSize(level.reflectionSize, level.reflectionSize);
+    this.reflBuild.setSize(level.reflectionSize, level.reflectionSize);
     this.atmosphere.getShadowClipmap().setMapSize(level.shadowMapSize);
     CONFIG.MAX_VIEW_RADIUS_CHUNKS = level.maxViewRadius;
     CONFIG.VIEW_RADIUS_CHUNKS = level.baseViewRadius;
@@ -560,10 +641,41 @@ class App {
     this.hazeEl.style.opacity = this.hazeLevel < 0.01 ? '0' : this.hazeLevel.toFixed(3);
   }
 
+  /** Contador de FPS (canto da tela): média da última meia segundo, pior quadro e tempo médio. F3 liga/desliga. */
+  private fpsEl: HTMLDivElement | null = null;
+  private fpsFrames = 0;
+  private fpsTime = 0;
+  private fpsWorst = 0;
+  private fpsOn = true;
+  private tickFpsCounter(ms: number): void {
+    if (!this.fpsEl) {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;left:10px;top:52px;z-index:40;background:rgba(0,0,0,.55);color:#fff;font:12px/1.35 monospace;padding:4px 8px;border-radius:6px;pointer-events:none;white-space:pre';
+      document.body.appendChild(el);
+      this.fpsEl = el;
+      window.addEventListener('keydown', (e) => {
+        if (e.key !== 'F3') return;
+        e.preventDefault();
+        this.fpsOn = !this.fpsOn;
+        el.style.display = this.fpsOn ? 'block' : 'none';
+      });
+    }
+    this.fpsFrames++; this.fpsTime += ms; this.fpsWorst = Math.max(this.fpsWorst, ms);
+    if (this.fpsTime >= 500) {
+      const avg = this.fpsTime / this.fpsFrames;
+      this.fpsEl.textContent = Math.round(1000 / avg) + ' FPS' + String.fromCharCode(10) + avg.toFixed(1) + ' ms (pior ' + Math.round(this.fpsWorst) + ' ms)';
+      this.fpsFrames = 0; this.fpsTime = 0; this.fpsWorst = 0;
+    }
+  }
+
   private animate = (): void => {
     requestAnimationFrame(this.animate);
 
     const rawDt = this.clock.getDelta();
+    beginFrameBudget();
+    updateRenderOptimizations(this.renderer);
+    pumpTextureUploads();
+    this.tickFpsCounter(rawDt * 1000);
     const dt = Math.min(rawDt, 0.1);
     // enquanto os workers geram terreno a CPU fica cheia e o FPS cai de propósito: não é o PC fraco
     this.quality.frame(rawDt * 1000, getTextureWorkerPool().isBusy());
@@ -634,15 +746,20 @@ class App {
 
     // Verificação de histerese para atualização de sombras sob demanda
     const distSq = playerPos.distanceToSquared(this.lastShadowPos);
-    if (distSq > this.shadowStepSq) { // ~0.60m de deslocamento do jogador
-      this.shadowsNeedUpdate = true;
+    if (distSq > this.shadowStepSq) {
+      // a faixa fina (35 m) acompanha o jogador de perto; a de 200 m e a de 600 m só depois de andar uns 6 m e uns 24 m: cada uma custa
+      // alguns milhões de triângulos, e corrida de 13 m/s refazia as três a cada ~0,1 s
+      this.shadowsNearOnly = true;
       this.lastShadowPos.copy(playerPos);
+      if (playerPos.distanceToSquared(this.lastShadowPos1) > 36) { this.atmosphere.getShadowClipmap().requestCascade(1); this.lastShadowPos1.copy(playerPos); }
+      if (playerPos.distanceToSquared(this.lastShadowPos2) > 576) { this.atmosphere.getShadowClipmap().requestCascade(2); this.lastShadowPos2.copy(playerPos); }
     }
 
     // Relevo/vegetação terminam de carregar de forma assíncrona (texturas nos workers): mesmo
     // com o jogador parado, o shadow map precisa ser refeito quando algo novo entra na cena.
     // Limitado a ~6x/s para não refazer os 3 mapas a cada frame durante um carregamento em massa.
     const sceneVersion = this.worldEngine.getChunkManager().getSceneVersion();
+    this.heightField.update(this.renderer, this.scene, playerPos.x, playerPos.z, sceneVersion);
     const now = performance.now();
     if (sceneVersion !== this.lastShadowSceneVersion && now - this.lastSceneShadowRefresh > 160) {
       this.shadowsNeedUpdate = true;
@@ -651,11 +768,27 @@ class App {
     }
 
     const activeCamera = this.playerController.getCamera();
+    // As árvores que projetam sombra são as que a câmera enxerga (mais 40 m em volta). Se a câmera gira, as faixas distantes de sombra
+    // (que não são mais refeitas a cada quadro) ficam sem as árvores que acabaram de entrar na vista: as sombras sumiam do nada.
+    // Girou mais de ~10 graus: elas são refeitas (no máximo 3 vezes por segundo).
+    {
+      const dir = activeCamera.getWorldDirection(this._camDirTmp);
+      if (dir.dot(this.farShadowDir) < 0.9 && now - this.farShadowAt > 1000) {
+        this.atmosphere.getShadowClipmap().markFarDirty();
+        this.farShadowDir.copy(dir);
+        this.farShadowAt = now;
+        this.shadowsNeedUpdate = true;
+      }
+    }
     // Vegetação recortada pela câmera: quando o conjunto visível muda, as sombras são refeitas
     // (no máximo ~6x/s, como no carregamento de chunks)
-    if (this.worldEngine.cullVegetation(activeCamera) && now - this.lastVegShadowRefresh > 160) {
-      this.shadowsNeedUpdate = true;
+    // (se o conjunto mudou dentro dos 160 ms do último refazer, o pedido fica guardado: antes se perdia, e com o jogador parado
+    // depois de girar a câmera as árvores novas na vista ficavam sem sombra até algo mexer de novo)
+    if (this.worldEngine.cullVegetation(activeCamera)) this.vegShadowPending = true;
+    if (this.vegShadowPending && now - this.lastVegShadowRefresh > 250) {
+      this.shadowsNearOnly = true;
       this.lastVegShadowRefresh = now;
+      this.vegShadowPending = false;
     }
     // ambientação do bioma em volta do jogador: névoa, gradação de cor e partículas
     const skybox = this.atmosphere.getSkybox();
@@ -674,47 +807,125 @@ class App {
     const shouldRenderReflection = isFirstPerson &&
       this.waterVis.update(activeCamera as THREE.PerspectiveCamera, this.worldEngine.getTerrainGenerator(), now / 1000);
 
+    // o reflexo é refeito a cada quadro enquanto o jogo roda bem; se o quadro passou de 20 ms, a cada dois (a imagem do reflexo é pequena
+    // e borrada: um quadro de atraso não aparece)
+    // (decisão pela média do tempo de quadro, com histerese: antes bastava UM quadro de 20 ms para pular o reflexo no seguinte, e o jogo
+    // alternava quadros pesados e leves, o que aparece como FPS pulando entre 30 e 90)
+    this.reflEma += (rawDt - this.reflEma) * 0.04;
+    // (o reflexo é um quadro pequeno e borrado: refazê-lo a cada dois quadros enquanto o jogo roda abaixo de ~80 FPS corta ~20% do custo de
+    // GPU perto de água e ninguém vê o atraso de um quadro)
+    if (this.reflEma > 0.0125) this.reflHalf = true; else if (this.reflEma < 0.010) this.reflHalf = false;
+    // (com pouca água na tela, menos de ~1/4 da grade de raios, o reflexo é refeito a cada três quadros: ele custa ~75% do quadro principal e só aparece em
+    // poucos pixels; com muita água, a cada dois)
+    const reflPeriod = this.reflHalf ? (this.waterVis.coverage() < 0.25 ? 3 : 2) : 1;
+    // Com o reflexo mais lento que o quadro, o trabalho é dividido em duas metades em quadros seguidos (a: terreno, horizonte e céu; b: vegetação):
+    // fazer tudo num quadro só e pular o outro deixava os quadros alternando entre leves e pesados (o FPS "pulando"). A água só passa a usar
+    // a imagem quando as duas metades estão prontas.
+    let reflWork: 'full' | 'a' | 'b' | null = null;
     if (shouldRenderReflection) {
-      this.worldEngine.renderCascadeSurfaceReflection(this.renderer,activeCamera as THREE.PerspectiveCamera);
-      const camDir = new THREE.Vector3();
-      activeCamera.getWorldDirection(camDir);
-      const lookTarget = activeCamera.position.clone().add(camDir.multiplyScalar(100.0));
-
-      const persp = activeCamera as THREE.PerspectiveCamera;
+      if (reflPeriod === 1) reflWork = 'full';
+      else {
+        const tk = this.reflTick++ % reflPeriod;
+        reflWork = tk === 0 ? 'a' : tk === 1 ? (this.reflOpen ? 'b' : 'full') : null;
+      }
+    }
+    if (!shouldRenderReflection) this.reflOpen = false;
+    if (reflWork) {
       const rPersp = this.reflectionCameraPerspective;
-      rPersp.fov = persp.fov;
-      rPersp.aspect = persp.aspect;
-      rPersp.near = persp.near;
-      rPersp.far = persp.far;
-      rPersp.position.set(persp.position.x, 2.0 * seaLevel - persp.position.y, persp.position.z);
-      rPersp.up.set(0, -1, 0);
-      rPersp.lookAt(lookTarget.x, 2.0 * seaLevel - lookTarget.y, lookTarget.z);
-      rPersp.updateMatrixWorld();
-      rPersp.updateProjectionMatrix();
+      if (reflWork !== 'b') {
+        this.worldEngine.renderCascadeSurfaceReflection(this.renderer,activeCamera as THREE.PerspectiveCamera);
+        const camDir = new THREE.Vector3();
+        activeCamera.getWorldDirection(camDir);
+        const lookTarget = activeCamera.position.clone().add(camDir.multiplyScalar(100.0));
+
+        const persp = activeCamera as THREE.PerspectiveCamera;
+        rPersp.fov = persp.fov;
+        rPersp.aspect = persp.aspect;
+        rPersp.near = persp.near;
+        rPersp.far = persp.far;
+        rPersp.position.set(persp.position.x, 2.0 * seaLevel - persp.position.y, persp.position.z);
+        rPersp.up.set(0, -1, 0);
+        rPersp.lookAt(lookTarget.x, 2.0 * seaLevel - lookTarget.y, lookTarget.z);
+        rPersp.updateMatrixWorld();
+        rPersp.updateProjectionMatrix();
+        // matriz de projeção de textura desta imagem de reflexo (a câmera fica a mesma na metade b)
+        this.reflBuildMatrix.set(
+          0.5, 0.0, 0.0, 0.5,
+          0.0, 0.5, 0.0, 0.5,
+          0.0, 0.0, 0.5, 0.5,
+          0.0, 0.0, 0.0, 1.0
+        );
+        this.reflBuildMatrix.multiply(rPersp.projectionMatrix);
+        this.reflBuildMatrix.multiply(rPersp.matrixWorldInverse);
+      }
 
       // Passo 1: Renderizar reflexão do mundo (terreno, árvores, céu) na textura de reflexão
       this.worldEngine.setWaterVisible(false);
-      this.renderer.shadowMap.enabled = false; // SOMBRAS DESATIVADAS NO PASSE DE REFLEXÃO
-      this.renderer.setRenderTarget(this.reflectionRenderTarget);
-      this.renderer.clear();
+      // (as sombras ficam LIGADAS neste passe: ligar e desligar renderer.shadowMap.enabled a cada quadro trocava o programa dos shaders das
+      // árvores entre duas versões, e as copas piscavam de claro para escuro. O mapa de sombra não é refeito aqui: só acontece depois, no
+      // quadro principal, quando o clipmap pede)
+      this.renderer.setRenderTarget(this.reflBuild);
+      if (reflWork !== 'b') this.renderer.clear();
       // Só o que está ACIMA da água pode refletir: sem esse corte, a parte submersa de rochas e
       // o fundo do mar entravam no reflexo espelhado e apareciam "subindo" atrás dos objetos.
       this.reflectionClipPlane.constant = 0.05 - seaLevel;
       this.renderer.clippingPlanes = this.reflectionClipPlanes;
+      // o reflexo é pequeno e borrado: as árvores próximas entram com o desenho simplificado (metade do custo do quadro)
+      const swapped: [THREE.InstancedMesh, THREE.BufferGeometry][] = [];
+      const hidden: THREE.Object3D[] = [];
+      if (reflWork !== 'a') {
+        // (a lista das malhas de vegetação é refeita quando o mundo muda, e não a cada quadro: percorrer a cena custava ~2 ms)
+        const reflVer = this.worldEngine.getChunkManager().getSceneVersion();
+        if (reflVer !== this.reflVersion || ++this.reflAge > 120) {
+          this.reflVersion = reflVer; this.reflAge = 0; this.reflList = [];
+          this.scene.traverse((o) => { const im = o as THREE.InstancedMesh; if (im.isInstancedMesh && (im.name === 'pixelTree' || im.name === 'grass' || im.name.startsWith('pt:'))) this.reflList.push(im); });
+        }
+        this.reflList.forEach((im) => {
+          if (!im.visible) return;
+          // capim, plantas pequenas e árvores a mais de 150 m não aparecem no reflexo (viram poucos pixels num reflexo borrado)
+          if (im.name === 'grass' || im.name.startsWith('pt:') || (im.name === 'pixelTree' && (im.geometry.userData.lodIdx as number) >= 2)) { im.visible = false; hidden.push(im); return; }
+          if (im.name === 'pixelTree') {
+            const rg = im.geometry.userData.reflGeo as THREE.BufferGeometry | null | undefined;
+            if (rg && rg !== im.geometry) { swapped.push([im, im.geometry]); im.geometry = rg; }
+          }
+        });
+      }
+      const vegRoot = this.worldEngine.getVegetationRoot();
+      const hiddenTop: THREE.Object3D[] = [];
+      let savedBg: THREE.Scene['background'] = null;
+      const savedAutoClear = this.renderer.autoClear;
+      if (reflWork === 'a') {
+        // metade a: tudo menos a vegetação
+        vegRoot.visible = false;
+      } else if (reflWork === 'b') {
+        // metade b: só a vegetação, por cima da imagem já feita (as luzes continuam: o shader das árvores as lê da cena)
+        for (const c of this.scene.children) {
+          if (c !== vegRoot && c.visible && !(c as THREE.Light).isLight) { c.visible = false; hiddenTop.push(c); }
+        }
+        savedBg = this.scene.background;
+        this.scene.background = null;
+        this.renderer.autoClear = false;
+      }
       this.renderer.render(this.scene, rPersp);
-      this.worldEngine.renderWaterfallReflection(this.renderer,rPersp);
+      if (reflWork === 'a') vegRoot.visible = true;
+      else if (reflWork === 'b') {
+        for (const c of hiddenTop) c.visible = true;
+        this.scene.background = savedBg;
+        this.renderer.autoClear = savedAutoClear;
+      }
+      for (const [im, g] of swapped) im.geometry = g;
+      for (const o of hidden) o.visible = true;
+      if (reflWork !== 'a') this.worldEngine.renderWaterfallReflection(this.renderer,rPersp);
       this.renderer.clippingPlanes = this.noClipPlanes;
-      this.renderer.shadowMap.enabled = true; // RESTAURA SOMBRAS
 
-      // Atualiza matriz de projeção de textura de reflexão
-      this.reflectTextureMatrix.set(
-        0.5, 0.0, 0.0, 0.5,
-        0.0, 0.5, 0.0, 0.5,
-        0.0, 0.0, 0.5, 0.5,
-        0.0, 0.0, 0.0, 1.0
-      );
-      this.reflectTextureMatrix.multiply(rPersp.projectionMatrix);
-      this.reflectTextureMatrix.multiply(rPersp.matrixWorldInverse);
+      if (reflWork === 'a') {
+        this.reflOpen = true;
+      } else {
+        // as duas metades prontas: a imagem de trabalho passa a ser a da água
+        const t = this.reflDone; this.reflDone = this.reflBuild; this.reflBuild = t;
+        this.reflectTextureMatrix.copy(this.reflBuildMatrix);
+        this.reflOpen = false;
+      }
     }
 
     // Estabilidade da pixelização (modo P, câmera aérea): a câmera anda só em passos inteiros de um
@@ -743,13 +954,32 @@ class App {
 
     // Passo 2: Renderizar mundo opaco (sem água) com câmera principal e atualização sob demanda de sombras
     this.worldEngine.setWaterVisible(false);
+    const clip = this.atmosphere.getShadowClipmap();
     if (this.shadowsNeedUpdate) {
-      this.renderer.shadowMap.needsUpdate = true;
+      clip.requestAll();
       this.shadowsNeedUpdate = false;
+      this.shadowsNearOnly = false;
+    } else if (this.shadowsNearOnly) {
+      clip.requestCascade(0);
+      this.shadowsNearOnly = false;
+    }
+    clip.tick(this.renderer);
+    // Campo distante (farLayer.ts): liga quando o jogo está lento (média do quadro > ~10 ms) e fica ligado; só em primeira pessoa.
+    this.farEma += (Math.min(rawDt, 0.05) - this.farEma) * 0.05;
+    if (!this.farOn && this.farEma > 0.0100) this.farOn = true;
+    else if (this.farOn && this.farEma < 0.0045) this.farOn = false;
+    const farWanted = isFirstPerson && (activeCamera as THREE.PerspectiveCamera).isPerspectiveCamera && this.farMode !== 'off' && (this.farMode === 'on' || this.farOn);
+    let farEngaged = false;
+    if (farWanted) {
+      farEngaged = this.farLayer.begin(activeCamera as THREE.PerspectiveCamera, this.waterRenderTarget.width, this.waterRenderTarget.height, this.farFrame++);
+    } else if ((this.farFrame++ % 30) === 0) {
+      // desligado: os chunks continuam divididos entre perto e longe (o grupo distante é desenhado normalmente)
+      this.worldEngine.updateFarMembership();
     }
     this.renderer.setRenderTarget(this.waterRenderTarget);
     this.renderer.clear();
     this.renderer.render(this.scene, activeCamera);
+    if (farEngaged) this.farLayer.finish();
 
     // God rays + lens flare (sunFX.ts): raios a partir do depth da cena opaca; somados no fim
     if (this.waterRenderTarget.depthTexture) {
@@ -775,6 +1005,9 @@ class App {
       : this.waterRenderTarget.texture;
     this.blitMaterial.map = sceneTex;
     this.blitToDisplayMaterial.uniforms.tScene.value = sceneTex;
+    this.blitToDisplayMaterial.uniforms.tDepth.value = this.waterRenderTarget.depthTexture;
+    this.blitToDisplayMaterial.uniforms.uNear.value = (activeCamera as THREE.PerspectiveCamera).near ?? 0.1;
+    this.blitToDisplayMaterial.uniforms.uFar.value = (activeCamera as THREE.PerspectiveCamera).far ?? 1000;
 
     // Passo 3: Blit em tela cheia da cena opaca para o canvas (ou, com FXAA, para o alvo do FXAA,
     // já convertida para as cores da tela). Com a pixelização ligada o FXAA não entra: borraria
@@ -793,7 +1026,7 @@ class App {
     this.worldEngine.setWaterVisible(true);
     this.worldEngine.updateWaterUniforms(
       this.waterRenderTarget.depthTexture,
-      this.reflectionRenderTarget.texture,
+      this.reflDone.texture,
       this.reflectTextureMatrix,
       activeCamera,
       this.waterRenderTarget.width,
@@ -822,8 +1055,19 @@ class App {
       snapCam.updateMatrixWorld();
     }
   };
+
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   new App();
+  // gera as árvores e plantas aos poucos, em segundo plano (uma variação por vez, só com o navegador ocioso):
+  // andar até um bioma novo não trava mais o jogo com a geração de uma árvore inteira
+  const idle = (cb: () => void) => ((window as unknown as { requestIdleCallback?: (f: () => void, o: { timeout: number }) => void }).requestIdleCallback ?? ((f: () => void) => setTimeout(f, 60)))(cb, { timeout: 1500 });
+  const warm = () => {
+    if (document.hidden) { setTimeout(() => idle(warm), 1000); return; }
+    let more = true;
+    try { more = warmGameTreesStep(); } catch { more = false; }
+    if (more) setTimeout(() => idle(warm), 250);
+  };
+  setTimeout(() => idle(warm), 8000);
 });

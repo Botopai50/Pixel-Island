@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { Chunk, tickChunkFades } from './chunk.ts';
+import { Chunk, tickChunkFades, pumpGrassQueue } from './chunk.ts';
+import { budgetLeft } from '../frameBudget.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { VegetationManager } from '../vegetation/vegetationManager.ts';
 import { TerrainTextureForge } from './terrainTextureForge.ts';
@@ -25,6 +26,24 @@ export class ChunkManager {
   private forge: TerrainTextureForge;
 
   private chunks: Map<string, Chunk> = new Map();
+  /** chunks e blocos distantes ficam neste grupo, para o campo distante (farLayer.ts) poder desenhá-los à parte */
+  public readonly farGroup = new THREE.Group();
+  /** distância (m) do centro do chunk ao observador a partir da qual ele é "distante": o ponto mais próximo dele fica a mais de ~200 m */
+  private static readonly FAR_DIST = 245;
+  private static readonly FAR_HYST = 20;
+
+  /** Passa para o grupo distante os chunks longe do observador e traz de volta os que se aproximaram (com histerese). */
+  public updateFarMembership(obsX: number, obsZ: number): void {
+    const CS = CONFIG.CHUNK_SIZE;
+    for (const chunk of this.chunks.values()) {
+      const d = Math.hypot(chunk.cx * CS - obsX, chunk.cz * CS - obsZ);
+      const far = chunk.farMember ? d > ChunkManager.FAR_DIST - ChunkManager.FAR_HYST : d > ChunkManager.FAR_DIST + ChunkManager.FAR_HYST;
+      if (far !== chunk.farMember) {
+        chunk.farMember = far;
+        (far ? this.farGroup : this.scene).add(chunk.group);
+      }
+    }
+  }
   private tiles: Map<string, Chunk> = new Map();
   private buildQueue: ChunkQueueItem[] = [];
   private queuedKeys: Set<string> = new Set();
@@ -52,6 +71,10 @@ export class ChunkManager {
     this.vegetationMgr = vegetationMgr;
     // A vegetação de todos os chunks vive em InstancedMeshes compartilhados
     scene.add(vegetationMgr.instances.root);
+    this.farGroup.name = 'far_chunks';
+    this.farGroup.matrixAutoUpdate = false;
+    this.farGroup.matrixWorldAutoUpdate = false;
+    scene.add(this.farGroup);
     this.forge = forge || TerrainTextureForge.getInstance(terrainGen.getSeed());
   }
 
@@ -80,12 +103,15 @@ export class ChunkManager {
     if (cx !== this.currentCenterCx || cz !== this.currentCenterCz || forceReload) {
       this.currentCenterCx = cx;
       this.currentCenterCz = cz;
+      this.vegIdleFrames = 0;
       this.refreshChunkPlan(cx, cz);
     }
 
     tickChunkFades();
     // Processa a fila de construção com orçamento de tempo por frame (garante 60 FPS cravados)
     this.processBuildQueue();
+    this.processRemovals();
+    pumpGrassQueue(budgetLeft(2));
     this.populatePendingVegetation();
 
     // Algo terminou de carregar: troca chunks <-> blocos distantes que já estejam prontos
@@ -154,15 +180,20 @@ export class ChunkManager {
     // 2. Ordena a fila priorizando chunks mais próximos da câmera
     this.buildQueue.sort((a, b) => a.distSq - b.distSq);
 
-    // 3. Descarrega da memória chunks e blocos distantes
+    // 3. Descarrega da memória chunks e blocos distantes: só entram numa fila, e a fila é esvaziada aos poucos (cada chunk que sai libera
+    // geometria, texturas e a vegetação dele, e fazer isso para todos de uma vez, ao cruzar a divisa de um chunk, era uma travada de 5 a 25 ms)
     for (const [key, chunk] of this.chunks.entries()) {
-      if ((chunk.cx - cx) ** 2 + (chunk.cz - cz) ** 2 > keepSq) {
-        this.removeChunk(key, chunk);
+      if ((chunk.cx - cx) ** 2 + (chunk.cz - cz) ** 2 > keepSq && !this.removeQueued.has('c' + key)) {
+        this.removeQueued.add('c' + key);
+        this.removeQueue.push({ key, kind: 'c' });
       }
     }
     for (const [key, tile] of this.tiles.entries()) {
       const { dx, dz } = this.tileDelta(tile.cx, tile.cz, cx, cz);
-      if (dx * dx + dz * dz > keepSq) this.removeTile(key, tile);
+      if (dx * dx + dz * dz > keepSq && !this.removeQueued.has('t' + key)) {
+        this.removeQueued.add('t' + key);
+        this.removeQueue.push({ key, kind: 't' });
+      }
     }
 
     // 4. Descarta da fila itens que saíram do raio ou que agora pertencem a um bloco distante
@@ -201,7 +232,7 @@ export class ChunkManager {
       }
     }
     this.tiles.set(key, tile);
-    this.scene.add(tile.group);
+    this.farGroup.add(tile.group);
   }
 
   /**
@@ -245,8 +276,36 @@ export class ChunkManager {
     }
   }
 
+  private removeQueue: { key: string; kind: 'c' | 't' }[] = [];
+  private removeQueued = new Set<string>();
+
+  /** Esvazia a fila de descarga com orçamento de tempo; confere de novo se o item ainda está longe (o jogador pode ter voltado). */
+  private processRemovals(): void {
+    if (this.removeQueue.length === 0) return;
+    const r = this.viewRadius;
+    const keep = Math.max(r, this.retainRadius) + CONFIG.UNLOAD_MARGIN_CHUNKS;
+    const keepSq = keep * keep;
+    const cx = this.currentCenterCx, cz = this.currentCenterCz;
+    const t0 = performance.now();
+    const cap = budgetLeft(2.5);
+    while (this.removeQueue.length > 0 && cap > 0 && performance.now() - t0 < cap) {
+      const it = this.removeQueue.shift()!;
+      this.removeQueued.delete(it.kind + it.key);
+      if (it.kind === 'c') {
+        const chunk = this.chunks.get(it.key);
+        if (chunk && (chunk.cx - cx) ** 2 + (chunk.cz - cz) ** 2 > keepSq) this.removeChunk(it.key, chunk);
+      } else {
+        const tile = this.tiles.get(it.key);
+        if (tile) {
+          const { dx, dz } = this.tileDelta(tile.cx, tile.cz, cx, cz);
+          if (dx * dx + dz * dz > keepSq) this.removeTile(it.key, tile);
+        }
+      }
+    }
+  }
+
   private removeChunk(key: string, chunk: Chunk): void {
-    this.scene.remove(chunk.group);
+    chunk.group.removeFromParent();
     chunk.destroy();
     this.chunks.delete(key);
     this.sceneVersion++;
@@ -263,7 +322,7 @@ export class ChunkManager {
 
   private removeTile(key: string, tile: Chunk): void {
     this.releaseHeldChunks(tile);
-    this.scene.remove(tile.group);
+    tile.group.removeFromParent();
     tile.destroy();
     this.tiles.delete(key);
     this.sceneVersion++;
@@ -276,17 +335,24 @@ export class ChunkManager {
    * por quadro deixava só ~2 chunks por quadro irem para os workers, que ficavam ociosos.
    */
   private initialVegetationDone = false;
+  private vegStarve = 0;
+  /** quadros que dá para pular a busca por chunks sem vegetação: ela percorre centenas de chunks (~1,5 ms) e quase sempre não acha nada */
+  private vegIdleFrames = 0;
 
   private populatePendingVegetation(): void {
     if (this.chunks.size === 0) return;
+    if (this.vegIdleFrames > 0) { this.vegIdleFrames--; return; }
     const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
     // Carregamento inicial (tela ainda vazia): orçamento maior; depois, 4ms para não engasgar
     const budget = this.initialVegetationDone ? 4.0 : 16.0;
+    // depois do carregamento inicial só planta se ainda sobrou orçamento do quadro (e pelo menos a cada 6 quadros, para nunca ficar parado)
+    if (this.initialVegetationDone && budgetLeft(4) < 0.8 && ++this.vegStarve < 6) return;
+    this.vegStarve = 0;
     const startTime = performance.now();
     let best: Chunk | undefined, bestD = Infinity;
     // Fora do raio: a vegetação sai (as árvores simples do horizonte aparecem no lugar, sem duplicar)
     for (const chunk of this.chunks.values()) {
-      if (!chunk.hasVegetation) continue;
+      if (!chunk.hasVegetation && !chunk.isPlanting()) continue;
       const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
       if (dx * dx + dz * dz > vegRadiusSq) chunk.releaseVegetation();
     }
@@ -299,8 +365,10 @@ export class ChunkManager {
         const d = dx * dx + dz * dz;
         if (d <= vegRadiusSq && d < bestD) { bestD = d; best = chunk; }
       }
-      if (!best) { if (this.buildQueue.length === 0) this.initialVegetationDone = true; return; }
-      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16);
+      if (!best) { if (this.buildQueue.length === 0) { this.initialVegetationDone = true; this.vegIdleFrames = 12; } return; }
+      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16, this.initialVegetationDone ? Math.max(0.6, Math.min(1.5, budgetLeft(4))) : Infinity);
+      // depois do carregamento inicial, um passo (plano OU instanciação) por quadro: dois passos juntos davam 6 a 13 ms
+      if (this.initialVegetationDone) return;
       if (performance.now() - startTime >= budget) return;
     }
   }
@@ -314,7 +382,7 @@ export class ChunkManager {
     const isInitialBurst = this.chunks.size < 35;
 
     const startTime = performance.now();
-    const MAX_TIME_MS = isInitialBurst ? 24.0 : 5.0;
+    const MAX_TIME_MS = isInitialBurst ? 24.0 : Math.max(0.5, budgetLeft(5.0));
     const maxChunksPerFrame = isInitialBurst ? 96 : 48;
     let chunksBuilt = 0;
 
@@ -342,6 +410,7 @@ export class ChunkManager {
       if (this.tiles.has(`${Math.floor(item.cx / FAR_TILE)}_${Math.floor(item.cz / FAR_TILE)}`)) chunk.setHeldBack(true);
       this.chunks.set(item.key, chunk);
       this.scene.add(chunk.group);
+      this.vegIdleFrames = 0;
       chunksBuilt++;
 
       if (chunksBuilt >= maxChunksPerFrame || (performance.now() - startTime >= MAX_TIME_MS)) {
@@ -352,16 +421,18 @@ export class ChunkManager {
 
   public clearAll(): void {
     for (const chunk of this.chunks.values()) {
-      this.scene.remove(chunk.group);
+      chunk.group.removeFromParent();
       chunk.destroy();
     }
     for (const tile of this.tiles.values()) {
-      this.scene.remove(tile.group);
+      tile.group.removeFromParent();
       tile.destroy();
     }
     this.chunks.clear();
     this.tiles.clear();
     this.buildQueue = [];
+    this.removeQueue = [];
+    this.removeQueued.clear();
     this.queuedKeys.clear();
     this.currentCenterCx = 999999;
     this.initialVegetationDone = false;

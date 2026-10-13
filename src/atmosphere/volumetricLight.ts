@@ -11,7 +11,7 @@ import * as THREE from 'three';
  * e os morros - mesmo com o sol fora da tela. Um desfoque curto tira o ruído do sorteio; o resultado
  * é somado à imagem final (sunFX.ts).
  */
-const STEPS = 24;
+const STEPS = 16;
 const MAX_DIST = 160;
 const VERT = 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }';
 
@@ -113,7 +113,8 @@ export class VolumetricLight {
     lights: THREE.DirectionalLight[], sunDir: THREE.Vector3, w: number, h: number, strength: number): void {
     this.amount = this.enabled ? strength : 0;
     if (this.amount < 0.01 || lights.length < 2 || !lights[0].shadow.map || !lights[1].shadow.map) { this.amount = 0; return; }
-    const hw = Math.max(1, Math.floor(w / 2)), hh = Math.max(1, Math.floor(h / 2));
+    // um quarto da resolução (era metade): o resultado já passa por desfoque e é só um véu de luz; custava ~1,8 ms por quadro
+    const hw = Math.max(1, Math.floor(w / 4)), hh = Math.max(1, Math.floor(h / 4));
     if (this.rtA.width !== hw || this.rtA.height !== hh) { this.rtA.setSize(hw, hh); this.rtB.setSize(hw, hh); }
     const cam = camera as THREE.PerspectiveCamera;
     const u = this.marchMat.uniforms;

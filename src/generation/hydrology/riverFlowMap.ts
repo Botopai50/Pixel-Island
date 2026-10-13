@@ -59,6 +59,8 @@ export class RiverFlowMap {
     this.lineTexture.needsUpdate = true;
   }
 
+  private buildCol = 0;
+
   public invalidate(): void {
     this.ready = false;
     this.buildRow = -1;
@@ -72,13 +74,16 @@ export class RiverFlowMap {
       this.buildOriginX = Math.floor((centerX - SPAN / 2) / CELL) * CELL;
       this.buildOriginZ = Math.floor((centerZ - SPAN / 2) / CELL) * CELL;
       this.buildRow = 0;
+      this.buildCol = 0;
     }
 
     const start = performance.now();
     const f = this.flow;
+    // o orçamento é conferido a cada 2 texels e a linha continua de onde parou (uma linha inteira custava até 9 ms de uma vez)
     while (this.buildRow < RES && performance.now() - start < budgetMs) {
       const z = this.buildOriginZ + (this.buildRow + 0.5) * CELL;
-      for (let col = 0; col < RES; col++) {
+      let paused = false;
+      for (let col = this.buildCol; col < RES; col++) {
         const x = this.buildOriginX + (col + 0.5) * CELL;
         this.terrainGen.riverFlowAt(x, z, f);
         const o = (this.buildRow * RES + col) * 4;
@@ -91,7 +96,10 @@ export class RiverFlowMap {
         this.buildLine[o + 1] = Math.round((Math.sin(ph) * 0.5 + 0.5) * 255);
         this.buildLine[o + 2] = Math.round(clamp(f[4] / ACROSS_MAX * 0.5 + 0.5, 0, 1) * 255);
         this.buildLine[o + 3] = 255;
+        if (col < RES - 1 && (col & 1) === 1 && performance.now() - start >= budgetMs) { this.buildCol = col + 1; paused = true; break; }
       }
+      if (paused) break;
+      this.buildCol = 0;
       this.buildRow++;
     }
 

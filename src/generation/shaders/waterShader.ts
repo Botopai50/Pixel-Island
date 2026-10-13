@@ -672,9 +672,9 @@ export const WaterShader = {
       vec3 tropAbyss   = vec3(0.24, 0.40, 0.54);
 
       // 2. Manguezal / Pântano Estuarino: verde-água turvo (o esmeralda neon anterior parecia tinta)
-      vec3 swampShallow = vec3(0.32, 0.66, 0.56);
-      vec3 swampDeep    = vec3(0.12, 0.42, 0.36);
-      vec3 swampAbyss   = vec3(0.03, 0.17, 0.15);
+      vec3 swampShallow = vec3(0.30, 0.46, 0.34);
+      vec3 swampDeep    = vec3(0.16, 0.30, 0.22);
+      vec3 swampAbyss   = vec3(0.06, 0.15, 0.11);
 
       // 3. Tundra Polar / Ártico / Lago Glacial (Azul-gelo vítreo cristalino gélido)
       vec3 arcticShallow = vec3(0.62, 0.78, 0.86); // gelo acinzentado
@@ -1000,13 +1000,14 @@ export const WaterShader = {
           float foamCells=step(.86-density*.72,vCombined)*step(.12,density);
           float whiteCells=step(.97-density*.72,vCombined)*foamCells;
           float onPool=1.-smoothstep(.15,1.5,abs(vWorldPosition.y));
-          vec3 impactNight=mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim);
+          vec3 impactNight=mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim)*mix(vec3(1.0),vec3(0.58,0.63,0.72),waterShadow);
           finalColor=mix(finalColor,softFoamColor*impactNight,foamCells*.82*onPool);
           finalColor=mix(finalColor,uFoamColor*impactNight,whiteCells*.94*onPool);
         }
       }
       // Preserve the solid-contact border through the impact foam pass.
-      finalColor=mix(finalColor,uFoamColor*mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim),isContactFoam);
+      // (a borda é refeita por cima, então leva a mesma sombra da água; senão ficava branca e acesa dentro da sombra)
+      finalColor=mix(finalColor,uFoamColor*mix(vec3(0.15,0.21,0.36),vec3(1.0),uNightDim)*mix(vec3(1.0),vec3(0.58,0.63,0.72),waterShadow),isContactFoam);
       // névoa (a água é desenhada à parte, sem a névoa da cena: mesma conta, valores copiados)
       if (uFogOn > 0.5) finalColor = aerialPerspectiveK(finalColor, vWorldPosition, uFogColor, uFogNear, uFogFar, 0.8);
       gl_FragColor = vec4(finalColor, uOpacity);

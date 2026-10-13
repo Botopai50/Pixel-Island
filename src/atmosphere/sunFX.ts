@@ -98,8 +98,28 @@ export class SunFX {
         uOvercast: { value: 0 },
         tVol: { value: null }, uVolAmt: { value: 0 },
       },
-      vertexShader: VERT,
+      // a visibilidade do sol (9 amostras em volta dele) é a mesma para a tela inteira: calculada nos 4 vértices do quadrilátero em vez
+      // de em cada pixel (eram 18 leituras de textura por pixel, em tela cheia, todo quadro)
+      vertexShader: /* glsl */ `
+        uniform sampler2D tDepth; uniform sampler2D tScene;
+        uniform vec2 uSun; uniform vec2 uRes; uniform float uOvercast;
+        varying vec2 vUv; varying float vVis; varying float vCloudFree;
+        void main() {
+          vUv = uv;
+          gl_Position = vec4(position.xy, 0.0, 1.0);
+          float vis = 0.0, cloudFree = 0.0;
+          for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+            vec2 suv = clamp(uSun + vec2(float(i), float(j)) * vec2(0.008 * uRes.y / uRes.x, 0.008), 0.001, 0.999);
+            float isSky = step(0.99999, texture2D(tDepth, suv).x);
+            float cloud = isSky * clamp((1.0 - texture2D(tScene, suv).a) * 2.0, 0.0, 1.0);
+            vis += isSky * (1.0 - cloud);
+            cloudFree += 1.0 - cloud;
+          }
+          vVis = vis / 9.0 * (1.0 - uOvercast);
+          vCloudFree = cloudFree / 9.0 * (1.0 - uOvercast);
+        }`,
       fragmentShader: /* glsl */ `
+        varying float vVis; varying float vCloudFree;
         uniform sampler2D tRays; uniform sampler2D tDepth; uniform sampler2D tScene;
         uniform vec2 uSun; uniform vec2 uRes; uniform float uPix;
         uniform vec3 uRayCol; uniform float uRayAmt; uniform float uFlareAmt; uniform float uOvercast;
@@ -125,19 +145,7 @@ export class SunFX {
 
           // em volta do sol: vis = quanto dele está à vista (nem relevo nem nuvem na frente: o flare);
           // cloudFree = quanto dele está livre de nuvem (árvore/relevo na frente ainda fazem feixes)
-          float vis = 0.0, cloudFree = 0.0;
-          for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-            vec2 suv = clamp(uSun + vec2(float(i), float(j)) * vec2(0.008 * uRes.y / uRes.x, 0.008), 0.001, 0.999);
-            float isSky = step(0.99999, texture2D(tDepth, suv).x);
-            float cloud = isSky * clamp((1.0 - texture2D(tScene, suv).a) * 2.0, 0.0, 1.0);
-            vis += isSky * (1.0 - cloud);
-            cloudFree += 1.0 - cloud;
-          }
-          vis /= 9.0;
-          cloudFree /= 9.0;
-          // céu fechado: tampado mesmo onde o sol está atrás de árvore/relevo (ali não se vê a nuvem)
-          cloudFree *= 1.0 - uOvercast;
-          vis *= 1.0 - uOvercast;
+          float vis = vVis, cloudFree = vCloudFree;
 
           // god rays: suaves, como nos jogos (somados direto, sem degraus). No céu aberto bem mais
           // fracos (senão viram um clarão em volta do sol); por cima de árvores e relevo, inteiros.

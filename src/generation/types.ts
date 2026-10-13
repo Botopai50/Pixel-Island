@@ -9,6 +9,7 @@ export enum BiomeType {
   COASTAL_MEADOW = 'Campos Costeiros e Prados',
   TEMPERATE_FOREST = 'Floresta Mista Temperada',
   AUTUMN_FOREST = 'Bosque Outonal Dourado',
+  SAKURA_GROVE = 'Bosque de Cerejeiras',
   SAVANNAH = 'Savana Tropical',
   DESERT_DUNES = 'Deserto & Dunas Áridas',
   CANYON_DESERT = 'Cânions Estratificados & Ravinas',

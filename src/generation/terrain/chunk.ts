@@ -1,9 +1,11 @@
 import * as THREE from 'three';
+import { TERRAIN_LAYER } from './terrainHeightField.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { VegetationManager } from '../vegetation/vegetationManager.ts';
 import { CONFIG } from '../../config.ts';
 import { TerrainTextureForge } from './terrainTextureForge.ts';
 import { createChunkTerrainMaterial } from '../shaders/terrainShader.ts';
+import { enqueueTextureUpload } from './textureUploadQueue.ts';
 
 export type ChunkLOD = 'HIGH' | 'MED' | 'LOW';
 
@@ -72,12 +74,23 @@ export interface ChunkOptions {
  * Normalmente é um chunk de CONFIG.CHUNK_SIZE centrado em (cx, cz) * CHUNK_SIZE; com `area`
  * vira um bloco maior de LOD distante.
  */
+const grassQueue: Chunk[] = [];
+/** Plantar a grama de um chunk (e tirar) leva 1 a 3 ms: no máximo ~2 ms por quadro, um chunk de cada vez. */
+export function pumpGrassQueue(budgetMs = 2): void {
+  const t0 = performance.now();
+  while (grassQueue.length > 0 && performance.now() - t0 < budgetMs) grassQueue.shift()!.runGrassSync();
+}
+
 export class Chunk {
   public readonly cx: number;
   public readonly cz: number;
   public readonly group: THREE.Group;
   public isSubmerged: boolean = false;
   public hasVegetation: boolean = false;
+  /** o grupo deste chunk está no grupo distante (ver ChunkManager.updateFarMembership) */
+  public farMember = false;
+  /** plantio da vegetação em andamento (feito aos poucos): já pode ter instâncias na cena */
+  public isPlanting(): boolean { return this.vegInst !== null; }
   private terrainMesh?: THREE.Mesh;
   private readonly vegetationOwner = nextVegetationOwner++;
   private readonly grassOwner = nextVegetationOwner++;
@@ -119,6 +132,9 @@ export class Chunk {
     this.cz = cz;
     this.onSceneChanged = options.onSceneChanged;
     this.group = new THREE.Group();
+    // o grupo do chunk fica na origem e nunca se mexe; os filhos (relevo) têm a matriz calculada uma vez ao entrar: o three não percorre os ~150 grupos a cada quadro
+    this.group.matrixAutoUpdate = false;
+    this.group.matrixWorldAutoUpdate = false;
     this.group.name = options.area ? `farTile_${cx}_${cz}` : `chunk_${cx}_${cz}`;
     this.forge = forge;
 
@@ -143,6 +159,7 @@ export class Chunk {
     // Popula árvores, arbustos e rochas apenas se permitido pelo LOD de distância
     if (options.enableVegetation) {
       this.populateVegetation(vegetationMgr, terrainGen, options.enableDetailFlora ?? true);
+      this.populateVegetation(vegetationMgr, terrainGen, options.enableDetailFlora ?? true);  // 2º passo (ver populateVegetation)
     }
   }
 
@@ -163,16 +180,43 @@ export class Chunk {
     return true;
   }
 
-  public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator, enableDetailFlora: boolean = true): void {
+  /** plano da vegetação já feito, esperando o quadro seguinte para ser plantado (ver populateVegetation) */
+  private vegPlan: ReturnType<VegetationManager['planChunk']> | null = null;
+  private vegGen: ReturnType<VegetationManager['planChunkGen']> | null = null;
+  private vegInst: ReturnType<VegetationManager['populateChunkGen']> | null = null;
+
+  /**
+   * Plantar um chunk é feito em DOIS passos, um por chamada (a chamada seguinte vem no mesmo quadro se ainda sobrar orçamento, ou no próximo):
+   * primeiro o plano, depois a instanciação. Cada passo cabe no orçamento por quadro; juntos num só chamavam 5 a 7 ms e estouravam o limite de 4.
+   */
+  public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator, enableDetailFlora: boolean = true, sliceMs: number = Infinity): void {
     if (this.hasVegetation || this.isSubmerged || this.isDestroyed) return;
-    this.hasVegetation = true;
     this.vegetationMgr = vegetationMgr;
-    vegetationMgr.populateChunk(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationOwner, enableDetailFlora);
+    if (!this.vegPlan) {
+      // o plano de um chunk custa 20 a 70 ms: com sliceMs ele é feito aos poucos (o gerador guarda onde parou), um pedaço por quadro
+      if (!this.vegGen) this.vegGen = vegetationMgr.planChunkGen(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, enableDetailFlora);
+      const end = performance.now() + sliceMs;
+      for (;;) {
+        const r = this.vegGen.next();
+        if (r.done) { this.vegPlan = r.value; this.vegGen = null; return; }
+        if (performance.now() >= end) return;
+      }
+    }
+    if (!this.vegInst) this.vegInst = vegetationMgr.populateChunkGen(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, this.vegetationOwner, enableDetailFlora, this.vegPlan);
+    const end = performance.now() + sliceMs;
+    for (;;) {
+      if (this.vegInst.next().done) break;
+      if (performance.now() >= end) return;     // o resto (as outras espécies) segue no quadro seguinte
+    }
+    this.vegInst = null;
+    this.vegPlan = null;
+    this.hasVegetation = true;
     this.onSceneChanged?.();
   }
 
   /** Tira as árvores/pedras/arbustos (o chunk saiu do raio de vegetação: o horizonte põe as simples). */
   public releaseVegetation(): void {
+    if (this.vegInst) { this.vegInst = null; this.vegPlan = null; this.vegetationMgr?.releaseChunk(this.vegetationOwner); }   // plantio pela metade
     if (!this.hasVegetation) return;
     this.hasVegetation = false;
     this.vegetationMgr?.releaseChunk(this.vegetationOwner);
@@ -258,9 +302,15 @@ export class Chunk {
         return;
       }
       this.cancelRequest = undefined;
+      const apply = (): void => {
+      if (this.isDestroyed) {
+        textures?.topTex.dispose();
+        textures?.topDarkTex.dispose();
+        return;
+      }
       if (grass && !this.grassData) {
         this.grassData = grass;
-        this.syncGrass();
+        this.queueGrassSync();
       }
 
       // Troca num chunk já visível: a versão velha vira um "fantasma" que some com dissolve
@@ -314,6 +364,9 @@ export class Chunk {
         ghost.position.copy(this.terrainMesh!.position);
         ghost.receiveShadow = true;
         this.group.add(ghost);
+        ghost.updateMatrixWorld(true);
+        ghost.matrixAutoUpdate = false;
+        ghost.matrixWorldAutoUpdate = false;
         startFade(this.chunkMaterial, false);
         startFade(ghostMat, true, () => {
           this.group.remove(ghost);
@@ -331,13 +384,22 @@ export class Chunk {
         // barranco da praia dava na areia com o sol baixo é contido com o normalBias maior (shadowClipmap).
         this.terrainMesh.castShadow = true;
         this.terrainMesh.receiveShadow = true;
+        this.terrainMesh.layers.enable(TERRAIN_LAYER);   // vai para o mapa de alturas das árvores
         this.group.add(this.terrainMesh);
+        // o relevo nunca se mexe: a matriz é calculada uma vez e o three deixa de percorrê-la a cada quadro (o grupo do chunk fica na origem)
+        this.terrainMesh.updateMatrixWorld(true);
+        this.terrainMesh.matrixAutoUpdate = false;
+        this.terrainMesh.matrixWorldAutoUpdate = false;
         this.onSceneChanged?.();
       } else if (geometry) {
         this.onSceneChanged?.();
       }
 
       this.refine();
+      };
+      // a textura sobe para a GPU antes, uma por quadro (ver textureUploadQueue.ts); o chunk só a recebe depois
+      if (textures) enqueueTextureUpload([textures.topTex, textures.topDarkTex], apply, this.distance);
+      else apply();
     }).catch((err) => {
       this.cancelRequest = undefined;
       if (!this.isDestroyed && err?.message !== 'cancelled') {
@@ -348,19 +410,37 @@ export class Chunk {
 
   /** Liga/desliga a grama 3D deste chunk (só perto da câmera). */
   public setGrassEnabled(on: boolean, vegetationMgr: VegetationManager): void {
+    if (on === this.grassWanted && !(on && !this.grassPlanted && this.grassData)) return;
     this.grassWanted = on;
     this.vegetationMgr = this.vegetationMgr ?? vegetationMgr;
+    this.queueGrassSync();
+  }
+
+  /** a grama é plantada/retirada aos poucos (um chunk por vez, ver pumpGrassQueue): ao cruzar a divisa de um chunk vários mudavam de uma vez */
+  private queueGrassSync(): void {
+    if (this.grassQueued) return;
+    this.grassQueued = true;
+    grassQueue.push(this);
+  }
+  private grassQueued = false;
+  private grassCursor = 0;
+  private grassPartial = false;
+  /** chamado pela fila (pumpGrassQueue) */
+  public runGrassSync(): void {
+    this.grassQueued = false;
     this.syncGrass();
   }
 
   private syncGrass(): void {
     if (this.isDestroyed || !this.vegetationMgr) return;
     if (this.grassWanted && !this.grassPlanted && this.grassData) {
-      this.vegetationMgr.populateGrass(this.grassOwner, this.grassData);
-      this.grassPlanted = true;
-    } else if (!this.grassWanted && this.grassPlanted) {
+      // ~1500 tufos por vez (um chunk inteiro custava 10 a 14 ms): o resto volta para a fila e segue no quadro seguinte
+      const next = this.vegetationMgr.populateGrass(this.grassOwner, this.grassData, this.grassCursor, 9 * 1500);
+      if (next >= this.grassData.length) { this.grassPlanted = true; this.grassCursor = 0; this.grassPartial = false; }
+      else { this.grassCursor = next; this.grassPartial = true; this.queueGrassSync(); }
+    } else if (!this.grassWanted && (this.grassPlanted || this.grassPartial)) {
       this.vegetationMgr.releaseChunk(this.grassOwner);
-      this.grassPlanted = false;
+      this.grassPlanted = false; this.grassPartial = false; this.grassCursor = 0;
     }
   }
 

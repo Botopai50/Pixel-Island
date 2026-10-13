@@ -26,6 +26,7 @@ export class WaterBiomeMap {
   private terrainGen: TerrainGenerator;
   private buildData = new Uint8Array(RES * RES * 4);
   private buildRow = -1;
+  private buildCol = 0;
   private buildOriginX = 0;
   private buildOriginZ = 0;
 
@@ -55,16 +56,22 @@ export class WaterBiomeMap {
       this.buildOriginX = Math.floor((centerX - SPAN / 2) / CELL) * CELL;
       this.buildOriginZ = Math.floor((centerZ - SPAN / 2) / CELL) * CELL;
       this.buildRow = 0;
+      this.buildCol = 0;
     }
 
     const start = performance.now();
+    // (o orçamento é conferido a cada 8 texels, e a linha continua de onde parou: antes uma linha inteira de 128 texels
+    // custava 4 a 8 ms de uma vez e estourava o orçamento de 2 ms por quadro)
     while (this.buildRow < RES && performance.now() - start < budgetMs) {
       const z = this.buildOriginZ + (this.buildRow + 0.5) * CELL;
-      for (let col = 0; col < RES; col++) {
+      for (let col = this.buildCol; col < RES; col++) {
         const x = this.buildOriginX + (col + 0.5) * CELL;
         this.writeTint((this.buildRow * RES + col) * 4, x, z);
+        if (col === RES - 1) { this.buildCol = 0; break; }
+        if ((col & 1) === 1 && performance.now() - start >= budgetMs) { this.buildCol = col + 1; break; }
       }
-      this.buildRow++;
+      if (this.buildCol === 0) this.buildRow++;
+      else break;
     }
 
     if (this.buildRow >= RES) {

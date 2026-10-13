@@ -63,14 +63,15 @@ const P: Record<string, Profile> = {
   beach: { ...NEUTRAL, fog: ['#e0d8c0', 0.1, 1], tint: [1.02, 1.01, 0.98], sat: 1.04, cloud: { cov: -0.08 }, streaks: 0.5, particles: { pollen: 0.15 } },
   meadow: { fog: ['#d0e0c8', 0.1, 1], dens: [1, 1.1, 1], tint: [1.02, 1.02, 0.97], sat: 1.07, con: 1, streaks: 0.45, particles: { pollen: 1.0, fireflies: 0.35 } },
   temperate: { fog: ['#c8dcc8', 0.12, 1], dens: [1.05, 1.3, 1.05], tint: [1.0, 1.01, 0.98], sat: 1.04, con: 1.01, cloud: { cov: 0.05 }, streaks: 0, particles: { pollen: 0.55, fireflies: 0.6 } },
+  sakura: { fog: ['#f2d4e2', 0.30, 1.0], dens: [1.12, 1.5, 1.1], tint: [1.04, 1.0, 1.01], sat: 1.12, con: 1.0, cloud: { cov: 0.12, hue: '#f6dce8', amt: 0.2, lit: 1.0, shade: 0.92, grey: 0.05 }, streaks: 0.15, particles: { petals: 1.0, pollen: 0.25 } },
   autumn: { fog: ['#e8c8a0', 0.28, 1], dens: [1.1, 1.5, 1.08], tint: [1.05, 0.99, 0.91], sat: 1.12, con: 1.03, cloud: { cov: 0.12, hue: '#f0d0a8', amt: 0.2, shade: 0.95, grey: 0.1 }, streaks: 0, particles: { leaves: 1.0 } },
   taiga: { fog: ['#a8c4c8', 0.32, 0.97], dens: [1.35, 2.0, 1.12], tint: [0.95, 0.99, 1.03], sat: 0.86, con: 1.0, cloud: { cov: 0.3, hue: '#b8c8d0', amt: 0.35, lit: 0.92, shade: 0.85, wind: 1.2, grey: 0.3 }, streaks: 0, particles: { motes: 0.7, snow: 0.15 } },
   polar: { fog: ['#d8e6f4', 0.32, 1.03], dens: [1.3, 1.2, 1.25], tint: [0.95, 0.99, 1.06], sat: 0.82, con: 1.04, cloud: { cov: 0.3, hue: '#e0e8f0', amt: 0.3, shade: 0.92, wind: 1.8, grey: 0.35 }, streaks: 0.7, particles: { snow: 1.0 } },
   alpine: { fog: ['#c8d8e8', 0.15, 1], dens: [1.1, 0.8, 1.0], tint: [0.97, 1.0, 1.03], sat: 0.92, con: 1.03, cloud: { cov: 0.15, hue: '#d8e0ea', amt: 0.2, wind: 1.5, grey: 0.15 }, streaks: 0.8, particles: { snow: 0.35 } },
-  desert: { fog: ['#e0b478', 0.78, 1.02], dens: [1.55, 0.6, 1.6], tint: [1.05, 1.0, 0.9], sat: 1.05, con: 1.06, cloud: { cov: -0.33, hue: '#fff0d8', amt: 0.2, wind: 0.6 }, streaks: 1, particles: { sand: 1.0 } },
+  desert: { fog: ['#e0b478', 0.78, 1.02], dens: [1.55, 0.6, 1.6], tint: [1.09, 1.01, 0.87], sat: 1.08, con: 1.1, cloud: { cov: -0.33, hue: '#fff0d8', amt: 0.2, wind: 0.6 }, streaks: 1, particles: { sand: 1.0 } },
   savanna: { fog: ['#e6cf9a', 0.38, 1.02], dens: [0.9, 0.5, 1.15], tint: [1.05, 1.0, 0.9], sat: 1.08, con: 1.03, cloud: { cov: -0.18, hue: '#f4dca8', amt: 0.3, wind: 0.8 }, streaks: 0.75, particles: { dust: 1.0, fireflies: 0.2 } },
   tropical: { fog: ['#b8d8c0', 0.32, 0.98], dens: [1.3, 2.0, 1.2], tint: [0.97, 1.02, 0.97], sat: 1.12, con: 1.02, cloud: { cov: 0.32, hue: '#c8d8cc', amt: 0.25, lit: 0.95, shade: 0.82, wind: 0.9, grey: 0.15 }, streaks: 0, particles: { motes: 0.5, fireflies: 1.0 } },
-  mangrove: { fog: ['#b0c8b0', 0.38, 0.96], dens: [1.4, 2.4, 1.25], tint: [0.97, 1.01, 0.96], sat: 1.04, con: 1.0, cloud: { cov: 0.3, hue: '#c0d0c0', amt: 0.3, shade: 0.82, grey: 0.2 }, streaks: 0, particles: { motes: 0.7, fireflies: 0.8 } },
+  mangrove: { fog: ['#b0c8b0', 0.5, 0.96], dens: [1.6, 3.6, 1.4], tint: [0.97, 1.01, 0.96], sat: 1.04, con: 1.0, cloud: { cov: 0.3, hue: '#c0d0c0', amt: 0.3, shade: 0.82, grey: 0.2 }, streaks: 0, particles: { motes: 0.7, fireflies: 0.8 } },
   volcanic: { fog: ['#a08078', 0.6, 0.78], dens: [1.6, 1.4, 1.4], tint: [1.04, 0.93, 0.88], sat: 0.85, con: 1.08, cloud: { cov: 0.35, hue: '#6a5a54', amt: 0.7, lit: 0.6, shade: 0.5, wind: 1.3, grey: 0.5 }, streaks: 0, particles: { ash: 1.0, embers: 0.6 } },
   geothermal: { fog: ['#e8ecec', 0.42, 1.05], dens: [1.3, 2.6, 1.2], tint: [1.0, 0.99, 0.98], sat: 0.9, con: 0.97, cloud: { cov: 0.2, hue: '#f0f0f0', amt: 0.3, grey: 0.2 }, streaks: 0, particles: { steam: 1.0 } },
 };
@@ -83,6 +84,7 @@ function profileFor(t: BiomeType): Profile {
     case BiomeType.COASTAL_MEADOW: return P.meadow;
     case BiomeType.TEMPERATE_FOREST: return P.temperate;
     case BiomeType.AUTUMN_FOREST: return P.autumn;
+    case BiomeType.SAKURA_GROVE: return P.sakura;
     case BiomeType.SAVANNAH: return P.savanna;
     case BiomeType.DESERT_DUNES: case BiomeType.CANYON_DESERT: return P.desert;
     case BiomeType.TROPICAL_RAINFOREST: return P.tropical;
@@ -102,6 +104,9 @@ export const GRADE = {
   uGradeCon: { value: 1 },
   /** clarão de relâmpago (0-1) */
   uFlash: { value: 0 },
+  /** ar tremido do calor (deserto ao meio-dia, 0-1) e o relógio dele */
+  uHeat: { value: 0 },
+  uHeatT: { value: 0 },
 };
 
 export const GRADE_GLSL = /* glsl */ `
@@ -261,8 +266,8 @@ export class BiomeAmbience {
       for (const kind in p.particles) t.particles[kind as ParticleKind] += (p.particles[kind as ParticleKind] ?? 0) * k;
     }
 
-    // transição de alguns segundos
-    const a = 1 - Math.exp(-dt / 2.5);
+    // transição lenta: na divisa de dois biomas o alvo oscila com o anel de amostras, e uma resposta rápida piscava o céu e as árvores
+    const a = 1 - Math.exp(-dt / 8);
     const cur = this.current;
     const lerp = (x: number, y: number) => x + (y - x) * a;
     for (let c = 0; c < 4; c++) cur.fog[c] = lerp(cur.fog[c], t.fog[c]);
@@ -305,6 +310,10 @@ export class BiomeAmbience {
     Object.assign(GRADE.uGradeTint.value, { x: cur.tint[0] * wx.dark * 0.98, y: cur.tint[1] * wx.dark, z: cur.tint[2] * Math.min(1, wx.dark * 1.06) });
     GRADE.uGradeSat.value = cur.sat * (0.6 + 0.4 * wx.dark);
     GRADE.uGradeCon.value = cur.con;
+    // calor do deserto: o ar treme perto do horizonte, mais forte com o sol alto
+    const sunH = Math.max(0, Math.sin(((this.hour - 6) / 12) * Math.PI));
+    GRADE.uHeat.value = Math.min(1, cur.particles.sand * 1.2) * this.nearMode * Math.pow(sunH, 0.6);
+    GRADE.uHeatT.value = (GRADE.uHeatT.value + dt) % 600;
 
     // vento: força pelo bioma (o mesmo multiplicador das nuvens)
     this.wind.update(dt, cl[7] * wx.wind);

@@ -75,6 +75,8 @@ export function buildImpostorBlock(
         push(p.mangroveSaplingItems, T('mangrove'), true);
         push(p.snowPineItems, T('snowPine'), false);
         push(p.arcticWillowItems, T('willow'), false);
+        push(p.sakuraItems, T('sakura'), false);
+        push(p.korokItems, T('korok'), false);
         push(p.deadTreeTransforms, T('dead'), false);
         push(p.cactusTransforms, T('cactus'), false);
         push(p.cactusSaplingTransforms, T('cactusSapling'), false);

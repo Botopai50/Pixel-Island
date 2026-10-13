@@ -28,6 +28,36 @@ export const GRASS_TUFT_SHAPES: GrassTuftShape[] = [
   { blades: 14, width: 7,  height: 0.72, arch: 0.50, splay: 0.7, curl: 0.60, lean: 0.55, heads: false }, // tombada
 ];
 
+/** Capim de brejo do manguezal (spartina e juncinhos): lâminas altas, finas e arqueadas, bem diferentes das moitas do resto do mundo. */
+export const GRASS_MARSH_SHAPES: GrassTuftShape[] = [
+  { blades: 10, width: 4, height: 1.00, arch: 0.25, splay: 0.35, curl: 0.45, lean: 0.12, heads: false }, // spartina alta
+  { blades: 14, width: 5, height: 0.85, arch: 0.50, splay: 0.80, curl: 0.80, lean: 0.0,  heads: false }, // junco em fonte
+  { blades: 8,  width: 3, height: 1.00, arch: 0.20, splay: 0.25, curl: 0.20, lean: -0.1, heads: true  }, // com espigas
+  { blades: 12, width: 9, height: 0.38, arch: 0.50, splay: 1.00, curl: 0.40, lean: 0.0,  heads: false }, // tapete baixo
+  { blades: 9,  width: 4, height: 0.95, arch: 0.30, splay: 0.40, curl: 0.70, lean: 0.50, heads: false }, // tombada pela maré
+];
+
+const S = (blades: number, width: number, height: number, arch: number, splay: number, curl: number, lean = 0, heads = false): GrassTuftShape =>
+  ({ blades, width, height, arch, splay, curl, lean, heads });
+
+/** Capim próprio de cada bioma (cinco formatos cada): as formas e as paletas dão a identidade do lugar. */
+export const GRASS_STYLES: Record<string, GrassTuftShape[]> = {
+  // selva: folhas largas e arqueadas, quase samambaias
+  jungle: [S(8, 7, 0.82, 0.4, 1.2, 0.7), S(6, 5, 1.0, 0.3, 0.8, 0.5), S(14, 9, 0.5, 0.5, 1.4, 0.9), S(7, 6, 0.9, 0.35, 1.0, 0.4, -0.2), S(9, 8, 0.7, 0.45, 1.3, 1.0, 0.4)],
+  // taiga: tufos baixos, densos e duros, como musgo e agulhas
+  taiga: [S(20, 8, 0.42, 0.6, 0.7, 0.2), S(24, 11, 0.3, 0.6, 1.0, 0.3), S(14, 6, 0.6, 0.5, 0.5, 0.25), S(18, 9, 0.38, 0.55, 0.9, 0.4, 0.3), S(12, 5, 0.55, 0.4, 0.45, 0.15)],
+  // savana: hastes altas e finas com espigas de sementes
+  savanna: [S(10, 4, 1.0, 0.2, 0.3, 0.3, 0.1, true), S(12, 5, 0.95, 0.25, 0.35, 0.25, 0, true), S(8, 3, 1.0, 0.15, 0.25, 0.2, -0.15), S(14, 6, 0.85, 0.3, 0.5, 0.4, 0.3, true), S(9, 4, 0.9, 0.2, 0.3, 0.5, 0.45)],
+  // bosque outonal: trigo-selvagem ferrugem e dourado, com espigas
+  autumn: [S(10, 4, 0.95, 0.25, 0.4, 0.5, 0.1, true), S(14, 6, 0.7, 0.4, 0.7, 0.6), S(9, 4, 1.0, 0.2, 0.3, 0.3, -0.1, true), S(16, 8, 0.5, 0.5, 0.9, 0.5), S(11, 5, 0.8, 0.3, 0.5, 0.7, 0.4)],
+  // bosque de cerejeiras: tufos macios e baixos, com pontas rosa (as espigas pegam o tom mais claro)
+  sakura: [S(12, 6, 0.7, 0.5, 0.8, 0.5, 0, true), S(16, 8, 0.5, 0.55, 1.0, 0.6, 0, true), S(10, 5, 0.8, 0.4, 0.6, 0.4, 0.1), S(14, 7, 0.6, 0.5, 0.9, 0.7, -0.2, true), S(9, 4, 0.9, 0.3, 0.5, 0.6, 0.3)],
+  // tundra alpina: tufos rasteiros e cinzentos
+  tundra: [S(16, 7, 0.4, 0.5, 0.8, 0.3), S(20, 9, 0.3, 0.6, 1.0, 0.3), S(12, 5, 0.5, 0.4, 0.6, 0.2), S(14, 6, 0.35, 0.5, 0.7, 0.5, 0.4), S(18, 8, 0.32, 0.55, 0.9, 0.2)],
+  // deserto: capim duro, seco e espetado
+  desert: [S(8, 3, 0.8, 0.2, 0.5, 0.1), S(6, 3, 0.9, 0.15, 0.4, 0.1, 0.1), S(10, 4, 0.6, 0.3, 0.7, 0.2), S(7, 3, 0.7, 0.2, 0.5, 0.2, -0.3), S(9, 5, 0.5, 0.3, 0.9, 0.3, 0.2)],
+};
+
 export const GRASS_SPRITE_W = 32, GRASS_SPRITE_H = 24;
 
 /**

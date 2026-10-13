@@ -11,7 +11,7 @@ import type { TerrainGenerator } from '../terrain/terrainGenerator.ts';
  * Depois de ver água, o reflexo continua ligado por HOLD segundos (sem acender e apagar).
  */
 const COLS = 9, ROWS = 4;
-const RAYS_PER_FRAME = 6;
+const RAYS_PER_FRAME = 3;
 const HOLD = 1.0;
 
 export class WaterVisibility {
@@ -20,6 +20,15 @@ export class WaterVisibility {
   private _ndc = new THREE.Vector3();
   private _dir = new THREE.Vector3();
   private _p = new THREE.Vector3();
+  /** último resultado de cada raio da grade: de quantos pontos da tela sai água (a grade inteira é refeita a cada ~6 quadros) */
+  private hit = new Uint8Array(COLS * ROWS);
+
+  /** fração da grade de raios que bate em água (0 a 1) */
+  public coverage(): number {
+    let n = 0;
+    for (let i = 0; i < this.hit.length; i++) n += this.hit[i];
+    return n / this.hit.length;
+  }
 
   /** true enquanto há (ou houve há pouco) água na tela */
   public update(camera: THREE.PerspectiveCamera, tg: TerrainGenerator, now: number): boolean {
@@ -29,7 +38,9 @@ export class WaterVisibility {
       // da metade de cima até a borda de baixo da tela (água fica no chão)
       const nx = -0.95 + 1.9 * ((k % COLS) + 0.5) / COLS;
       const ny = -0.98 + 1.33 * (Math.floor(k / COLS) + 0.5) / ROWS;
-      if (this.rayHitsWater(camera, tg, nx, ny)) this.lastSeen = now;
+      const w = this.rayHitsWater(camera, tg, nx, ny);
+      this.hit[k] = w ? 1 : 0;
+      if (w) this.lastSeen = now;
     }
     return now - this.lastSeen < HOLD;
   }

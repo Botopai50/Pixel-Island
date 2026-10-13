@@ -31,7 +31,7 @@ export interface HorizonTreeData {
 /** Espécies do atlas de impostores (a mesma ordem do atlas desenhado na thread principal) */
 export const IMPOSTOR_TYPES = [
   'oak', 'broadOak', 'pine', 'birch', 'palm', 'acacia', 'mapleRed', 'mapleOrange', 'mapleYellow', 'mangrove', 'snowPine', 'willow',
-  'dead', 'cactus', 'cactusSapling',
+  'dead', 'cactus', 'cactusSapling', 'sakura', 'korok',
 ] as const;
 
 // fundo do mar: além do alcance da malha de água (~8km) ele fica à vista, então tem a cor da água funda

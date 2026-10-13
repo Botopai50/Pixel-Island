@@ -21,12 +21,12 @@ export interface QualityLevel {
 }
 
 export const QUALITY_LEVELS: QualityLevel[] = [
-  { name: 'alta',        renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 8, shadowStep: 0.6, reflectionSize: 256, textureDensityCap: Infinity },
-  { name: 'alta-',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, vegetationRadius: 7, shadowStep: 0.8, reflectionSize: 256, textureDensityCap: Infinity },
-  { name: 'média',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 7, shadowStep: 1.0, reflectionSize: 192, textureDensityCap: Infinity },
-  { name: 'média-',      renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 6, shadowStep: 1.5, reflectionSize: 192, textureDensityCap: 3 },
-  { name: 'baixa',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 6, shadowStep: 2.0, reflectionSize: 160, textureDensityCap: 2.5 },
-  { name: 'muito baixa', renderScale: 1.00, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 5, shadowStep: 3.0, reflectionSize: 160, textureDensityCap: 2 },
+  { name: 'alta',        renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 22, baseViewRadius: 12, vegetationRadius: 7, shadowStep: 2.4, reflectionSize: 256, textureDensityCap: Infinity },
+  { name: 'alta-',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 20, baseViewRadius: 11, vegetationRadius: 6.5, shadowStep: 2.6, reflectionSize: 256, textureDensityCap: Infinity },
+  { name: 'média',       renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 18, baseViewRadius: 10, vegetationRadius: 7, shadowStep: 2.2, reflectionSize: 192, textureDensityCap: Infinity },
+  { name: 'média-',      renderScale: 1.00, shadowMapSize: 2048, maxViewRadius: 16, baseViewRadius: 10, vegetationRadius: 6, shadowStep: 2.8, reflectionSize: 192, textureDensityCap: 3 },
+  { name: 'baixa',       renderScale: 1.00, shadowMapSize: 1024, maxViewRadius: 14, baseViewRadius: 9,  vegetationRadius: 6, shadowStep: 3.0, reflectionSize: 160, textureDensityCap: 2.5 },
+  { name: 'muito baixa', renderScale: 1.00, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 5, shadowStep: 3.5, reflectionSize: 160, textureDensityCap: 2 },
 ];
 
 /** Nível inicial pelo hardware (índice em QUALITY_LEVELS). */
@@ -96,13 +96,17 @@ export class AdaptiveQuality {
     this.samples = [];
     this.windowStart = now;
 
-    if (median > 25) { this.badWindows++; this.goodWindows = 0; }
-    else if (median < 18) { this.goodWindows++; this.badWindows = 0; }
+    // (limiar de 33 ms e três janelas seguidas: antes bastava a mediana passar de 25 ms por 4 s para o jogo trocar de nível, e trocar o
+    // tamanho dos mapas de sombra recria as texturas: por um instante todas as árvores ficavam sem sombra, claras)
+    // (os degraus mexem no alcance da vegetação e das sombras: com a mediana perto do limiar o jogo ficava subindo e descendo de nível, e
+    // as árvores apareciam e sumiam em ciclos. Agora só desce de verdade quando está muito lento, e só sobe com muita folga.)
+    if (median > 45) { this.badWindows++; this.goodWindows = 0; }
+    else if (median < 14) { this.goodWindows++; this.badWindows = 0; }
     else { this.badWindows = 0; this.goodWindows = 0; }
 
-    if (this.badWindows >= 2 && this.level < QUALITY_LEVELS.length - 1) {
+    if (this.badWindows >= 4 && this.level < QUALITY_LEVELS.length - 1) {
       this.set(this.level + 1, now);
-    } else if (this.goodWindows >= 6 && this.level > 0 && now - this.lastChange > 20000) {
+    } else if (this.goodWindows >= 10 && this.level > 0 && now - this.lastChange > 40000) {
       this.set(this.level - 1, now);
     }
   }
