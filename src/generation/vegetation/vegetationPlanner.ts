@@ -403,7 +403,7 @@ export function* planChunkVegetationGen(
         // folhas secas caídas (do Pixel_Tree) no lugar dos tapetes de pétalas
         for (let k = 0; k < 3; k++) if (flora.chance(0.40)) { const lx = wx + flora.range(-J, J), lz = wz + flora.range(-J, J); dummy.position.set(lx, (terrainGen.getPointFast ? terrainGen.getPointFast(lx, lz).height : pt.height) + 0.01, lz); dummy.scale.set(1, 1, 1); dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0); dummy.updateMatrix(); shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_satori' }); }
         for (let k = 0; k < 2; k++) if (flora.chance(0.30)) put(wildflowerTransforms, flora.range(0.9, 1.4), new THREE.Color(0xf6a6c8), Math.PI * 2, -0.02);
-        if (flora.chance(0.025)) put(lanternTransforms, flora.range(0.9, 1.2), new THREE.Color(1, 1, 1), Math.PI * 2, -0.04);
+        if (flora.chance(0.025)) put(lanternTransforms, 1, new THREE.Color(1, 1, 1), Math.PI * 2, -0.04)   // escala 1: as células de pixel têm o tamanho da densidade do jogo (stoneLanternParts.ts);
       }
 
       // Folhas secas caídas no chão das florestas (cada clima com as suas)

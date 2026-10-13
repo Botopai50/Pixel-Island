@@ -229,7 +229,7 @@ const groups: Group[] = [
   {
     title: 'Novidades: bosque de cerejeiras',
     items: [
-      { id: 'stoneLantern', name: 'Lanterna de pedra', where: 'Bosque de cerejeiras', isNew: true, news: 'Lanterna japonesa (tōrō) de pedra, rara, com abertura acesa.', parts: single(G.stoneLantern, M.swampMaterial, 0xffffff) },
+      { id: 'stoneLantern', name: 'Lanterna de pedra', where: 'Bosque de cerejeiras', isNew: true, news: 'Lanterna japonesa (tōrō) de pedra, rara, com abertura acesa.', parts: G.stoneLanternParts.map((p) => ({ geo: p.geometry, mat: p.material, tint: 0xffffff })) },
       { id: 'pinkFlowers', name: 'Flores cor-de-rosa', where: 'Bosque de cerejeiras', isNew: true, news: 'As flores silvestres em tom rosa, só nesse bioma.', parts: single(G.wildflowers, M.groundFloraMaterial, 0xf6a6c8) },
     ],
   },

@@ -21,6 +21,8 @@ function shadowLiteOf(lod: GameTreeLod, lightest: GameTreeLod, partIndex: number
 }
 import { GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 import { enableAssetEnvironment } from './pixelTrees/services/assetEnvironment';
+import { getStoneLanternParts } from './structures/stoneLanternParts.ts';
+import type { LanternPart } from './structures/stoneLanternParts.ts';
 
 /** Um lugar de árvore: a matriz e (nas árvores do plano) a cor da copa. */
 interface GameTreeItem { matrix: THREE.Matrix4; leafTint?: THREE.Color }
@@ -104,7 +106,8 @@ export class VegetationGeometries {
   public static reeds: THREE.BufferGeometry;
   public static lilyPads: THREE.BufferGeometry;
   public static petalCarpet: THREE.BufferGeometry;
-  public static stoneLantern: THREE.BufferGeometry;
+  /** Lanterna de pedra do pacote gerador-lanterna-de-pedra: pedra, madeira, placas e núcleo, cada um com o seu material (structures/stoneLanternParts.ts) */
+  public static stoneLanternParts: LanternPart[];
   public static barrelCactus: THREE.BufferGeometry;
   public static pricklyPear: THREE.BufferGeometry;
   public static tumbleweed: THREE.BufferGeometry;
@@ -228,7 +231,7 @@ export class VegetationGeometries {
     this.reeds = BotanicalGeometryFactory.buildReeds().body;
     this.lilyPads = BotanicalGeometryFactory.buildLilyPads().body;
     this.petalCarpet = BotanicalGeometryFactory.buildPetalCarpet().body;
-    this.stoneLantern = BotanicalGeometryFactory.buildStoneLantern().body;
+    this.stoneLanternParts = getStoneLanternParts();
     this.barrelCactus = BotanicalGeometryFactory.buildBarrelCactus().body;
     this.pricklyPear = BotanicalGeometryFactory.buildPricklyPear().body;
     this.tumbleweed = BotanicalGeometryFactory.buildTumbleweed().body;
@@ -832,7 +835,10 @@ export class VegetationManager {
     yield;
     createSingle(VegetationGeometries.petalCarpet, this.swampMaterial, petalTransforms, 'petalCarpet');
     yield;
-    createSingle(VegetationGeometries.stoneLantern, this.swampMaterial, lanternTransforms, 'stoneLantern');
+    for (const part of VegetationGeometries.stoneLanternParts) {
+      if (lanternTransforms.length === 0) break;
+      this.instances.add(owner, part.geometry, part.material, lanternTransforms.map((it) => it.matrix), lanternTransforms.map((it) => it.tint), part.name, part.castShadow);
+    }
     yield;
     createSingle(VegetationGeometries.barrelCactus, this.swampMaterial, barrelTransforms, 'barrelCactus');
     yield;
