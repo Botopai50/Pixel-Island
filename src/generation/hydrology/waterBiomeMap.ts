@@ -1,21 +1,17 @@
 import * as THREE from 'three';
 import { TerrainGenerator } from '../terrain/terrainGenerator.ts';
-import { clamp, smoothstep } from '../math/mathUtils.ts';
+import { getTextureWorkerPool } from '../terrain/textureWorkerPool.ts';
+import { WB_RES as RES, WB_CELL as CELL, WB_SPAN as SPAN, writeWaterTint } from './waterBiomeCompute.ts';
 
-const RES = 128;
-const CELL = 12; // metros por texel → cobre ~1.5km ao redor do jogador
-const SPAN = RES * CELL;
 const REBUILD_DISTANCE = SPAN * 0.2;
-
-// Profundidade máxima codificada no canal A (metros): abaixo disso as ondas já estão no tamanho cheio
-const MAX_ENCODED_DEPTH = 6;
 
 /**
  * Mapa de tons da água (R = ártico, G = manguezal, B = tropical) calculado com o MESMO clima e a
  * mesma regra polar do BiomeManager, para a cor da água bater com o bioma real ao redor.
  * O canal A guarda a profundidade do fundo (0..MAX_ENCODED_DEPTH), usada para amortecer as ondas
  * em água rasa (senão a linha da costa anda metros para frente e para trás numa praia suave).
- * É reconstruído aos poucos (orçamento por frame) quando o jogador se afasta do centro.
+ * É reconstruído quando o jogador se afasta do centro: a conta (uns 82 mil consultas de altura) é feita num worker (waterBiomeCompute.ts); só se o worker
+ * falhar ela volta para a thread principal, aos poucos (orçamento por frame).
  */
 export class WaterBiomeMap {
   public readonly texture: THREE.DataTexture;
@@ -29,6 +25,9 @@ export class WaterBiomeMap {
   private buildCol = 0;
   private buildOriginX = 0;
   private buildOriginZ = 0;
+  /** pedido em andamento no worker (e o número dele: respostas antigas, de antes de um invalidate, são descartadas) */
+  private pending = false;
+  private seq = 0;
 
   constructor(terrainGen: TerrainGenerator) {
     this.terrainGen = terrainGen;
@@ -46,17 +45,39 @@ export class WaterBiomeMap {
   public invalidate(): void {
     this.ready = false;
     this.buildRow = -1;
+    this.pending = false;
+    this.seq++;
   }
 
   public update(centerX: number, centerZ: number, budgetMs: number = 2.0): void {
+    if (this.pending) return;
     if (this.buildRow < 0) {
       const cx = this.origin.x + SPAN / 2, cz = this.origin.y + SPAN / 2;
       const far = Math.abs(centerX - cx) > REBUILD_DISTANCE || Math.abs(centerZ - cz) > REBUILD_DISTANCE;
       if (this.ready && !far) return;
-      this.buildOriginX = Math.floor((centerX - SPAN / 2) / CELL) * CELL;
-      this.buildOriginZ = Math.floor((centerZ - SPAN / 2) / CELL) * CELL;
-      this.buildRow = 0;
-      this.buildCol = 0;
+      const originX = Math.floor((centerX - SPAN / 2) / CELL) * CELL;
+      const originZ = Math.floor((centerZ - SPAN / 2) / CELL) * CELL;
+      // no worker: o primeiro mapa (sem ele a água sai com o tom padrão) vai na frente de tudo; as reconstruções depois, depois dos chunks
+      this.pending = true;
+      const seq = this.seq;
+      getTextureWorkerPool().requestWaterBiome(this.terrainGen.getSeed(), originX, originZ, SPAN, this.ready ? 3 : -2).promise.then((r) => {
+        if (seq !== this.seq || !r.waterBiome) return;
+        this.pending = false;
+        (this.texture.image.data as Uint8Array).set(r.waterBiome);
+        this.texture.needsUpdate = true;
+        this.origin.set(originX, originZ);
+        this.ready = true;
+      }).catch((e) => {
+        if (seq !== this.seq) return;
+        this.pending = false;
+        if (e instanceof Error && e.message === 'cancelled') return;
+        // plano B: o mesmo mapa na thread principal, aos poucos
+        this.buildOriginX = originX;
+        this.buildOriginZ = originZ;
+        this.buildRow = 0;
+        this.buildCol = 0;
+      });
+      return;
     }
 
     const start = performance.now();
@@ -66,7 +87,7 @@ export class WaterBiomeMap {
       const z = this.buildOriginZ + (this.buildRow + 0.5) * CELL;
       for (let col = this.buildCol; col < RES; col++) {
         const x = this.buildOriginX + (col + 0.5) * CELL;
-        this.writeTint((this.buildRow * RES + col) * 4, x, z);
+        writeWaterTint(this.terrainGen, this.buildData, (this.buildRow * RES + col) * 4, x, z);
         if (col === RES - 1) { this.buildCol = 0; break; }
         if ((col & 1) === 1 && performance.now() - start >= budgetMs) { this.buildCol = col + 1; break; }
       }
@@ -81,36 +102,5 @@ export class WaterBiomeMap {
       this.ready = true;
       this.buildRow = -1;
     }
-  }
-
-  private writeTint(o: number, x: number, z: number): void {
-    // A água assume o clima da margem que a cerca: altura média da terra num anel de 36m. Um lago
-    // no nível do mar cercado de terreno mais alto (e mais frio) fica com o tom da floresta ao
-    // redor, não com o de uma planície quente ao nível do mar. No mar aberto isso dá ~0.
-    const r = 36;
-    const shoreElevation = (
-      Math.max(0, this.terrainGen.getHeight(x + r, z)) + Math.max(0, this.terrainGen.getHeight(x - r, z)) +
-      Math.max(0, this.terrainGen.getHeight(x, z + r)) + Math.max(0, this.terrainGen.getHeight(x, z - r))
-    ) / 4;
-    const { temperature, moisture } = this.terrainGen.getClimate(x, z, shoreElevation);
-    const ice = this.terrainGen.getIceInfluence(x, z, 0);
-
-    // Mesmos limiares das regras do BiomeManager (FROZEN_TUNDRA abaixo de 0.17 ou com gelo;
-    // tropicais acima de 0.62, manguezal no tropical úmido). As rampas suaves começam
-    // exatamente no limiar, nunca antes: senão um lago em floresta temperada pegava tom de pântano.
-    const arctic = Math.max(
-      1 - smoothstep(0.15, 0.22, temperature),
-      smoothstep(0.05, 0.15, ice)
-    );
-    const warm = smoothstep(0.62, 0.70, temperature) * (1 - arctic);
-    const swamp = warm * smoothstep(0.56, 0.64, moisture);
-    const tropical = warm * (1 - swamp);
-
-    const depth = clamp(-this.terrainGen.getHeight(x, z), 0, MAX_ENCODED_DEPTH);
-
-    this.buildData[o] = Math.round(clamp(arctic, 0, 1) * 255);
-    this.buildData[o + 1] = Math.round(clamp(swamp, 0, 1) * 255);
-    this.buildData[o + 2] = Math.round(clamp(tropical, 0, 1) * 255);
-    this.buildData[o + 3] = Math.round((depth / MAX_ENCODED_DEPTH) * 255);
   }
 }

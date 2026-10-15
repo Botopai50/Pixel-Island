@@ -15,7 +15,11 @@ import { oreAt } from './pixelTrees/oreAssign.ts';
 export interface ITerrainQueryable {
   getPoint(x: number, z: number): TerrainPoint;
   getPointFast?(x: number, z: number): TerrainPoint;
+  getHeight?(x: number, z: number): number;
 }
+
+/** Só a altura (a mesma de getPointFast(x, z).height, sem a inclinação, a água e o bioma: ~4x mais barato) */
+const hAt = (g: ITerrainQueryable, x: number, z: number): number => g.getHeight ? g.getHeight(x, z) : g.getPointFast!(x, z).height;
 
 export interface TreeTransformItem {
   matrix: THREE.Matrix4;
@@ -198,7 +202,7 @@ export function* planChunkVegetationGen(
     let low = h;
     for (let k = 0; k < 8; k++) {
       const a = k * Math.PI / 4;
-      low = Math.min(low, terrainGen.getPointFast ? terrainGen.getPointFast(x + Math.cos(a) * 1.9, z + Math.sin(a) * 1.9).height : terrainGen.getPoint(x + Math.cos(a) * 1.9, z + Math.sin(a) * 1.9).height);
+      low = Math.min(low, terrainGen.getPointFast ? hAt(terrainGen, x + Math.cos(a) * 1.9, z + Math.sin(a) * 1.9) : terrainGen.getPoint(x + Math.cos(a) * 1.9, z + Math.sin(a) * 1.9).height);
     }
     return h - Math.min(0.7, Math.max(0.3, h - low + 0.1));
   };
@@ -312,7 +316,7 @@ export function* planChunkVegetationGen(
           if (!flora.chance(fc)) continue;
           const J2 = sampleStep * 0.5;
           const fx = wx + flora.range(-J2, J2), fz = wz + flora.range(-J2, J2);
-          const fh = terrainGen.getPointFast ? terrainGen.getPointFast(fx, fz).height : pt.height;
+          const fh = terrainGen.getPointFast ? hAt(terrainGen, fx, fz) : pt.height;
           if (fh <= CONFIG.SEA_LEVEL + 0.1) continue;
           const wScale = flora.range(1.0, 1.25);   // quase 1: esticar a instância esticaria também os pixels (o tamanho da flor vem do desenho)
           const hScale = wScale * flora.range(0.62, 0.74);   // altura: o caule fica mais curto que o natural
@@ -341,7 +345,7 @@ export function* planChunkVegetationGen(
       // Pedrinhas soltas pelo chão (fora da água e da areia da praia), em todos os biomas
       if (enableDetailFlora && !isBeach && pt.slope < 0.5 && flora.chance(0.085)) {
         const gx = wx + flora.range(-2.4, 2.4), gz = wz + flora.range(-2.4, 2.4);
-        dummy.position.set(gx, (terrainGen.getPointFast ? terrainGen.getPointFast(gx, gz).height : pt.height) - 0.03, gz);
+        dummy.position.set(gx, (terrainGen.getPointFast ? hAt(terrainGen, gx, gz) : pt.height) - 0.03, gz);
         dummy.scale.set(1, 1, 1);
         dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
         dummy.updateMatrix();
@@ -351,7 +355,7 @@ export function* planChunkVegetationGen(
       // Deserto: arbustos secos, bolas-de-feno, cactos variados, formações de rocha
       if (enableDetailFlora && (biome.type === 'Deserto & Dunas Áridas' || biome.type === 'Cânions Estratificados & Ravinas')) {
         const place = (list: { matrix: THREE.Matrix4; tint: THREE.Color }[], px: number, pz: number, s: number, tint: THREE.Color, sink = 0.02, sy = 1) => {
-          dummy.position.set(px, terrainGen.getPointFast ? terrainGen.getPointFast(px, pz).height - sink : pt.height - sink, pz);
+          dummy.position.set(px, terrainGen.getPointFast ? hAt(terrainGen, px, pz) - sink : pt.height - sink, pz);
           dummy.scale.set(s, s * sy, s);
           dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
           dummy.updateMatrix();
@@ -361,7 +365,7 @@ export function* planChunkVegetationGen(
         // arbustos do deserto: poucos (um sorteio de 11% por ponto, antes eram três de 30%), metade verdes e metade secos
         if (flora.chance(0.17)) {
           const px = wx + flora.range(-J, J), pz = wz + flora.range(-J, J);
-          dummy.position.set(px, (terrainGen.getPointFast ? terrainGen.getPointFast(px, pz).height : pt.height) - 0.05, pz);
+          dummy.position.set(px, (terrainGen.getPointFast ? hAt(terrainGen, px, pz) : pt.height) - 0.05, pz);
           dummy.scale.set(1, 1, 1);
           dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
           dummy.updateMatrix();
@@ -371,7 +375,7 @@ export function* planChunkVegetationGen(
           // muda de árvore seca: uma árvore pequena e retorcida, sem folhas
           const px = wx + flora.range(-J, J), pz = wz + flora.range(-J, J);
           const ds = flora.range(0.9, 1.4);
-          dummy.position.set(px, (terrainGen.getPointFast ? terrainGen.getPointFast(px, pz).height : pt.height) - 0.05, pz);
+          dummy.position.set(px, (terrainGen.getPointFast ? hAt(terrainGen, px, pz) : pt.height) - 0.05, pz);
           dummy.scale.set(ds, ds, ds);
           dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
           dummy.updateMatrix();
@@ -393,7 +397,7 @@ export function* planChunkVegetationGen(
         const J = sampleStep * 0.45;
         const put = (list: { matrix: THREE.Matrix4; tint: THREE.Color }[], s: number, tint: THREE.Color, yawRange = Math.PI * 2, dy = 0.0) => {
           const px = wx + flora.range(-J, J), pz = wz + flora.range(-J, J);
-          const hh = terrainGen.getPointFast ? terrainGen.getPointFast(px, pz).height : pt.height;
+          const hh = terrainGen.getPointFast ? hAt(terrainGen, px, pz) : pt.height;
           dummy.position.set(px, hh + dy, pz);
           dummy.scale.set(s, s, s);
           dummy.rotation.set(0, flora.range(0, yawRange), 0);
@@ -401,7 +405,7 @@ export function* planChunkVegetationGen(
           list.push({ matrix: dummy.matrix.clone(), tint });
         };
         // folhas secas caídas (do Pixel_Tree) no lugar dos tapetes de pétalas
-        for (let k = 0; k < 3; k++) if (flora.chance(0.40)) { const lx = wx + flora.range(-J, J), lz = wz + flora.range(-J, J); dummy.position.set(lx, (terrainGen.getPointFast ? terrainGen.getPointFast(lx, lz).height : pt.height) + 0.01, lz); dummy.scale.set(1, 1, 1); dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0); dummy.updateMatrix(); shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_satori' }); }
+        for (let k = 0; k < 3; k++) if (flora.chance(0.40)) { const lx = wx + flora.range(-J, J), lz = wz + flora.range(-J, J); dummy.position.set(lx, (terrainGen.getPointFast ? hAt(terrainGen, lx, lz) : pt.height) + 0.01, lz); dummy.scale.set(1, 1, 1); dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0); dummy.updateMatrix(); shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_satori' }); }
         for (let k = 0; k < 2; k++) if (flora.chance(0.30)) put(wildflowerTransforms, flora.range(0.9, 1.4), new THREE.Color(0xf6a6c8), Math.PI * 2, -0.02);
         if (flora.chance(0.025)) put(lanternTransforms, 1, new THREE.Color(1, 1, 1), Math.PI * 2, -0.04)   // escala 1: as células de pixel têm o tamanho da densidade do jogo (stoneLanternParts.ts);
       }
@@ -421,7 +425,7 @@ export function* planChunkVegetationGen(
         }
         if (lk && flora.chance(lc)) {
           const lx = wx + flora.range(-2.4, 2.4), lz = wz + flora.range(-2.4, 2.4);
-          dummy.position.set(lx, (terrainGen.getPointFast ? terrainGen.getPointFast(lx, lz).height : pt.height) + 0.01, lz);
+          dummy.position.set(lx, (terrainGen.getPointFast ? hAt(terrainGen, lx, lz) : pt.height) + 0.01, lz);
           dummy.scale.set(1, 1, 1);
           dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
           dummy.updateMatrix();
@@ -434,7 +438,7 @@ export function* planChunkVegetationGen(
         // pedra com musgo (a do pântano) e samambaias em volta
         if (pt.slope < 0.3 && flora.chance(0.20)) {
           const mx = wx + flora.range(-2, 2), mz = wz + flora.range(-2, 2);
-          const mh = terrainGen.getPointFast ? terrainGen.getPointFast(mx, mz).height : pt.height;
+          const mh = terrainGen.getPointFast ? hAt(terrainGen, mx, mz) : pt.height;
           dummy.position.set(mx, mh - 0.08, mz);
           dummy.scale.set(1, 1, 1);
           dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
@@ -448,7 +452,7 @@ export function* planChunkVegetationGen(
           for (let k = 0; k < nf; k++) {
             const ang = a0 + (k / nf) * Math.PI * 2 + flora.range(-0.35, 0.35), d = 1.2 * rmul + 0.3 + flora.range(0, 0.35);
             const fx = mx + Math.cos(ang) * d, fz = mz + Math.sin(ang) * d;
-            dummy.position.set(fx, (terrainGen.getPointFast ? terrainGen.getPointFast(fx, fz).height : mh) + 0.02, fz);
+            dummy.position.set(fx, (terrainGen.getPointFast ? hAt(terrainGen, fx, fz) : mh) + 0.02, fz);
             dummy.scale.set(1, 1, 1);
             dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
             dummy.updateMatrix();
@@ -507,7 +511,7 @@ export function* planChunkVegetationGen(
       }
 
       const canTree = pt.slope <= CONFIG.VEGETATION.MAX_SLOPE_FOR_TREES;
-      const treeChance = canTree ? biome.vegetationDensity * 0.75 : 0;
+      let treeChance = canTree ? biome.vegetationDensity * 0.75 : 0;
       // (o deserto tem bem menos arbustos: ficam espaçados)
       const desertShrubMul = (biome.type === BiomeType.DESERT_DUNES || biome.type === BiomeType.CANYON_DESERT) ? 0.4 : 1;
       const shrubChance = (!isBeach && pt.slope < 0.52) ? biome.shrubDensity * 0.22 * desertShrubMul : 0;
@@ -518,6 +522,15 @@ export function* planChunkVegetationGen(
       const logChance = pt.slope < 0.35 ? biome.fallenLogDensity * 0.08 : 0;
 
       const roll = prng.next();
+
+      // Árvore não nasce onde o chão em volta do pé cai ou sobe demais (beira de barranco, encosta íngreme, degrau): lá as raízes ficavam no ar ou a
+      // casca se esticava até o chão. Mede o desnível a 1,6 m do pé nos 4 lados: acima de 0,7 m a árvore não nasce (o sorteio cai nas outras coisas).
+      // (o plano é o mesmo do horizonte, então as árvores distantes também não nascem ali)
+      if (roll < treeChance) {
+        const h0 = pt.height, R = 1.6;
+        const hh = (dx: number, dz: number) => terrainGen.getPointFast ? hAt(terrainGen, wx + dx, wz + dz) : terrainGen.getPoint(wx + dx, wz + dz).height;
+        if (Math.max(Math.abs(hh(R, 0) - h0), Math.abs(hh(-R, 0) - h0), Math.abs(hh(0, R) - h0), Math.abs(hh(0, -R) - h0)) > 0.7) treeChance = 0;
+      }
 
       if (roll < treeChance) {
         // REGRA DA PRAIA: Apenas coqueiros (adulto ou muda)

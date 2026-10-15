@@ -65,10 +65,10 @@ const OVERRIDES: Partial<Record<string, Record<string, unknown>>> = {
   satori_sakura: { foliageColorTop: '#fff4f8', foliageColorBottom: '#f8bdd5' },
   // o salgueiro-anão do preset é um verde-musgo escuro que some na neve: um verde mais claro e frio
   arctic_willow: { foliageColorTop: '#86ad74', foliageColorBottom: '#3c5c3e' },
-  // o arbusto seco só de galhos: maior (sem esticar a instância) e com mais galhos, para ler no deserto
   // samambaia maior: o desenho é gerado maior (as frondes ganham pixels), sem esticar a instância
   fern_plant: { trunkHeight: 1.7 },
-  withered_shrub: { trunkHeight: 2.1, scaAttractorCount: 520, trunkRadiusBase: 0.14, trunkRadiusTop: 0.05 },
+  // muda de cacto maior: o desenho é gerado maior (os pixels continuam do tamanho do mundo), sem esticar a instância
+  gerudo_cactus_sapling: { trunkHeight: 1.3, trunkRadiusBase: 0.32, trunkRadiusTop: 0.23, clusterRadius: 0.5, patchRadius: 0.58, crownWidth: 0.58, crownHeight: 0.58, leafCardSize: 0.58 },
 };
 
 interface LodSpec {
@@ -77,6 +77,8 @@ interface LodSpec {
   keep: number;
   cardScale: number;
 }
+// (degraus 2 e 3, de 150 m em diante: menos cartões e maiores, na mesma cobertura da copa (keep x cardScale² ficou igual): ~30% menos triângulos,
+// que somavam mais da metade dos 10 milhões de triângulos de uma floresta densa e custavam ~2 ms de GPU)
 const LODS: LodSpec[] = [
   { wood: { trunk: 6, branch: 4, passes: 0, minRadiusMul: 1, prune: 0.05, canopyKeep: 0.45, cactusRadial: 2 }, keep: 0.7, cardScale: 1.12 },
   // Escada de detalhe: a madeira era mais da metade dos triângulos da cena e as árvores distantes tinham quase o mesmo
@@ -87,8 +89,8 @@ const LODS: LodSpec[] = [
   // (ringSkip: só 1 nó em cada 2 ou 3 dos galhos vira anel do tubo; foi o que mais cortou os troncos grandes: o carvalho do degrau 2 caiu de
   // 4,5 mil para 2,5 mil triângulos, a cerejeira de 9,5 mil para 4,8 mil, a árvore ancestral de 14,8 mil para 7,7 mil)
   { wood: { trunk: 5, branch: 3, passes: 0, minRadiusMul: 1, prune: 0.22, canopyKeep: 0.16, cactusRadial: 2, needleKeep: 0.45, ringSkip: 2 }, keep: 0.28, cardScale: 1.65 },
-  { wood: { trunk: 4, branch: 3, passes: 0, minRadiusMul: 1, prune: 0.36, canopyKeep: 0.07, cactusRadial: 2, needleKeep: 0.22, ringSkip: 3 }, keep: 0.14, cardScale: 2.4 },
-  { wood: { trunk: 3, branch: 2, passes: 0, minRadiusMul: 1, prune: 0.60, canopyKeep: 0.03, cactusRadial: 2, needleKeep: 0.09, ringSkip: 3 }, keep: 0.06, cardScale: 3.4 },
+  { wood: { trunk: 4, branch: 3, passes: 0, minRadiusMul: 1, prune: 0.36, canopyKeep: 0.07, cactusRadial: 2, needleKeep: 0.22, ringSkip: 3 }, keep: 0.10, cardScale: 2.85 },
+  { wood: { trunk: 3, branch: 2, passes: 0, minRadiusMul: 1, prune: 0.60, canopyKeep: 0.03, cactusRadial: 2, needleKeep: 0.09, ringSkip: 3 }, keep: 0.04, cardScale: 4.15 },
 ];
 
 export interface GameTreePart {
@@ -185,7 +187,7 @@ const WIND_LIST: { u: { value: number }; base: number }[] = [];
 const WIND_SEEN = new Set<object>();
 
 /** O shader do projeto desenha UMA árvore; aqui cada árvore é uma instância (matriz de instância). */
-function adaptShaders(mat: THREE.ShaderMaterial, bakedCards: boolean, hug = false, fullHug = false, lowPlant = false): void {
+function adaptShaders(mat: THREE.ShaderMaterial, bakedCards: boolean, hug = false, fullHug = false, lowPlant = false, windy = true, worldTexels = false): void {
   let vs = mat.vertexShader, fs = mat.fragmentShader;
   const isWood = vs.includes('attribute vec3 aWood;');
   if (bakedCards) {
@@ -199,7 +201,9 @@ function adaptShaders(mat: THREE.ShaderMaterial, bakedCards: boolean, hug = fals
   vs = vs.replace(/\bmodelMatrix\b/g, '(modelMatrix * instanceMatrix)');
   // (shaders que usam modelViewMatrix direto, como as flores, também precisam da matriz da instância)
   vs = vs.replace(/\bmodelViewMatrix\b/g, '(viewMatrix * (modelMatrix * instanceMatrix))');
-  if (/vWorldPos\s*=/.test(vs) && !/varying vec3 vLocalPos;/.test(vs)) {
+  // (a pedra monta os texels no plano da face, em metros do MUNDO, e escolhe o plano pela normal do mundo: com a posição local da instância trocada pela do mundo
+  // o desenho saía esticado e torto nas faces oblíquas, e a pedra girada ficava com os texels em outro ângulo que a normal)
+  if (!worldTexels && /vWorldPos\s*=/.test(vs) && !/varying vec3 vLocalPos;/.test(vs)) {
     vs = vs.replace('varying vec3 vWorldPos;', 'varying vec3 vWorldPos;\n  varying vec3 vLocalPos;');
     vs = vs.replace(/(vWorldPos\s*=\s*[^;]+;)/, '$1\n    vLocalPos = position;');
     // as alturas e a copa são medidas na árvore, não no mundo (a árvore está em qualquer lugar)
@@ -267,7 +271,8 @@ void main() {`);
   const gwPat = /vec3 pos = (position|hugPos);/;
   const gwMarker = vs.includes('/*GWHUG*/');
   const gwPlain = !gwPat.test(vs) && !gwMarker && /\bposition\b/.test(vs);
-  if ((gwPat.test(vs) || gwMarker || gwPlain) && /\binstanceMatrix\b/.test(vs)) {
+  // (pedras, cascalho, minérios, troncos caídos e tocos não balançam com o vento)
+  if (windy && (gwPat.test(vs) || gwMarker || gwPlain) && /\binstanceMatrix\b/.test(vs)) {
     vs = vs.replace('void main() {', `uniform vec2 uWindDir;
 uniform float uWindStr;
 uniform float uWindT;
@@ -341,7 +346,8 @@ void main() {`);
     });
   }
   // sumiço por distância: a troca seca com o impostor, pelo pé de cada árvore (o mesmo das outras)
-  vs = vs.replace('void main() {', `uniform vec2 uFadeCam;\nvarying float vInstDist;\nvarying float vInstHash;\nvarying vec3 vLodBand;\n${FADE_GLSL}\nvoid main() {
+  vs = vs.replace('void main() {', `uniform vec2 uFadeCam;\nvarying float vInstDist;\nvarying float vInstHash;\nvarying vec3 vLodBand;\nvarying vec3 vFadeLocal;\n${FADE_GLSL}\nvoid main() {
+    vFadeLocal = position;
     vec2 instW = (modelMatrix * vec4(instanceMatrix[3].xyz, 1.0)).xz;
     vInstDist = distance(instW, uFadeCam);
     vInstHash = fadeHash(floor(instW * 4.0));
@@ -353,12 +359,20 @@ void main() {`);
   // vLodBand (vem da cor da instância, ver instancePool.ts): x = início e y = fim da faixa deste degrau de detalhe, z = 2 quando há faixa. A
   // árvore aparece quando o sorteio dela fica abaixo do avanço da zona de entrada (±12 m da divisa), e o degrau vizinho some pelo sorteio
   // contrário (sem buraco e sem sobreposição)
-  fs = fs.replace('void main() {', `uniform vec2 uInstFade;\nvarying float vInstDist;\nvarying float vInstHash;\nvarying vec3 vLodBand;\nvoid main() {
+  // A troca entre degraus de detalhe se dissolve aos poucos: cada pedaço da árvore (células de ~0,5 m do desenho dela, presas à árvore, então não
+  // fervem quando a câmera anda) tem o seu sorteio, somado ao da árvore. Antes a árvore inteira trocava de uma vez, num ponto da faixa, e isso
+  // aparecia andando; agora o degrau novo vai ocupando a árvore pedaço a pedaço. A faixa também é mais larga nas divisas distantes (22% da
+  // distância, no mínimo 12 m para cada lado)
+  fs = fs.replace('void main() {', `uniform vec2 uInstFade;\nvarying float vInstDist;\nvarying float vInstHash;\nvarying vec3 vLodBand;\nvarying vec3 vFadeLocal;
+float fadeCellHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+void main() {
     if (vInstHash > 1.0 - smoothstep(uInstFade.x, uInstFade.y, vInstDist)) discard;
     if (vLodBand.z > 1.5) {
-      float inT = vLodBand.x <= 0.0 ? 1.0 : smoothstep(vLodBand.x - 12.0, vLodBand.x + 12.0, vInstDist);
-      float outT = vLodBand.y >= 99990.0 ? 0.0 : smoothstep(vLodBand.y - 12.0, vLodBand.y + 12.0, vInstDist);
-      if (vInstHash >= inT || vInstHash < outT) discard;
+      float fadeH = fract(vInstHash + fadeCellHash(floor(vFadeLocal.xy * 2.0 + vFadeLocal.z * vec2(1.7, 2.9)) + vInstHash * 91.0));
+      float wIn = max(12.0, vLodBand.x * 0.22), wOut = max(12.0, vLodBand.y * 0.22);
+      float inT = vLodBand.x <= 0.0 ? 1.0 : smoothstep(vLodBand.x - wIn, vLodBand.x + wIn, vInstDist);
+      float outT = vLodBand.y >= 99990.0 ? 0.0 : smoothstep(vLodBand.y - wOut, vLodBand.y + wOut, vInstDist);
+      if (fadeH >= inT || fadeH < outT) discard;
     }`);
   // o balanço próprio do shader (uWindStrength) também segue a força do vento do mundo (rajadas e o clima do bioma)
   const wsU = mat.uniforms.uWindStrength as { value: number } | undefined;
@@ -842,8 +856,12 @@ function foliageCasts(species: string, mat: THREE.ShaderMaterial): boolean {
 
 function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreName?: OreName, withCards = true): GameTreeLod & { box: THREE.Box3 } {
   Object.assign(WOOD_LOD, { needleKeep: 1, ringSkip: 1 }, lod.wood);
-  // galhos secos do arbusto do deserto: grossos (a espessura mínima de um galho sobe, e a ponta deixa de sumir em linha)
-  if (species === 'withered_shrub') WOOD_LOD.minRadiusMul = 2.8;
+  // arbusto seco: só galhos finos, sem copa que esconda a falta deles. No degrau de perto sai como no gerador (tronco de 18 lados, galhos suavizados,
+  // todos os galhos: com a poda dos finos e os lados reduzidos sobravam só uns poucos galhos tortos); nos degraus de longe, só uma poda leve
+  if (species === 'withered_shrub') {
+    if (lod === LODS[0]) Object.assign(WOOD_LOD, { trunk: 18, branch: null, passes: 2, minRadiusMul: 1, prune: 0, canopyKeep: 1, cactusRadial: 4, needleKeep: 1, ringSkip: 1 });
+    else WOOD_LOD.prune = Math.min(WOOD_LOD.prune, 0.012);
+  }
   // mesma densidade de texels da grama: o sprite do tufo tem 32 px em 1,5 m (~21 texels por metro).
   // A folha tem tantos texels quanto cabem no cartão (x1,7: os cartões chegam maiores ao mundo, pela escala
   // da instância e a variação) e a casca usa a faixa mais fina de pixel.
@@ -871,6 +889,11 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
     for (const m of Array.isArray(mm) ? mm : [mm]) {
       const u = m.uniforms;
       if (!u) continue;
+      // os sulcos da casca (uma crista por "lóbulo") contam em texels: com mais texels por metro a mesma casca ganhava mais sulcos. O lóbulo passa a ter
+      // mais texels na mesma proporção, e os sulcos continuam com a largura em metros de antes (só os pixels ficam menores)
+      if (u.uTexelsPerMetre && u.uTexelsPerLobe && u.uTexelsPerMetre.value > 0) u.uTexelsPerLobe.value *= GRASS_TEXEL_DENSITY / u.uTexelsPerMetre.value;
+      // a casca: o escuro mais fundo fica nos sulcos e na sombra mais forte, mas sem tomar o lado sem sol do tronco inteiro
+      if (u.uBarkDarkCoverage) u.uBarkDarkCoverage.value = Math.min(u.uBarkDarkCoverage.value, 0.6);
       if (u.uTexelsPerMetre) u.uTexelsPerMetre.value = GRASS_TEXEL_DENSITY;
       if (u.uTexelSize) u.uTexelSize.value = 1 / GRASS_TEXEL_DENSITY;
       if (u.uDensity && u.uOrePalette) u.uDensity.value = GRASS_TEXEL_DENSITY;     // os veios de minério também
@@ -968,8 +991,12 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
     if (sm.isShaderMaterial) {
       // samambaia: a textura ORIGINAL do Pixel_Tree, reduzida para a densidade da grama (a borda dos folíolos finos é mantida)
       matchSaplingLeafTexels(sm, geometry, false, species === 'reed_clump', species === 'fern_plant');
-      adaptShaders(sm, gp.baked, /_flowers$|_leaves$|^fern_plant$|^reed_clump$|shrub|_sapling$/.test(species), /_flowers$|_leaves$/.test(species), /^fern_plant$|^reed_clump$/.test(species));
+      adaptShaders(sm, gp.baked, /_flowers$|_leaves$|^fern_plant$|^reed_clump$|shrub|_sapling$/.test(species), /_flowers$|_leaves$/.test(species), /^fern_plant$|^reed_clump$/.test(species),
+        !((TREE_PRESETS[species] as { rock?: object }).rock || /_log$|stump/.test(species)), !!(TREE_PRESETS[species] as { rock?: object }).rock);
       if (BRIGHTNESS[species]) sm.userData.brightness = BRIGHTNESS[species];
+      // pedras: na sombra o que sobra é só a luz ambiente, e a paleta escura delas virava quase preto; uma parte da luz do sol chega mesmo na sombra
+      // (como nas folhas e plantas), então a pedra à sombra fica cinza-escura, com o relevo à mostra
+      if ((TREE_PRESETS[species] as { rock?: object }).rock) sm.userData.leafFill = 0.38;
       if (sm.uniforms.uTime) timeUniforms.push(sm.uniforms.uTime);
       if (sigKey) SHARED_MATS.set(sigKey, sm);
     }

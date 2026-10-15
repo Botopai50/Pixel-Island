@@ -21,6 +21,7 @@ import { WaterBiomeMap } from './hydrology/waterBiomeMap.ts';
 import { RiverFlowMap, FLOW_MAX_SPEED, FLOW_PHASE_PERIOD } from './hydrology/riverFlowMap.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
 import { CONFIG } from '../config.ts';
+import { ReflectionLod } from './reflectionLod.ts';
 
 interface RipplePoint {
   x: number;
@@ -136,6 +137,7 @@ export class WorldEngine {
 
     this.scene.add(this.waterGroup);
     this.inlandWaterMgr = new InlandWaterManager(this.waterGroup, this.terrainGen.getHydrology(), this.waterMaterial);
+    this.inlandWaterMgr.reflectionLod = new ReflectionLod(this.scene, () => this.chunkMgr.getSceneVersion(), () => this.chunkMgr.farGroup);
     this.inlandWaterMgr.onRipple = (x, z) => this.addRipple(x, z, 0.7, 2.2, 2.0, 0.93);
     this.inlandWaterMgr.sceneRoot = this.scene;
     this.inlandWaterMgr.heightAt = (x, z) => this.terrainGen.getHeight(x, z);
@@ -202,7 +204,7 @@ export class WorldEngine {
     FADE.uChunkFade.value.set(chunkEnd - 110, chunkEnd);
     FADE.uVegFade.value.set(vegEnd - 90, vegEnd);
     FADE.uTreeSwap.value.set(vegEnd - 60, vegEnd);
-    FADE.uGrassFade.value.set(grassEnd - 50, grassEnd);
+    FADE.uGrassFade.value.set(grassEnd - 85, grassEnd);   // (faixa mais larga: o capim some aos poucos, não de uma vez)
     // o horizonte começa um pouco antes dos chunks começarem a sumir (fica por baixo deles)
     this.horizon.update(x, z, chunkEnd - 120);
     this.landmarks.update(x, z);

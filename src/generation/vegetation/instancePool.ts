@@ -40,20 +40,22 @@ export function setShadowCascade(ci: number): void {
   for (const p of SHADOW_POOLS) p.applyCascade(ci);
 }
 // quem projeta sombra em cada faixa, por degrau de detalhe (0 a 3). Sem cópia leve: a tabela inteira com o desenho do próprio degrau.
+// (as faixas 0 e 1 desenham as árvores dos degraus 0 e 1, as de até ~150 m, com o MESMO desenho: antes a faixa 0 só tinha o degrau 0 e a 1 usava uma
+// cópia mais leve, e a sombra de uma árvore mudava de formato ao passar dos 35 m do jogador, e a das árvores de 70 a 150 m nem aparecia dentro dos 35 m)
 const CASCADE_LODS: boolean[][] = [
-  [true, false, false, false],
+  [true, true, false, false],
   [true, true, true, false],
   [false, false, true, true],
 ];
-// com cópia leve: o desenho completo só na faixa 1 (degrau 0) e o degrau 3 (já leve) na faixa 3; a cópia leve nas faixas 2 e 3
+// com cópia leve: o desenho do próprio degrau nas faixas 0 e 1 (degraus 0 e 1); a faixa 3 só o degrau 3 (já leve); a cópia leve só nos degraus 2 e acima
 const MAIN_WITH_LITE: boolean[][] = [
-  [true, false, false, false],
-  [false, false, false, false],
+  [true, true, false, false],
+  [true, true, false, false],
   [false, false, false, true],
 ];
 const LITE_CASCADES: boolean[][] = [
   [false, false, false, false],
-  [true, true, true, false],
+  [false, false, true, false],
   [false, false, true, false],
 ];
 const lodOfBand = (b: number): number => (b <= 0 ? 0 : b < 100 ? 1 : b < 200 ? 2 : 3);
@@ -111,7 +113,9 @@ class SharedInstances {
     private readonly headless: boolean = false
   ) {
     this.capacity = initialCapacity;
-    this.cullBand = band ? [band[0] <= 0 ? band[0] : band[0] - LOD_FADE - 12, band[1] >= 1e8 ? band[1] : band[1] + LOD_FADE + 12] : null;
+    // (a faixa da troca de degrau é de 22% da distância para cada lado, no mínimo 12 m: ver gameTrees.ts; a margem do corte a acompanha)
+    const fadeW = (d: number) => Math.max(LOD_FADE, d * 0.22) + 12;
+    this.cullBand = band ? [band[0] <= 0 ? band[0] : band[0] - fadeW(band[0]), band[1] >= 1e8 ? band[1] : band[1] + fadeW(band[1])] : null;
     this.allM = new Float32Array(initialCapacity * 16);
     this.allC = new Float32Array(initialCapacity * 3);
     if (!geometry.boundingSphere) geometry.computeBoundingSphere();

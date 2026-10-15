@@ -661,11 +661,32 @@ class App {
       });
     }
     this.fpsFrames++; this.fpsTime += ms; this.fpsWorst = Math.max(this.fpsWorst, ms);
+    // últimos ~10 s de quadros, para o p99 (o 1% mais lento: é ele que se sente como picotado, a média não mostra)
+    this.fpsRing[this.fpsRingN++ % this.fpsRing.length] = ms;
     if (this.fpsTime >= 500) {
       const avg = this.fpsTime / this.fpsFrames;
-      this.fpsEl.textContent = Math.round(1000 / avg) + ' FPS' + String.fromCharCode(10) + avg.toFixed(1) + ' ms (pior ' + Math.round(this.fpsWorst) + ' ms)';
+      const n = Math.min(this.fpsRingN, this.fpsRing.length);
+      const sorted = Array.from(this.fpsRing.subarray(0, n)).sort((a, b) => a - b);
+      const p99 = sorted[Math.min(n - 1, Math.floor(n * 0.99))] ?? 0;
+      const over30 = sorted.filter((v) => v > 30).length;
+      const nl = String.fromCharCode(10);
+      this.fpsEl.textContent = Math.round(1000 / avg) + ' FPS' + nl + avg.toFixed(1) + ' ms (pior ' + Math.round(this.fpsWorst) + ' ms)' + nl +
+        'p99 ' + p99.toFixed(1) + ' ms, >30 ms: ' + over30 + '/' + n + nl +
+        'qualidade ' + QUALITY_LEVELS[this.quality.level].name + ', distante ' + (this.farOn ? 'ligado' : 'desligado') + nl +
+        'fila ' + getTextureWorkerPool().getQueueLength() + ', ' + this.renderer.domElement.width + 'x' + this.renderer.domElement.height + nl + this.gpuName();
       this.fpsFrames = 0; this.fpsTime = 0; this.fpsWorst = 0;
     }
+  }
+  private fpsRing = new Float32Array(600);
+  private fpsRingN = 0;
+  private gpuNameCache = '';
+  private gpuName(): string {
+    if (!this.gpuNameCache) {
+      const gl = this.renderer.getContext();
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      this.gpuNameCache = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)).replace(/ANGLE \(|\)$/g, '').replace(/ Direct3D.*$/, '').slice(0, 60) : 'GPU ?';
+    }
+    return this.gpuNameCache;
   }
 
   private animate = (): void => {
@@ -814,7 +835,10 @@ class App {
     this.reflEma += (rawDt - this.reflEma) * 0.04;
     // (o reflexo é um quadro pequeno e borrado: refazê-lo a cada dois quadros enquanto o jogo roda abaixo de ~80 FPS corta ~20% do custo de
     // GPU perto de água e ninguém vê o atraso de um quadro)
-    if (this.reflEma > 0.0125) this.reflHalf = true; else if (this.reflEma < 0.010) this.reflHalf = false;
+    // (o limite subiu de 80 para ~120 FPS: o reflexo custava na CPU quase o mesmo que o quadro principal (4 ms contra 3 ms numa cachoeira) e refazê-lo
+    // a cada dois quadros num jogo que já roda a 100+ FPS é um atraso de 10 a 16 ms numa imagem de 256 x 256, que não aparece; só o jogo abaixo
+    // de ~120 FPS faz o reflexo em dois quadros, e acima de ~143 FPS ele volta a ser feito a cada quadro)
+    if (this.reflEma > 0.0085) this.reflHalf = true; else if (this.reflEma < 0.0070) this.reflHalf = false;
     // (com pouca água na tela, menos de ~1/4 da grade de raios, o reflexo é refeito a cada três quadros: ele custa ~75% do quadro principal e só aparece em
     // poucos pixels; com muita água, a cada dois)
     const reflPeriod = this.reflHalf ? (this.waterVis.coverage() < 0.25 ? 3 : 2) : 1;
@@ -906,7 +930,13 @@ class App {
         this.scene.background = null;
         this.renderer.autoClear = false;
       }
+      // os chunks distantes (a mais de ~245 m) não entram no reflexo: ele é uma imagem de 256 x 256 e o terreno de lá fica abaixo de um pixel; o
+      // horizonte, por baixo deles, já cobre a terra distante. São ~60 chamadas de desenho a menos (um quarto do passe).
+      const farChunksGroup = this.worldEngine.getFarContainers().chunks;
+      const farChunksWas = farChunksGroup.visible;
+      if (reflWork !== 'b') farChunksGroup.visible = false;
       this.renderer.render(this.scene, rPersp);
+      farChunksGroup.visible = farChunksWas;
       if (reflWork === 'a') vegRoot.visible = true;
       else if (reflWork === 'b') {
         for (const c of hiddenTop) c.visible = true;

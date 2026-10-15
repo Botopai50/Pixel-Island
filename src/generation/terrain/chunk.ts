@@ -6,6 +6,8 @@ import { CONFIG } from '../../config.ts';
 import { TerrainTextureForge } from './terrainTextureForge.ts';
 import { createChunkTerrainMaterial } from '../shaders/terrainShader.ts';
 import { enqueueTextureUpload } from './textureUploadQueue.ts';
+import { getTextureWorkerPool } from './textureWorkerPool.ts';
+import { fromWire } from '../vegetation/vegetationPlanWire.ts';
 
 export type ChunkLOD = 'HIGH' | 'MED' | 'LOW';
 
@@ -184,6 +186,38 @@ export class Chunk {
   private vegPlan: ReturnType<VegetationManager['planChunk']> | null = null;
   private vegGen: ReturnType<VegetationManager['planChunkGen']> | null = null;
   private vegInst: ReturnType<VegetationManager['populateChunkGen']> | null = null;
+  /** o plano da vegetação é feito num worker (ver requestVegPlan): número do pedido em andamento, e se o worker falhou (aí sai na thread principal) */
+  private vegReq: number | null = null;
+  private vegAsyncFailed = false;
+
+  /** o plano já pode ser plantado: veio do worker, ou está sendo plantado, ou o worker falhou e ele sai aos poucos na thread principal */
+  public vegPlanReady(): boolean { return this.vegPlan !== null || this.vegInst !== null || this.vegGen !== null || this.vegAsyncFailed; }
+  public vegPlanPending(): boolean { return this.vegReq !== null; }
+
+  /**
+   * Pede a um worker o plano da vegetação (onde vai cada árvore, pedra, arbusto, tronco e flor). Na thread principal ele custava 2 a 6 ms por chunk,
+   * 20 a 70 ms nos cheios, e só era fatiado para caber no quadro; no worker não custa nada ao quadro, e só a instanciação (as matrizes) fica aqui.
+   */
+  public requestVegPlan(seed: number, enableDetailFlora: boolean, priority: number): void {
+    if (this.vegReq !== null || this.vegPlan || this.vegGen || this.vegInst || this.vegAsyncFailed || this.hasVegetation || this.isSubmerged || this.isDestroyed) return;
+    const { promise, reqId } = getTextureWorkerPool().requestVegPlan(seed, this.cx, this.cz, CONFIG.CHUNK_SIZE, enableDetailFlora, priority);
+    this.vegReq = reqId;
+    promise.then((r) => {
+      if (this.vegReq !== reqId) return;
+      this.vegReq = null;
+      if (this.isDestroyed) return;
+      if (r.vegPlan) this.vegPlan = fromWire(r.vegPlan);
+      else this.vegAsyncFailed = true;
+    }).catch((e) => {
+      if (this.vegReq !== reqId) return;
+      this.vegReq = null;
+      if (!(e instanceof Error && e.message === 'cancelled')) this.vegAsyncFailed = true;
+    });
+  }
+
+  private cancelVegPlan(): void {
+    if (this.vegReq !== null) { getTextureWorkerPool().cancel(this.vegReq); this.vegReq = null; }
+  }
 
   /**
    * Plantar um chunk é feito em DOIS passos, um por chamada (a chamada seguinte vem no mesmo quadro se ainda sobrar orçamento, ou no próximo):
@@ -192,6 +226,7 @@ export class Chunk {
   public populateVegetation(vegetationMgr: VegetationManager, terrainGen: TerrainGenerator, enableDetailFlora: boolean = true, sliceMs: number = Infinity): void {
     if (this.hasVegetation || this.isSubmerged || this.isDestroyed) return;
     this.vegetationMgr = vegetationMgr;
+    if (this.vegReq !== null) return;   // o plano ainda está no worker
     if (!this.vegPlan) {
       // o plano de um chunk custa 20 a 70 ms: com sliceMs ele é feito aos poucos (o gerador guarda onde parou), um pedaço por quadro
       if (!this.vegGen) this.vegGen = vegetationMgr.planChunkGen(this.cx, this.cz, CONFIG.CHUNK_SIZE, terrainGen, enableDetailFlora);
@@ -216,6 +251,9 @@ export class Chunk {
 
   /** Tira as árvores/pedras/arbustos (o chunk saiu do raio de vegetação: o horizonte põe as simples). */
   public releaseVegetation(): void {
+    this.cancelVegPlan();
+    this.vegPlan = null;
+    this.vegAsyncFailed = false;
     if (this.vegInst) { this.vegInst = null; this.vegPlan = null; this.vegetationMgr?.releaseChunk(this.vegetationOwner); }   // plantio pela metade
     if (!this.hasVegetation) return;
     this.hasVegetation = false;
@@ -269,8 +307,21 @@ export class Chunk {
    * malha (se as subdivisões subiram). Um pedido por vez; quando ele chega, o próximo passo é
    * pedido. A primeira resposta cria a malha; as seguintes trocam textura/geometria sem piscar.
    */
+  private reqSeq = 0;
+  private reqDensity = 0;
+  private reqWaiting: (() => boolean) | null = null;
+
   private refine(): void {
-    if (this.isDestroyed || this.cancelRequest) return;
+    if (this.isDestroyed) return;
+    if (this.cancelRequest) {
+      // O pedido em andamento ainda não chegou a um worker (está na fila ou na busca do cache) e o LOD desejado subiu de novo (o chunk se aproximou
+      // mais depressa que a fila): troca-o por um que já pede o nível certo, em vez de gerar o intermediário e jogá-lo fora logo depois.
+      if (this.reqWaiting && this.reqWaiting() && this.targetDensity > this.reqDensity) {
+        const cancelOld = this.cancelRequest;
+        this.cancelRequest = undefined; this.reqWaiting = null; this.reqSeq++;
+        cancelOld();
+      } else return;
+    }
 
     let density = this.targetDensity > this.appliedDensity ? this.targetDensity : 0;
     // Primeira textura: prévia barata (no máx. 6 tx/m) para o mundo aparecer rápido
@@ -292,10 +343,18 @@ export class Chunk {
     // da câmera primeiro (os blocos distantes pediam a textura ao serem criados e passavam na
     // frente dos chunks ao lado da câmera)
     const priority = (this.terrainMesh ? 1000 : 0) + this.distance;
-    const { promise, cancel } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments, wantWalls);
+    const token = ++this.reqSeq;
+    const { promise, cancel, isWaiting } = this.forge.generateChunkAsync(originX, originZ, size, density, priority, segments, wantWalls);
     this.cancelRequest = cancel;
+    this.reqDensity = density;
+    this.reqWaiting = isWaiting;
 
     promise.then(({ textures, geometry, grass }) => {
+      if (token !== this.reqSeq) {   // trocado por outro pedido
+        textures?.topTex.dispose();
+        textures?.topDarkTex.dispose();
+        return;
+      }
       if (this.isDestroyed) {
         textures?.topTex.dispose();
         textures?.topDarkTex.dispose();
@@ -401,6 +460,7 @@ export class Chunk {
       if (textures) enqueueTextureUpload([textures.topTex, textures.topDarkTex], apply, this.distance);
       else apply();
     }).catch((err) => {
+      if (token !== this.reqSeq) return;
       this.cancelRequest = undefined;
       if (!this.isDestroyed && err?.message !== 'cancelled') {
         console.error(`Falha ao gerar ${this.group.name}:`, err);
@@ -453,6 +513,7 @@ export class Chunk {
   public destroy(): void {
     if (this.isDestroyed) return;
     this.isDestroyed = true;
+    this.cancelVegPlan();
 
     // Cancela a requisição no worker pool se ainda não tiver chegado
     if (this.cancelRequest) {

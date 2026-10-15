@@ -194,7 +194,9 @@ export class FarLayer {
     main.getWorldQuaternion(this._q);
     for (let k = 0; k < 3; k++) {
       const pose = this.poses[k];
-      const stale = !pose.valid || (frame % 3) === k
+      // (cada fatia é refeita a cada 4 quadros, e um quadro em cada 4 não refaz nenhuma: antes era a cada 3, uma fatia por quadro, ~1,6 ms de CPU cada;
+      // o campo distante muda devagar e o reaproveitamento corrige a posição e a rotação da câmera, então um quadro a mais de idade não aparece)
+      const stale = !pose.valid || (frame % 4) === k
         || pose.quat.angleTo(this._q) > this.padAngle * 0.7
         || pose.pos.distanceToSquared(this._p) > 1.0;
       if (stale) this.renderSlice(k, main, frame);

@@ -1988,12 +1988,11 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       float texelsAround = max(4.0, floor(6.2831853 * r * uTexelsPerMetre + 0.5));
 
       // slow, smooth drift so the lobes are not perfectly straight columns
+      // (duas senoides em vez de sorteios por trecho de 1,8 m interpolados: o sorteio (bhash multiplica por 43758) mudava um pouco na divisa de um trecho
+      // para o outro, por arredondamento da GPU, e deixava uma emenda horizontal no tronco; a senoide é contínua em qualquer altura)
       float aw = along * 0.55;
-      float i0 = floor(aw);
-      float f0 = fract(aw);
-      float w0 = bhash(i0 + uTextureSeed * 1.7);
-      float w1 = bhash(i0 + 1.0 + uTextureSeed * 1.7);
-      float wander = mix(w0, w1, f0 * f0 * (3.0 - 2.0 * f0)) - 0.5;
+      float wph = uTextureSeed * 1.7;
+      float wander = (sin(aw * 3.9 + wph) * 0.6 + sin(aw * 7.3 + wph * 2.3 + 1.7) * 0.4) * 0.5;
 
       // Reconstruct the azimuth from the interpolated (cos, sin) when the mesh
       // supplies it. Interpolating the angle itself breaks on any triangle that
@@ -2028,15 +2027,16 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       float crest = 0.5 + (lh - 0.5) * 0.44 + uLitSign * 0.08;
       float span = max(0.18, max(crest, 1.0 - crest));
       float across = min(1.0, abs(tq - crest) / span);
-      float relief = 1.0 - 2.0 * pow(across, 0.55);
+      // (jogo: expoente 0,85 em vez de 0,55: a parte clara/marrom de cada sulco fica mais larga, e a sombra preta mais estreita)
+      float relief = 1.0 - 2.0 * pow(across, 0.85);
       mossGroove = clamp(0.5 - relief * 0.5, 0.0, 1.0);
 
-      idx = N1 * 0.30;
+      idx = N1 * 0.34;
       // plates are flatter than oak ridges: the column's round relief is
       // softened so the plate marks, not the ridge, carry the drawing
       float reliefGain = uPlatedMode > 0.5 ? 0.55 : 1.0;
       idx += relief * reliefGain * (1.5 + uTextureContrast * 1.2 + lh * 0.5) * qs;
-      hiMask = relief > 0.62 ? 1.0 : 0.0;
+      hiMask = relief > 0.5 ? 1.0 : 0.0;
 
       // Thick near-black seam between neighbouring lobes, measured in TEXELS so
       // it stays the same pixel width whether the ridge is wide at the root or
@@ -2048,7 +2048,7 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       float seamWidth = uPlatedMode > 0.5
         ? 0.55 + lh2 * 0.35
         : 0.9 + uBarkVariation * 0.5 + lh2 * 0.5;
-      seamWidth *= uBarkDarkCoverage;
+      seamWidth *= uBarkDarkCoverage * 1.6;
       if (seamTexels < seamWidth) {
         idx -= (1.6 + uShadowStrength * 1.6) * qs;
         crevice = 1.0;

@@ -13,6 +13,8 @@ const EXTRA_REFLECTIONS:boolean=true;
 
 /** Native water pass, terrain and uniforms; the receiving pool remains the existing ocean. */
 export class InlandWaterManager {
+ /** cena mais leve para os reflexos que desenham o mundo (reflectionLod.ts); ligada por worldEngine.ts */
+ public reflectionLod:{begin(maxLod?:number):void;end():void}|null=null;
  private group=new THREE.Group();
  private entries=new Map<string,{group:THREE.Group;feature:WaterfallFeature}>();
  private hydro:Hydrology;
@@ -113,7 +115,9 @@ export class InlandWaterManager {
    renderer.shadowMap.enabled=false;
    renderer.clippingPlanes=[new THREE.Plane().setFromNormalAndCoplanarPoint(normal,point)];
    renderer.setRenderTarget(this.surfaceTarget);renderer.clear();
+   this.reflectionLod?.begin(0);
    try{renderer.render(scene,reflected);this.surfaceReady.value=1;}finally{
+    this.reflectionLod?.end();
     renderer.setRenderTarget(oldTarget);renderer.clippingPlanes=oldClip;renderer.shadowMap.enabled=oldShadows;
    }
   }
@@ -129,7 +133,9 @@ export class InlandWaterManager {
   renderer.shadowMap.enabled=false;
   renderer.clippingPlanes=[new THREE.Plane(normal.clone(),.05-f.upper)];
   renderer.setRenderTarget(this.springTarget);renderer.clear();
+  this.reflectionLod?.begin(0);
   try{renderer.render(scene,reflected);this.springReady.value=1;}finally{
+   this.reflectionLod?.end();
    renderer.setRenderTarget(oldTarget);renderer.clippingPlanes=oldClip;renderer.shadowMap.enabled=oldShadows;
   }
  }

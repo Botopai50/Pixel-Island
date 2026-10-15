@@ -35,6 +35,7 @@ export function enableAssetEnvironment(root:THREE.Object3D){
    const clean=(shader:string)=>shader.replace(/#include <(?:common|fog_(?:pars_vertex|pars_fragment|vertex|fragment))>/g,'');
    const common=(_shader:string)=>'#include <common>\n';
    material.vertexShader=common(material.vertexShader)+`uniform mat4 uAssetInverseProjection,uAssetCameraWorld;
+varying vec3 vAssetWP;
 #include <fog_pars_vertex>
 #include <shadowmap_pars_vertex>
 `+clean(material.vertexShader);
@@ -43,9 +44,15 @@ export function enableAssetEnvironment(root:THREE.Object3D){
  mvPosition/=mvPosition.w;
  vec4 worldPosition=uAssetCameraWorld*mvPosition;
  vec3 transformedNormal=normalize(normalMatrix*normal);
+ vAssetWP=worldPosition.xyz;
  #include <shadowmap_vertex>
  #include <fog_vertex>
 }`,false);
+   // A sombra do sol nos objetos (árvores, pedras, plantas) é lida no CENTRO do texel do mundo (21,3 texels por metro, a mesma grade do chão e da grama),
+   // e não por pixel da tela: a borda da sombra anda em degraus de pixel, como a do chão. Precisa da normal do mundo (vNormal) para o afastamento
+   // contra manchas; sem ela, volta à sombra comum.
+   const snapShadow=/varying\s+vec3\s+vNormal\s*;/.test(material.fragmentShader);
+   material.userData.snapShadow=snapShadow;
    material.fragmentShader=common(material.fragmentShader)+`#include <packing>
 #include <lights_pars_begin>
 #include <shadowmap_pars_fragment>
@@ -53,11 +60,29 @@ export function enableAssetEnvironment(root:THREE.Object3D){
 #include <fog_pars_fragment>
 uniform vec3 uAssetAmbient,uAssetSun;
 uniform float uAssetLeafFill;
+varying vec3 vAssetWP;
+#if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
+uniform mat4 directionalShadowMatrix[ NUM_DIR_LIGHT_SHADOWS ];
+float assetShadowGrid(vec3 N){
+ float shadow=1.0;
+ vec3 q=(floor(vAssetWP*21.3333)+0.5)/21.3333;
+ DirectionalLightShadow dls;
+ #pragma unroll_loop_start
+ for(int i=0;i<NUM_DIR_LIGHT_SHADOWS;i++){
+  dls=directionalLightShadows[i];
+  shadow*=receiveShadow?getShadow(directionalShadowMap[i],dls.shadowMapSize,dls.shadowIntensity,dls.shadowBias,dls.shadowRadius,directionalShadowMatrix[i]*vec4(q+N*dls.shadowNormalBias,1.0)):1.0;
+ }
+ #pragma unroll_loop_end
+ return shadow;
+}
+#else
+float assetShadowGrid(vec3 N){return getShadowMask();}
+#endif
 `+clean(material.fragmentShader);
    // as paletas são cores de tela (sRGB); o jogo trabalha em linear e converte na saída
    const toLinear=material.userData.pixelTree?' gl_FragColor.rgb = pow(gl_FragColor.rgb, vec3(2.2)) * '+(material.userData.brightness ?? 0.62).toFixed(3)+';':'';
    material.fragmentShader=injectMain(material.fragmentShader,`{
-${toLinear} gl_FragColor.rgb *= uAssetAmbient + uAssetSun * mix(getShadowMask(), 1.0, uAssetLeafFill);
+${toLinear} gl_FragColor.rgb *= uAssetAmbient + uAssetSun * mix(${snapShadow?'assetShadowGrid(normalize(vNormal))':'getShadowMask()'}, 1.0, uAssetLeafFill);
  #include <fog_fragment>
 ${material.userData.pixelTree?' #include <colorspace_fragment>':''}
 }`,true);

@@ -356,16 +356,38 @@ export class ChunkManager {
       const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
       if (dx * dx + dz * dz > vegRadiusSq) chunk.releaseVegetation();
     }
-    // Procura sempre o mais perto que falta (poucas centenas de chunks: custo desprezível)
-    for (;;) {
-      best = undefined; bestD = Infinity;
+    // O plano da vegetação (onde vai cada coisa) é feito nos workers: pede os dos chunks que faltam, os mais perto primeiro, até 10 ao mesmo tempo.
+    // Aqui só se planta (instancia) o que já tem plano pronto.
+    {
+      const seed = this.terrainGen.getSeed();
+      let inflight = 0;
+      const want: { chunk: Chunk; d: number }[] = [];
       for (const chunk of this.chunks.values()) {
         if (chunk.hasVegetation || chunk.isSubmerged) continue;
         const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
         const d = dx * dx + dz * dz;
-        if (d <= vegRadiusSq && d < bestD) { bestD = d; best = chunk; }
+        if (d > vegRadiusSq) continue;
+        if (chunk.vegPlanPending()) inflight++;
+        else if (!chunk.vegPlanReady()) want.push({ chunk, d });
       }
-      if (!best) { if (this.buildQueue.length === 0) { this.initialVegetationDone = true; this.vegIdleFrames = 12; } return; }
+      if (inflight < 10 && want.length > 0) {
+        want.sort((a, b) => a.d - b.d);
+        for (let i = 0; i < want.length && inflight < 10; i++, inflight++) want[i].chunk.requestVegPlan(seed, want[i].d <= 16, 0.1);
+      }
+    }
+    // Procura sempre o mais perto que falta (poucas centenas de chunks: custo desprezível)
+    for (;;) {
+      best = undefined; bestD = Infinity;
+      let waiting = false;
+      for (const chunk of this.chunks.values()) {
+        if (chunk.hasVegetation || chunk.isSubmerged) continue;
+        const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
+        const d = dx * dx + dz * dz;
+        if (d > vegRadiusSq) continue;
+        if (!chunk.vegPlanReady()) { waiting = true; continue; }
+        if (d < bestD) { bestD = d; best = chunk; }
+      }
+      if (!best) { if (!waiting && this.buildQueue.length === 0) { this.initialVegetationDone = true; this.vegIdleFrames = 12; } return; }
       best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16, this.initialVegetationDone ? Math.max(0.6, Math.min(1.5, budgetLeft(4))) : Infinity);
       // depois do carregamento inicial, um passo (plano OU instanciação) por quadro: dois passos juntos davam 6 a 13 ms
       if (this.initialVegetationDone) return;

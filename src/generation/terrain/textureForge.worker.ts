@@ -3,6 +3,9 @@ import { TerrainGenerator } from './terrainGenerator.ts';
 import { buildChunkGeometry } from './chunkGeometry.ts';
 import { buildHorizonTile } from './horizonGeometry.ts';
 import { buildImpostorBlock } from './horizonTrees.ts';
+import { buildWaterBiomeData } from '../hydrology/waterBiomeCompute.ts';
+import { planChunkVegetation } from '../vegetation/vegetationPlanner.ts';
+import { toWire } from '../vegetation/vegetationPlanWire.ts';
 
 /**
  * Worker dedicado à geração pesada de chunks: texturas (Pixel Terrain Forge) e malha de relevo.
@@ -69,6 +72,43 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
       const t = buildHorizonTile(getTerrainGen(seed), minX, minZ, size, seg);
       const bufs: ArrayBuffer[] = [t.positions.buffer, t.normals.buffer, t.colors.buffer, t.index.buffer, t.morph.buffer] as ArrayBuffer[];
       ctx.postMessage({ reqId, horizon: t }, bufs);
+    } catch (err: any) {
+      ctx.postMessage({ reqId, error: err?.message || String(err) });
+    }
+    return;
+  }
+  // plano da vegetação de um chunk (vegetationPlanner.ts); vira dados simples para atravessar o postMessage
+  if (ev.data.type === 'vegPlan') {
+    const { reqId, seed, cx, cz, size, detail } = ev.data;
+    try {
+      const gen = getTerrainGen(seed);
+      const plan = planChunkVegetation(cx, cz, size, gen, detail);
+      const msg: any = { reqId, vegPlan: toWire(plan) };
+      let sent = sentIslands.get(seed);
+      if (!sent) { sent = new Set(); sentIslands.set(seed, sent); }
+      const hydro = gen.getHydrology().exportIslands(sent);
+      if (hydro.length) { msg.hydro = hydro; msg.seed = seed; }
+      ctx.postMessage(msg);
+    } catch (err: any) {
+      ctx.postMessage({ reqId, error: err?.message || String(err) });
+    }
+    return;
+  }
+  // mapa de tons da água em volta do jogador (hydrology/waterBiomeMap.ts)
+  if (ev.data.type === 'waterBiome') {
+    const { reqId, seed, originX, originZ } = ev.data;
+    try {
+      const gen = getTerrainGen(seed);
+      const nIslands = gen.getHydrology().cachedIslandCount();
+      const data = buildWaterBiomeData(gen, originX, originZ);
+      const msg: any = { reqId, waterBiome: data };
+      // ilhas calculadas aqui (se faltou alguma): a thread principal instala em vez de recalcular
+      let sent = sentIslands.get(seed);
+      if (!sent) { sent = new Set(); sentIslands.set(seed, sent); }
+      const hydro = gen.getHydrology().exportIslands(sent);
+      if (hydro.length) { msg.hydro = hydro; msg.seed = seed; }
+      void nIslands;
+      ctx.postMessage(msg, [data.buffer] as ArrayBuffer[]);
     } catch (err: any) {
       ctx.postMessage({ reqId, error: err?.message || String(err) });
     }

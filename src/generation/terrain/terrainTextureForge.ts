@@ -1746,7 +1746,9 @@ export function genChunkTexture(
   // só nas texturas de 2+ tx/m: a grama 3D aparece nos chunks até o anel 4 (GRASS_RADIUS_CHUNKS),
   // que têm 2+ tx/m; nos mais distantes (1 tx/m e os blocos) calcular os tufos seria à toa
   (() => {
-    if (chunkSize <= 64 && D >= 2) {
+    // (3 tx/m em diante: os chunks de 2 tx/m são os dos anéis 5 a 7, além do raio da grama 3D (GRASS_RADIUS_CHUNKS = 4, que usa 4 tx/m ou 3 no mínimo);
+    // calcular os tufos deles era ~40% do tempo de cada um dos ~300 trabalhos de 2 tx/m de um carregamento)
+    if (chunkSize <= 64 && D >= 3) {
       const list: number[] = [];
       const S = Math.round(chunkSize);
       const tuftAmount = P.tuftAmount ?? 1, tuftClump = P.tuftClump ?? 0.6, tuftSize = P.tuftSize ?? 1;
@@ -1977,7 +1979,7 @@ export class TerrainTextureForge {
     priority: number = 0,
     segments: number = 0,
     walls: boolean = true
-  ): { promise: Promise<{ textures?: ReturnType<typeof makeChunkTextures>; geometry?: ChunkGeometryData; grass?: Float32Array }>; cancel: () => void } {
+  ): { promise: Promise<{ textures?: ReturnType<typeof makeChunkTextures>; geometry?: ChunkGeometryData; grass?: Float32Array }>; cancel: () => void; isWaiting: () => boolean } {
     const pool = getTextureWorkerPool();
     const { promise, reqId } = pool.request(
       this.params.seed,
@@ -1997,7 +1999,7 @@ export class TerrainTextureForge {
       grass: r.texture?.grass
     }));
 
-    return { promise: wrapped, cancel: () => pool.cancel(reqId) };
+    return { promise: wrapped, cancel: () => pool.cancel(reqId), isWaiting: () => pool.isWaiting(reqId) };
   }
 
   /** Variante síncrona (bloqueia a main thread) — mantida para o modo de teste/verificação procedural. */

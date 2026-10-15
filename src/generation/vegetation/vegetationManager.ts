@@ -952,7 +952,7 @@ export class VegetationManager {
         // plantas pequenas (flores, samambaia, junco): só aparecem até uns 90 m (de longe seriam pontinhos)
         const small = k.startsWith('flowers_') || k.startsWith('leaves_') || k === 'fernPlant' || k === 'reedClump';
         const rockish = k.startsWith('rock_') || k.startsWith('gravel_') || k.startsWith('ore_');
-        const kb: [number, number][] = small ? [[0, 70], [70, 70], [70, 70], [70, 70]] : rockish ? (k.startsWith('gravel_') ? [[0, 80], [80, 80], [80, 80], [80, 80]] : [[0, 170], [170, 170], [170, 170], [170, 170]]) : bands;
+        const kb: [number, number][] = small ? [[0, 90], [90, 90], [90, 90], [90, 90]] : rockish ? (k.startsWith('gravel_') ? [[0, 80], [80, 80], [80, 80], [80, 80]] : [[0, 170], [170, 170], [170, 170], [170, 170]]) : bands;
         // de perto (degraus 0 e 1) cada variação tem o seu desenho; dali em diante todas usam o mesmo (mais abaixo)
         for (let l = 0; l < (singleLodKind(k) ? 1 : 2); l++) {
           v.lods[l].parts.forEach((part, pj) => {
