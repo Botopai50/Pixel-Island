@@ -20,7 +20,9 @@ export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
     radius: 35,
     mapSize: 2048,
     bias: -0.00002,
-    normalBias: 0.12,
+    // (0,12 m afastava o ponto do chão para cima, para dentro de um tronco ou pedra deitados, e a sombra deles só começava a uns 10 a 20 cm do contato:
+    // uma faixa de chão claro entre o objeto e a sombra. Com 0,04 m (~1,2 texel do mapa) a sombra encosta; com 0 o próprio tronco ganha ruído.)
+    normalBias: 0.04,
     near: 1,
     far: 1050,
     lightDistance: 800

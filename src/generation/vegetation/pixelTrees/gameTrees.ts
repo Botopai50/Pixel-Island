@@ -399,6 +399,16 @@ void main() {
     });
     mat.userData.depthMaterial = depth;
     mat.userData.castsCutShadow = true;
+  } else if (vs.includes('uHFTex')) {
+    // madeira que acompanha o relevo (raízes, tronco caído, galhos baixos): o vértice da base é levado até o chão no shader. O desenho da sombra
+    // usava o material de profundidade padrão, sem esse ajuste, e a sombra saía de uma madeira mais alta ou mais baixa que a visível (uma faixa de chão
+    // claro entre o tronco e a sombra). Agora a profundidade sai do mesmo vertex shader.
+    mat.userData.depthMaterial = new THREE.ShaderMaterial({
+      uniforms: mat.uniforms,
+      vertexShader: vs,
+      fragmentShader: '#include <packing>\nvoid main() { gl_FragColor = packDepthToRGBA(gl_FragCoord.z); }',
+      side: THREE.DoubleSide,
+    });
   }
   // plantas baixas se sombreiam entre si e viram uma mancha escura: a sombra delas pesa menos (como as folhas das árvores)
   if (hug) mat.userData.leafFill = 0.3;
@@ -948,7 +958,7 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
     const key = groundKey || materialKey(mat) + (instMesh.isInstancedMesh ? ':baked' : '');
     let gp = groups.get(key);
     if (!gp) {
-      gp = { mat, geos: [], baked: !!instMesh.isInstancedMesh, shadow: !!groundKey || /Wood|Trunk|Root|Cactus/i.test(mesh.name) };
+      gp = { mat, geos: [], baked: !!instMesh.isInstancedMesh, shadow: !!groundKey || /Wood|Trunk|Root|Cactus|^Rock_/i.test(mesh.name) };
       groups.set(key, gp);
     }
     gp.geos.push(geo);

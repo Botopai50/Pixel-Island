@@ -66,11 +66,15 @@ uniform mat4 directionalShadowMatrix[ NUM_DIR_LIGHT_SHADOWS ];
 float assetShadowGrid(vec3 N){
  float shadow=1.0;
  vec3 q=(floor(vAssetWP*21.3333)+0.5)/21.3333;
+ // o afastamento contra acne não pode descer: na parte de baixo de uma pedra ou de um tronco deitado "para fora" é para dentro do chão, que está na
+ // sombra do próprio terreno, e a base do objeto saía preta, cortada rente ao chão. Sem a componente para baixo e com o ponto uns 6 cm mais alto.
+ vec3 Nb=vec3(N.x,max(N.y,0.0),N.z);
+ q.y+=0.06;
  DirectionalLightShadow dls;
  #pragma unroll_loop_start
  for(int i=0;i<NUM_DIR_LIGHT_SHADOWS;i++){
   dls=directionalLightShadows[i];
-  shadow*=receiveShadow?getShadow(directionalShadowMap[i],dls.shadowMapSize,dls.shadowIntensity,dls.shadowBias,dls.shadowRadius,directionalShadowMatrix[i]*vec4(q+N*dls.shadowNormalBias,1.0)):1.0;
+  shadow*=receiveShadow?getShadow(directionalShadowMap[i],dls.shadowMapSize,dls.shadowIntensity,dls.shadowBias,dls.shadowRadius,directionalShadowMatrix[i]*vec4(q+Nb*dls.shadowNormalBias,1.0)):1.0;
  }
  #pragma unroll_loop_end
  return shadow;

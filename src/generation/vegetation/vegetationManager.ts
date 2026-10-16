@@ -464,21 +464,23 @@ export function setupCartoonMaterial(mat: THREE.MeshLambertMaterial, fade: 'veg'
 
           // ponto da sombra no centro do pixel da textura (com o normalBias de cada faixa)
           vec3 vegNW = normalize(inverseTransformDirection(geometryNormal, viewMatrix));
-          vec3 vegSP = vegSnapPos();
+          vec3 vegSP = vegSnapPos() + vec3(0.0, 0.06, 0.0);
+          // o afastamento contra acne não desce (na parte de baixo de um tronco deitado "para fora" é para dentro do chão, na sombra do terreno)
+          vec3 vegNB = vec3(vegNW.x, max(vegNW.y, 0.0), vegNW.z);
           bool vegGrid = uShadowGrid > 0.5;
           #if NUM_DIR_LIGHT_SHADOWS >= 1
           // + ~30cm para fora da superfície: o objeto não se sombreia (ele entra no mapa pelos dois lados)
-          vec4 sc0 = vegGrid ? uSM[0] * vec4(vegSP + vegNW * (uSNB.x + 0.3), 1.0) : vDirectionalShadowCoord[0];
+          vec4 sc0 = vegGrid ? uSM[0] * vec4(vegSP + vegNB * (uSNB.x + 0.3), 1.0) : vDirectionalShadowCoord[0];
           vec3 c0 = sc0.xyz / sc0.w;
           vec2 dz_duv0 = computeReceiverPlaneDepthSlope(c0);
           #endif
           #if NUM_DIR_LIGHT_SHADOWS >= 2
-          vec4 sc1 = vegGrid ? uSM[1] * vec4(vegSP + vegNW * (uSNB.y + 0.3), 1.0) : vDirectionalShadowCoord[1];
+          vec4 sc1 = vegGrid ? uSM[1] * vec4(vegSP + vegNB * (uSNB.y + 0.3), 1.0) : vDirectionalShadowCoord[1];
           vec3 c1 = sc1.xyz / sc1.w;
           vec2 dz_duv1 = computeReceiverPlaneDepthSlope(c1);
           #endif
           #if NUM_DIR_LIGHT_SHADOWS >= 3
-          vec4 sc2 = vegGrid ? uSM[2] * vec4(vegSP + vegNW * (uSNB.z + 0.3), 1.0) : vDirectionalShadowCoord[2];
+          vec4 sc2 = vegGrid ? uSM[2] * vec4(vegSP + vegNB * (uSNB.z + 0.3), 1.0) : vDirectionalShadowCoord[2];
           vec3 c2 = sc2.xyz / sc2.w;
           vec2 dz_duv2 = computeReceiverPlaneDepthSlope(c2);
           #endif
