@@ -61,6 +61,8 @@ function genHashPlugin(): Plugin {
 export default defineConfig({
   base: './',
   plugins: [genHashPlugin()],
+  // o worker do terreno (textureForge.worker.ts) também importa o cache de chunks (virtual:gen-hash): no build ele é empacotado à parte, com a própria lista de plugins
+  worker: { plugins: () => [genHashPlugin()] },
   server: {
     port: 5173,
     open: false,
