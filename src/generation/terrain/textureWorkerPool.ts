@@ -2,7 +2,7 @@ import { ForgeParams, ChunkTextureResult } from './terrainTextureForge.ts';
 import { ChunkGeometryData } from './chunkGeometry.ts';
 import { HorizonTileData, HorizonTreeData } from './horizonGeometry.ts';
 import { CONFIG } from '../../config.ts';
-import { chunkCacheGet, chunkCachePut, chunkCacheKey, paramsFingerprint } from './chunkCache.ts';
+import { chunkCacheGet, chunkCacheKey, paramsFingerprint, attachChunkCacheWorker, chunkCacheEnabled } from './chunkCache.ts';
 
 /**
  * Alcance da hidrologia de uma ilha a partir do centro dela (janela de drenagem + vale + folga),
@@ -52,6 +52,8 @@ interface PendingReq {
   waterBiome?: { originX: number; originZ: number };
   /** plano da vegetação de um chunk (em vez de textura/malha) */
   vegPlan?: { cx: number; cz: number; detail: boolean };
+  /** chave do cache em disco: o worker de geração grava o resultado nele (por conta própria, sem passar pela thread principal) */
+  cacheKey?: string;
   resolve: (r: ChunkJobResult) => void;
   reject: (e: unknown) => void;
 }
@@ -88,8 +90,18 @@ export class TextureWorkerPool {
   private islandsDone = new Set<string>();
 
   constructor(size: number = defaultPoolSize()) {
+    // o cache em disco (IndexedDB e compressão) vive num worker próprio; cada worker de geração recebe uma porta para gravar nele
+    let cacheWorker: Worker | null = null;
+    if (chunkCacheEnabled) {
+      try { cacheWorker = new Worker(new URL('./chunkCache.worker.ts', import.meta.url), { type: 'module' }); attachChunkCacheWorker(cacheWorker); } catch { cacheWorker = null; }
+    }
     for (let i = 0; i < size; i++) {
       const worker = new Worker(new URL('./textureForge.worker.ts', import.meta.url), { type: 'module' });
+      if (cacheWorker) {
+        const ch = new MessageChannel();
+        cacheWorker.postMessage({ op: 'port', port: ch.port1 }, [ch.port1]);
+        worker.postMessage({ type: 'cachePort', port: ch.port2 }, [ch.port2]);
+      }
       worker.onmessage = (ev: MessageEvent) => this.handleMessage(i, ev.data);
       this.workers.push(worker);
       this.freeWorkers.push(i);
@@ -113,7 +125,7 @@ export class TextureWorkerPool {
       this.cached(reqId, key, resolve, reject, () => {
         this.queue.push({
           reqId, seed, params: { ...params }, minWorldX, minWorldZ, chunkSize, density, segments, walls, priority,
-          resolve: (r) => { resolve(r); chunkCachePut(key, r); }, reject
+          cacheKey: key, resolve, reject
         });
         this.pump();
       });
@@ -161,7 +173,7 @@ export class TextureWorkerPool {
       this.cached(reqId, key, resolve, reject, () => {
         this.queue.push({
           reqId, seed, params: {} as ForgeParams, minWorldX: minX, minWorldZ: minZ, chunkSize: size, density: 0, segments: 0,
-          priority, horizonSeg: seg, resolve: (r) => { resolve(r); chunkCachePut(key, r); }, reject,
+          priority, horizonSeg: seg, cacheKey: key, resolve, reject,
         });
         this.pump();
       });
@@ -209,7 +221,7 @@ export class TextureWorkerPool {
       this.cached(reqId, key, resolve, reject, () => {
         this.queue.push({
           reqId, seed, params: {} as ForgeParams, minWorldX: minX, minWorldZ: minZ, chunkSize: size, density: 0, segments: 0,
-          priority, impostor: { originX, originZ }, resolve: (r) => { resolve(r); chunkCachePut(key, r); }, reject,
+          priority, impostor: { originX, originZ }, cacheKey: key, resolve, reject,
         });
         this.pump();
       });
@@ -345,7 +357,7 @@ export class TextureWorkerPool {
         continue;
       }
       if (item.horizonSeg) {
-        this.workers[workerIndex].postMessage({ type: 'horizon', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, seg: item.horizonSeg });
+        this.workers[workerIndex].postMessage({ type: 'horizon', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, seg: item.horizonSeg, cacheKey: item.cacheKey });
         continue;
       }
       if (item.vegPlan) {
@@ -357,10 +369,11 @@ export class TextureWorkerPool {
         continue;
       }
       if (item.impostor) {
-        this.workers[workerIndex].postMessage({ type: 'impostors', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, originX: item.impostor.originX, originZ: item.impostor.originZ });
+        this.workers[workerIndex].postMessage({ type: 'impostors', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, originX: item.impostor.originX, originZ: item.impostor.originZ, cacheKey: item.cacheKey });
         continue;
       }
       this.workers[workerIndex].postMessage({
+        cacheKey: item.cacheKey,
         reqId: item.reqId,
         seed: item.seed,
         params: item.params,

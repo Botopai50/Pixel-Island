@@ -33,17 +33,17 @@ interface KindDef {
 }
 
 const KINDS: Record<ParticleKind, KindDef> = {
-  snow: { count: 3000, box: 40, boxH: 22, drop: 4, fall: -1.3, wind: 1, sway: 0.6, swayF: 0.7, size: 0.11, maxPx: 5, minPx: 2, colors: ['#f6f9ff', '#e4ecf8'], alpha: 0.95 },
-  leaves: { count: 1200, box: 36, boxH: 16, drop: 3, fall: -0.85, wind: 1.4, sway: 1.1, swayF: 0.9, size: 0.17, maxPx: 5, minPx: 2, colors: ['#d8762a', '#b8402a', '#e2b03a', '#a8582a'], alpha: 1.0 },
-  petals: { count: 1500, box: 36, boxH: 16, drop: 3, fall: -0.7, wind: 1.3, sway: 1.3, swayF: 0.8, size: 0.16, maxPx: 5, minPx: 2, colors: ['#ffc4d8', '#f6a2c2', '#ffe0ea', '#f08cb2'], alpha: 1.0 },
-  pollen: { count: 1000, box: 30, boxH: 8, drop: 2.5, fall: 0.05, wind: 0.35, sway: 0.7, swayF: 0.35, size: 0.08, maxPx: 3, minPx: 2, colors: ['#fff4b8', '#ffffff'], alpha: 0.85, night: -1 },
-  fireflies: { count: 520, box: 36, boxH: 6, drop: 2.0, fall: 0.02, wind: 0.05, sway: 1.3, swayF: 0.22, size: 0.12, maxPx: 4, colors: ['#d8ff6a', '#f4ff9a'], alpha: 1.0, glow: true, night: 1 },
-  dust: { count: 1000, box: 40, boxH: 8, drop: 2.5, fall: 0.06, wind: 1.6, sway: 0.35, swayF: 0.3, size: 0.09, maxPx: 4, minPx: 2, colors: ['#ead0a0', '#d8b47a'], alpha: 0.6 },
-  sand: { count: 1100, box: 34, boxH: 6, drop: 1.6, fall: 0.0, wind: 6.5, sway: 0.25, swayF: 1.6, size: 0.12, maxPx: 5, minPx: 2, colors: ['#f6e2b8', '#c8965a', '#fff0d0'], alpha: 0.9 },
-  ash: { count: 2000, box: 40, boxH: 20, drop: 4, fall: -0.55, wind: 0.6, sway: 0.45, swayF: 0.5, size: 0.09, maxPx: 4, minPx: 2, colors: ['#5c5856', '#7a7470', '#3e3a3a'], alpha: 0.9 },
-  embers: { count: 380, box: 36, boxH: 14, drop: 6, fall: 1.3, wind: 0.5, sway: 0.8, swayF: 0.8, size: 0.09, maxPx: 4, minPx: 2, colors: ['#ff8a2a', '#ffc04a', '#ff5a1a'], alpha: 1.0, glow: true },
-  motes: { count: 900, box: 32, boxH: 10, drop: 3, fall: 0.12, wind: 0.15, sway: 0.5, swayF: 0.25, size: 0.07, maxPx: 3, minPx: 2, colors: ['#e8f0e0', '#d8e4d0'], alpha: 0.45 },
-  steam: { count: 800, box: 32, boxH: 14, drop: 4, fall: 0.9, wind: 0.4, sway: 0.6, swayF: 0.4, size: 0.18, maxPx: 6, minPx: 2, colors: ['#f2f4f4', '#e2e8ea'], alpha: 0.3 },
+  snow: { count: 1800, box: 40, boxH: 22, drop: 4, fall: -1.3, wind: 1, sway: 0.6, swayF: 0.7, size: 0.11, maxPx: 5, minPx: 2, colors: ['#f6f9ff', '#e4ecf8'], alpha: 0.95 },
+  leaves: { count: 450, box: 36, boxH: 16, drop: 3, fall: -0.85, wind: 1.4, sway: 1.1, swayF: 0.9, size: 0.17, maxPx: 5, minPx: 2, colors: ['#d8762a', '#b8402a', '#e2b03a', '#a8582a'], alpha: 1.0 },
+  petals: { count: 550, box: 36, boxH: 16, drop: 3, fall: -0.7, wind: 1.3, sway: 1.3, swayF: 0.8, size: 0.16, maxPx: 5, minPx: 2, colors: ['#ffc4d8', '#f6a2c2', '#ffe0ea', '#f08cb2'], alpha: 1.0 },
+  pollen: { count: 380, box: 30, boxH: 8, drop: 2.5, fall: 0.05, wind: 0.35, sway: 0.7, swayF: 0.35, size: 0.08, maxPx: 3, minPx: 2, colors: ['#fff4b8', '#ffffff'], alpha: 0.85, night: -1 },
+  fireflies: { count: 240, box: 36, boxH: 6, drop: 2.0, fall: 0.02, wind: 0.05, sway: 1.3, swayF: 0.22, size: 0.12, maxPx: 4, colors: ['#d8ff6a', '#f4ff9a'], alpha: 1.0, glow: true, night: 1 },
+  dust: { count: 450, box: 40, boxH: 8, drop: 2.5, fall: 0.06, wind: 1.6, sway: 0.35, swayF: 0.3, size: 0.09, maxPx: 4, minPx: 2, colors: ['#ead0a0', '#d8b47a'], alpha: 0.6 },
+  sand: { count: 700, box: 34, boxH: 6, drop: 1.6, fall: 0.0, wind: 6.5, sway: 0.25, swayF: 1.6, size: 0.12, maxPx: 5, minPx: 2, colors: ['#f6e2b8', '#c8965a', '#fff0d0'], alpha: 0.9 },
+  ash: { count: 1100, box: 40, boxH: 20, drop: 4, fall: -0.55, wind: 0.6, sway: 0.45, swayF: 0.5, size: 0.09, maxPx: 4, minPx: 2, colors: ['#5c5856', '#7a7470', '#3e3a3a'], alpha: 0.9 },
+  embers: { count: 220, box: 36, boxH: 14, drop: 6, fall: 1.3, wind: 0.5, sway: 0.8, swayF: 0.8, size: 0.09, maxPx: 4, minPx: 2, colors: ['#ff8a2a', '#ffc04a', '#ff5a1a'], alpha: 1.0, glow: true },
+  motes: { count: 350, box: 32, boxH: 10, drop: 3, fall: 0.12, wind: 0.15, sway: 0.5, swayF: 0.25, size: 0.07, maxPx: 3, minPx: 2, colors: ['#e8f0e0', '#d8e4d0'], alpha: 0.45 },
+  steam: { count: 450, box: 32, boxH: 14, drop: 4, fall: 0.9, wind: 0.4, sway: 0.6, swayF: 0.4, size: 0.18, maxPx: 6, minPx: 2, colors: ['#f2f4f4', '#e2e8ea'], alpha: 0.3 },
 };
 
 const VERT = /* glsl */ `

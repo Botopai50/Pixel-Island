@@ -9,6 +9,7 @@ import { GeothermalGenerator } from '../geothermal/geothermalGenerator.ts';
 import { CONFIG } from '../../config.ts';
 import { clamp, lerp, smoothstep } from '../math/mathUtils.ts';
 import { TerrainPoint } from '../types.ts';
+import { SettlementField } from '../settlements/settlementField.ts';
 
 export class TerrainGenerator {
   private seed: number;
@@ -19,6 +20,8 @@ export class TerrainGenerator {
   private volcanoGen: VolcanoGenerator;
   private canyonGen: CanyonGenerator;
   private geothermalGen: GeothermalGenerator;
+  /** cidades: achatam o relevo sob as casas (settlementField.ts) */
+  public readonly settlements: SettlementField;
 
   constructor(seed: number = 0) {
     this.seed = seed;
@@ -30,6 +33,7 @@ export class TerrainGenerator {
     this.biomeMgr = new BiomeManager(seed);
     this.canyonGen = new CanyonGenerator(seed, this.macroGeo, this.volcanoGen);
     this.hydrology.setHeightSampler((x, z) => this.getDryHeight(x, z));
+    this.settlements = new SettlementField(this);
   }
 
   public reseed(seed: number): void {
@@ -41,6 +45,7 @@ export class TerrainGenerator {
     this.hydrology.reseed(seed, this.macroGeo, this.volcanoGen, this.geothermalGen);
     this.biomeMgr.reseed(seed);
     this.canyonGen.reseed(seed);
+    this.settlements?.reset();
   }
 
   /** Correnteza dos rios (ver Hydrology.riverFlowAt): out = [vx, vz, presença]. */
@@ -84,6 +89,11 @@ export class TerrainGenerator {
   }
 
   public getHeight(x: number, z: number): number {
+    return this.settlements.adjust(x, z, this.getHeightRaw(x, z));
+  }
+
+  /** Relevo final SEM o achatamento das cidades (é o que o planejador delas enxerga). */
+  public getHeightRaw(x: number, z: number): number {
     const dry = this.getDryHeight(x, z);
     // Rios e lagos esculpem o relevo por último (leito, margens e o dique natural em volta da
     // água), sobre o relevo já completo - senão um cânion aplicado depois rebaixava as margens
@@ -91,6 +101,9 @@ export class TerrainGenerator {
     return clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro, x, z)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
   }
 
+  public getVolcanoInfluence(x: number, z: number): number {
+    return this.volcanoGen.query(x, z).influence;
+  }
 
   /**
    * Altura final e a umidade da beira d'água (areia molhada) numa consulta só. A hidrologia precisa
@@ -99,7 +112,8 @@ export class TerrainGenerator {
   public getHeightAndWetness(x: number, z: number): { height: number; wetness: number } {
     const dry = this.getDryHeight(x, z);
     const hydro = this.hydrology.queryHydrology(x, z, dry);
-    return { height: clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro, x, z)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT), wetness: hydro.wetness };
+    const raw = clamp(this.hydrology.sculptWaterfalls(x,z,this.applyHydrology(dry, hydro, x, z)), CONFIG.OCEAN_FLOOR, CONFIG.MAX_HEIGHT);
+    return { height: this.settlements.adjust(x, z, raw), wetness: hydro.wetness };
   }
 
   /**

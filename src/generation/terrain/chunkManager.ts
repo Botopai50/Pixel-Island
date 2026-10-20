@@ -1,3 +1,4 @@
+import { GROUND_TEXELS } from '../vegetation/pixelTrees/gameTrees.ts';
 import * as THREE from 'three';
 import { Chunk, tickChunkFades, pumpGrassQueue } from './chunk.ts';
 import { budgetLeft } from '../frameBudget.ts';
@@ -57,6 +58,8 @@ export class ChunkManager {
   private sceneVersion: number = 0;
   private resolvedVersion: number = -1;
   private readonly bumpSceneVersion = (): void => { this.sceneVersion++; };
+  /** Avisa que algo de fora dos chunks (as cidades) entrou ou saiu da cena: os mapas de sombra são refeitos. */
+  public notifySceneChanged(): void { this.sceneVersion++; }
 
   constructor(
     scene: THREE.Scene,
@@ -134,7 +137,14 @@ export class ChunkManager {
     return Math.max(dx, dz) > NEAR_RING;
   }
 
+  /** A grade de pixels do chão dos troncos e das pedras (gameTrees.ts) acompanha a do terreno perto do jogador. */
+  private syncGroundTexels(): void {
+    const d = this.forge.density * ((this.forge.params as { pixelScale?: number }).pixelScale || 1);
+    if (d > 0) GROUND_TEXELS.value = d;
+  }
+
   private refreshChunkPlan(cx: number, cz: number): void {
+    this.syncGroundTexels();
     const r = this.viewRadius;
     const viewSq = r * r + 1;
     const keep = Math.max(r, this.retainRadius) + CONFIG.UNLOAD_MARGIN_CHUNKS;
@@ -335,6 +345,7 @@ export class ChunkManager {
    * por quadro deixava só ~2 chunks por quadro irem para os workers, que ficavam ociosos.
    */
   private initialVegetationDone = false;
+  private initialVegSince = 0;
   private vegStarve = 0;
   /** quadros que dá para pular a busca por chunks sem vegetação: ela percorre centenas de chunks (~1,5 ms) e quase sempre não acha nada */
   private vegIdleFrames = 0;
@@ -344,6 +355,13 @@ export class ChunkManager {
     if (this.vegIdleFrames > 0) { this.vegIdleFrames--; return; }
     const vegRadiusSq = (CONFIG.VEGETATION_RADIUS_CHUNKS || 9) * (CONFIG.VEGETATION_RADIUS_CHUNKS || 9);
     // Carregamento inicial (tela ainda vazia): orçamento maior; depois, 4ms para não engasgar
+    // O carregamento inicial (tela vazia: planta tudo de uma vez, até 16 ms por quadro) dura no máximo 6 s: andando, sempre havia um chunk esperando o
+    // plano do worker ou na fila, `initialVegetationDone` nunca virava verdadeiro e cada chunk era plantado inteiro (~7 ms) no meio da caminhada.
+    if (!this.initialVegetationDone) {
+      const nowMs = performance.now();
+      if (this.initialVegSince === 0) this.initialVegSince = nowMs;
+      else if (nowMs - this.initialVegSince > 6000) this.initialVegetationDone = true;
+    }
     const budget = this.initialVegetationDone ? 4.0 : 16.0;
     // depois do carregamento inicial só planta se ainda sobrou orçamento do quadro (e pelo menos a cada 6 quadros, para nunca ficar parado)
     if (this.initialVegetationDone && budgetLeft(4) < 0.8 && ++this.vegStarve < 6) return;
@@ -351,10 +369,14 @@ export class ChunkManager {
     const startTime = performance.now();
     let best: Chunk | undefined, bestD = Infinity;
     // Fora do raio: a vegetação sai (as árvores simples do horizonte aparecem no lugar, sem duplicar)
+    // (um chunk por chamada depois do carregamento inicial: soltar a vegetação de vários de uma vez, ao cruzar a fronteira de um chunk, custava ~7 ms num quadro só)
     for (const chunk of this.chunks.values()) {
       if (!chunk.hasVegetation && !chunk.isPlanting()) continue;
       const dx = chunk.cx - this.currentCenterCx, dz = chunk.cz - this.currentCenterCz;
-      if (dx * dx + dz * dz > vegRadiusSq) chunk.releaseVegetation();
+      if (dx * dx + dz * dz > vegRadiusSq) {
+        chunk.releaseVegetation();
+        if (this.initialVegetationDone) break;
+      }
     }
     // O plano da vegetação (onde vai cada coisa) é feito nos workers: pede os dos chunks que faltam, os mais perto primeiro, até 10 ao mesmo tempo.
     // Aqui só se planta (instancia) o que já tem plano pronto.
@@ -458,6 +480,7 @@ export class ChunkManager {
     this.queuedKeys.clear();
     this.currentCenterCx = 999999;
     this.initialVegetationDone = false;
+    this.initialVegSince = 0;
     this.currentCenterCz = 999999;
   }
 
@@ -466,6 +489,7 @@ export class ChunkManager {
   }
 
   public updatePixelScale(scale: number): void {
+    this.syncGroundTexels();
     for (const chunk of this.chunks.values()) chunk.updatePixelScale(scale);
     for (const tile of this.tiles.values()) tile.updatePixelScale(scale);
   }

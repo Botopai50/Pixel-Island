@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import { VegetationManager, VegetationGeometries } from '../generation/vegetation/vegetationManager.ts';
 import { ORE_BY_BIOME, ORE_LABEL, ORE_RARITY } from '../generation/vegetation/pixelTrees/oreAssign.ts';
-import { getGameTrees, ROCK_BIOME_KEYS, type GameTreeKind } from '../generation/vegetation/pixelTrees/gameTrees.ts';
+import { getGameTrees, ROCK_BIOME_KEYS, LOG_WOODS, LOG_FORMS, type GameTreeKind } from '../generation/vegetation/pixelTrees/gameTrees.ts';
+import { TREE_PRESETS } from '../generation/vegetation/pixelTrees/constants/presets.ts';
+import { BIOMES } from '../generation/terrain/terrainTextureForge.ts';
 import { enableAssetEnvironment } from '../generation/vegetation/pixelTrees/services/assetEnvironment';
 import { AERIAL } from '../atmosphere/atmosphericFog.ts';
 import { FADE } from '../generation/shaders/fadeDither.ts';
 import { VegetationTextures } from '../generation/vegetation/vegetationTextures.ts';
-import { seaArchGeometry } from '../generation/caves/caveFeatureManager.ts';
 
 /**
  * Galeria de todos os elementos de vegetação/props do jogo: cada um é renderizado isolado com a
@@ -95,12 +96,23 @@ const rasteiraItemsCat = (): Item[] => RASTEIRAS.map((t) => ({
   id: 'ra_' + t.kind, name: t.name + ' (Pixel_Tree)', where: t.where, isNew: true, news: 'Planta rasteira nova do Pixel_Tree, no lugar da antiga.',
   parts: getGameTrees(t.kind)[0].lods[0].parts.map((p) => ({ geo: p.geometry, mat: p.material, tint: 0xffffff })),
 }));
-const TRONCOS: { kind: GameTreeKind; name: string; where: string; news: string }[] = [
-  { kind: 'logFallen', name: 'Tronco caído', where: 'Florestas e manguezal (meio afundado na água)', news: 'Tronco novo do Pixel_Tree, no lugar do antigo.' },
-  { kind: 'logHollow', name: 'Tronco oco', where: 'Florestas e margens', news: 'Tronco novo do Pixel_Tree: oco, com musgo e cogumelos.' },
-  { kind: 'logRooted', name: 'Tronco com raízes', where: 'Florestas e margens', news: 'Tronco novo do Pixel_Tree: arrancado, com o bloco de raízes e terra.' },
-  { kind: 'logStump', name: 'Toco', where: 'Florestas', news: 'Toco novo do Pixel_Tree, com os anéis do corte.' },
-];
+// Troncos e tocos do Pixel_Tree: as quatro formas para cada madeira (o nome vem da preset: "Tronco Caído · Carvalho de Hyrule")
+const TRONCO_WHERE: Record<string, string> = {
+  hyrule_oak: 'Floresta temperada', satori_sakura: 'Bosques de cerejeira', akkala_birch: 'Florestas de bétula', hebra_pine: 'Florestas de coníferas',
+  hebra_pine_snowy: 'Tundra e neve', faron_palm: 'Praias e costa tropical', korok_ancient: 'Bosques de árvores ancestrais', swamp_mangrove: 'Manguezal',
+  savanna_acacia: 'Savana', dry_withered: 'Campos secos e vulcânicos', maple_red: 'Floresta de outono', maple_orange: 'Floresta de outono', maple_yellow: 'Floresta de outono',
+};
+const TRONCOS: { kind: GameTreeKind; name: string; where: string; news: string }[] = LOG_WOODS.flatMap((w) =>
+  (Object.keys(LOG_FORMS) as ('logFallen' | 'logHollow' | 'logRooted' | 'logStump')[]).map((f) => ({
+    kind: `${f}_${w}` as GameTreeKind,
+    name: String((TREE_PRESETS[`${LOG_FORMS[f]}_${w}`] as { name?: string } | undefined)?.name ?? `${f} ${w}`),
+    where: TRONCO_WHERE[w] ?? '',
+    news: 'Gerador de troncos novo do Pixel_Tree: uma variação para cada madeira.',
+  })));
+// o tronco com raízes com o chão (relva, terra) na paleta de cada bioma do terreno
+for (let b = 1; b < BIOMES.length; b++) {
+  TRONCOS.push({ kind: `logRooted_hyrule_oak@${b}` as GameTreeKind, name: `Com Raízes · chão do bioma ${BIOMES[b].label}`, where: 'Bioma: ' + BIOMES[b].label, news: 'O chão do bloco de raízes segue a paleta do bioma onde o tronco nasce.' });
+}
 const troncoItemsCat = (): Item[] => TRONCOS.map((t) => ({
   id: 'tr_' + t.kind, name: t.name + ' (Pixel_Tree)', where: t.where, isNew: true, news: t.news,
   parts: getGameTrees(t.kind)[0].lods[0].parts.map((p) => ({ geo: p.geometry, mat: p.material, tint: 0xffffff })),
@@ -196,19 +208,6 @@ const groups: Group[] = [
     items: [
       { id: 'lilyPads', name: 'Vitória-régia', where: 'Água rasa do manguezal', isNew: true, news: 'Folhas redondas com flores rosas, na superfície.', parts: single(G.lilyPads, M.swampMaterial, 0xffffff) },
       { id: 'duckweed', name: "Lentilha-d'água", where: 'Água rasa do manguezal', isNew: true, news: 'Tapete verde de retalhos na superfície da água.', parts: single(G.duckweed, M.swampMaterial, 0xffffff) },
-    ],
-  },
-  {
-    title: 'Novidades: bosque de cerejeiras',
-    items: [
-      { id: 'stoneLantern', name: 'Lanterna de pedra', where: 'Bosque de cerejeiras', isNew: true, news: 'Lanterna japonesa (tōrō) de pedra, rara, com abertura acesa.', parts: G.stoneLanternParts.map((p) => ({ geo: p.geometry, mat: p.material, tint: 0xffffff })) },
-    ],
-  },
-  {
-    title: 'Formações rochosas',
-    items: [
-      // o mesmo material do jogo (CaveFeatureManager): cinza liso, sem textura
-      { id: 'seaArch', name: 'Arco de rocha', where: 'Costa (raro)', parts: single(seaArchGeometry(1), new THREE.MeshLambertMaterial({ color: 0x5a5856 }), 0xffffff) },
     ],
   },
 ];

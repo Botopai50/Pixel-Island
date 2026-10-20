@@ -1914,6 +1914,77 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
 
   float bhash(float n) { return fract(sin(n * 12.9898) * 43758.5453123); }
   float bhash2(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+  // Deslocamento EXATO em tela (em pixels) até o centro da célula c, dado o valor g da coordenada da célula no fragmento. Os varyings são perspectivos: (valor / w) e 1 / w
+  // são afins na tela, então valor(s) = (a + Ga s) / (b + gb s) tem solução exata (um sistema 2 x 2), sem depender do ângulo de visão (a estimativa por derivadas só
+  // do valor errava em ângulo rasante e a sombra pulava de célula conforme a câmera se mexia). wrapN > 0: a primeira coordenada dá a volta nesse período.
+  vec2 cellShift(vec2 g, vec2 c, float wrapN) {
+    float b = gl_FragCoord.w;
+    vec2 gb = vec2(dFdx(b), dFdy(b));
+    vec2 gx = dFdx(g), gy = dFdy(g);
+    if (wrapN > 0.5 && (abs(gx.x) > wrapN * 0.5 || abs(gy.x) > wrapN * 0.5)) return vec2(0.0);
+    vec2 a = g * b;
+    vec2 ax = dFdx(a), ay = dFdy(a);
+    mat2 M = mat2(ax.x - c.x * gb.x, ax.y - c.y * gb.x, ay.x - c.x * gb.y, ay.y - c.y * gb.y);
+    float det = M[0][0] * M[1][1] - M[1][0] * M[0][1];
+    if (abs(det) < 1e-12) return vec2(0.0);
+    vec2 rhs = b * (c - g);
+    vec2 s = vec2(rhs.x * M[1][1] - M[1][0] * rhs.y, M[0][0] * rhs.y - rhs.x * M[0][1]) / det;
+    return clamp(s, -300.0, 300.0);
+  }
+  // Centro da célula num TRONCO (casca que corre na vertical): o plano de cada triângulo dá um ponto diferente para a mesma célula (o tronco é um prisma de poucas
+  // faces, e uma célula que cruza a junção de dois triângulos saía dividida na diagonal). Aqui o centro é calculado no CILINDRO LISO: em volta, gira-se a normal suave
+  // (contínua entre as faces) pelo ângulo que falta até o centro da célula, a partir do eixo; na vertical, a altura anda linearmente com a coordenada. Nas peças que não
+  // correm na vertical (galhos) ou sem período em volta (nx = 0), volta ao deslocamento exato do plano do triângulo.
+  float gSmoothOK = 0.0;   // 1 quando o centro da célula saiu do cálculo no cilindro liso (o mesmo para qualquer triângulo); 0 nos outros casos
+  vec3 atCellCentre(vec3 v, vec2 s);
+  void cellCentreSmooth0(vec3 P, vec3 Nn, vec2 g, vec2 c, float nx, out vec3 Pc, out vec3 Nc) {
+    gSmoothOK = 0.0;
+    vec2 s = cellShift(g, c, nx);
+    Pc = atCellCentre(P, s);
+    Nc = normalize(atCellCentre(Nn, s));
+    if (nx < 0.5) return;
+    vec2 gx = dFdx(g), gy = dFdy(g);
+    float det = gx.x * gy.y - gx.y * gy.x;
+    if (abs(det) < 1e-9 || abs(gx.x) > nx * 0.5 || abs(gy.x) > nx * 0.5) return;
+    vec3 Px = dFdx(P), Py = dFdy(P);
+    vec3 Tv = (Px * (-gy.x) + Py * gx.x) / det;        // dP / d(coordenada v da célula)
+    vec3 Tu = (Px * gy.y + Py * (-gx.y)) / det;        // dP / d(coordenada u da célula)
+    float lv = length(Tv);
+    if (lv < 1e-6 || abs(Tv.y) < 0.9 * lv || abs(Nn.y) > 0.5) return;
+    vec2 nh = Nn.xz;
+    float nl = length(nh);
+    if (nl < 0.2) return;
+    nh /= nl;
+    float r = length(Tu) * nx / 6.2831853;
+    vec2 tg = vec2(-nh.y, nh.x);
+    float sg = dot(Tu.xz, tg) >= 0.0 ? 1.0 : -1.0;
+    float ph = sg * (c.x - g.x) * 6.2831853 / nx;
+    float cp = cos(ph), sp = sin(ph);
+    vec2 nh2 = vec2(cp * nh.x - sp * nh.y, sp * nh.x + cp * nh.y);
+    vec2 axis = P.xz - r * nh;
+    vec2 pxz = axis + r * nh2;
+    Pc = vec3(pxz.x, P.y + Tv.y * (c.y - g.y), pxz.y);
+    Nc = normalize(vec3(nh2.x * nl, Nn.y, nh2.y * nl));
+    gSmoothOK = 1.0;
+  }
+  // O centro certo da célula nunca fica a mais de uns 5 cm do fragmento. Se uma 2 x 2 de pixels cruza a borda de dois triângulos, as derivadas misturam dois planos e o
+  // centro sai errado (a sombra da célula aparecia e sumia conforme a câmera): nesse caso vale o próprio fragmento.
+  void cellCentreSmooth(vec3 P, vec3 Nn, vec2 g, vec2 c, float nx, out vec3 Pc, out vec3 Nc) {
+    cellCentreSmooth0(P, Nn, g, c, nx, Pc, Nc);
+    // o limite acompanha o TAMANHO DA CÉLULA em metros (derivadas da posição por derivadas da coordenada da célula): em células grandes (árvores grandes, cerejeira) o centro
+    // fica a mais de 6,5 cm do fragmento e o limite fixo jogava o ponto de volta para o pixel, deixando a borda da sombra lisa e redonda, fora do grid
+    vec3 gPx = dFdx(P), gPy = dFdy(P);
+    vec2 gGx = dFdx(g), gGy = dFdy(g);
+    float mpc = max(length(gPx) / max(length(gGx), 1e-5), length(gPy) / max(length(gGy), 1e-5));
+    float lim = max(0.065, 1.6 * min(mpc, 0.6));
+    if (!(length(Pc - P) < lim) || !(length(Nc) > 0.5)) { Pc = P; Nc = normalize(Nn); gSmoothOK = 0.0; }
+  }
+  vec3 atCellCentre(vec3 v, vec2 s) {
+    float b = gl_FragCoord.w;
+    vec3 a = v * b;
+    float bb = b + dFdx(b) * s.x + dFdy(b) * s.y;
+    return (a + dFdx(a) * s.x + dFdy(a) * s.y) / max(bb, 1e-9);
+  }
   ${SNOW_GLSL}
 
   // Smooth value noise, for the moss: sampled only at texel centres, so its
@@ -1929,7 +2000,7 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
     float crevice;
     float hiMask;
     // texel cell for the snow edge; the lobed path swaps in its metre grid
-    vec2 snowTexel = floor(vBarkUv * vec2(48.0, 64.0));
+    vec2 snowTexel = floor(vBarkUv * vec2(textureSize(uStruct, 0)));   // (a grade real da textura, a mesma do grid: antes era 48 x 64 fixa e o musgo e a neve saíam em quadrados fora do grid)
     // Where this texel sits for the moss noise, and which way is "up the
     // wood" in that space (one texel). The lobed path wraps the texel grid
     // onto a circle so the noise runs on unbroken across the seam at angle 0.
@@ -1938,6 +2009,8 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
     // 1 down in a furrow .. 0 on a ridge's crest: moss fills the furrows first
     float mossGroove = 0.5;
 
+    vec2 cellS = vec2(0.0);
+    vec2 cellG = vec2(0.0); vec2 cellC = vec2(0.0); float cellNX = 0.0; float colsQ = 64.0;   // deslocamento em tela até o centro da célula da casca (0 fora do modo lobado)
     if (uLobedMode > 0.5 && vWood.z > 0.001) {
       // ----------------------------------------------------------------------
       // Two things have to hold at once here, and they pull against each other:
@@ -1985,12 +2058,37 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
 
       // texel grid in metres from the ACTUAL ring radius, closed to a whole
       // number of texels around: this is what keeps the pixels a constant size
-      float texelsAround = max(4.0, floor(6.2831853 * r * uTexelsPerMetre + 0.5));
 
       // slow, smooth drift so the lobes are not perfectly straight columns
       // (duas senoides em vez de sorteios por trecho de 1,8 m interpolados: o sorteio (bhash multiplica por 43758) mudava um pouco na divisa de um trecho
       // para o outro, por arredondamento da GPU, e deixava uma emenda horizontal no tronco; a senoide é contínua em qualquer altura)
-      float aw = along * 0.55;
+      // A GRADE: toda a casca é decidida por CÉLULA (texU em volta do tronco, texV na altura), no centro da célula, e não por fragmento: o desenho (sulcos, costura,
+      // deriva) só muda de uma célula para a outra, então as bordas andam em degraus de um texel, em linhas e colunas retas em volta do tronco.
+      float angleRaw = vAngleU;
+      if (dot(vBarkAngle, vBarkAngle) > 0.01) {
+        angleRaw = atan(vBarkAngle.y, vBarkAngle.x) * 0.15915494 + 0.5;
+      }
+      float alongC = (floor(along * uTexelsPerMetre) + 0.5) / uTexelsPerMetre;
+      // o número de texels em volta vem do raio NO CENTRO DA LINHA (o raio do fragmento muda de pixel em pixel e cada degrau do arredondamento deslocava a coluna: serrilhado)
+      vec2 gA = vec2(dFdx(along), dFdy(along));
+      // sem extrapolação onde a coordenada de altura quase não varia na tela (visto de cima, junções): ali a derivada é ruído e a decisão de colunas oscilava dentro da linha
+      float dRdA = dot(gA, gA) > 1e-8 ? (dFdx(r) * gA.x + dFdy(r) * gA.y) / dot(gA, gA) : 0.0;
+      float rRow = max(0.02, r + clamp((alongC - along) * dRdA, -0.006, 0.006));
+      // O número de colunas é MÚLTIPLO DE 8 vindo do raio da peça inteira (rChain) e só muda por potências de 2 conforme o raio da linha se afasta dele: em cada
+      // mudança, uma coluna larga é exatamente duas estreitas (ou o contrário), então as colunas continuam alinhadas de uma linha para a outra e não se deslocam.
+      float nBase = max(8.0, 8.0 * floor(6.2831853 * rChain * uTexelsPerMetre / 8.0 + 0.5));
+      // Colunas por potências de 2 conforme o raio da LINHA (o raio nominal do anel: constante na linha) se afasta do da peça: a célula fica entre 70% e 140% do
+      // tamanho nominal em vez de esticar onde o tronco engrossa. Em cada mudança uma coluna larga = duas estreitas, então as colunas continuam alinhadas.
+      // (colunas fixas por peça: a dobra por raio fazia a linha de mudança de largura "descer" e pular de linha conforme a câmera se mexia, pois o raio da linha é estimado por derivadas)
+      float texelsAroundG = nBase;
+      float texelsAround = texelsAroundG;
+      float angleC = (floor(angleRaw * texelsAroundG) + 0.5) / texelsAroundG;
+      {
+        vec2 cg = vec2(angleRaw * texelsAroundG, along * uTexelsPerMetre);
+        cellS = cellShift(cg, floor(cg) + 0.5, texelsAroundG);
+        colsQ = texelsAroundG; cellG = cg; cellC = floor(cg) + 0.5; cellNX = 0.0;   // (sem o caminho do cilindro liso: ele trocava de modo de pixel para pixel e cortava as células)
+      }
+      float aw = alongC * 0.55;
       float wph = uTextureSeed * 1.7;
       float wander = (sin(aw * 3.9 + wph) * 0.6 + sin(aw * 7.3 + wph * 2.3 + 1.7) * 0.4) * 0.5;
 
@@ -2002,7 +2100,7 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
         angleU = atan(vBarkAngle.y, vBarkAngle.x) * 0.15915494 + 0.5;
       }
 
-      float lobeF = angleU * lobes + wander * 0.7;
+      float lobeF = angleC * lobes + wander * 0.25;   // (jogo: a deriva dos sulcos de 0,7 para 0,25 de sulco: menos "escorrido", sulcos mais retos)
       float li = floor(lobeF);
       float t = fract(lobeF);
 
@@ -2031,7 +2129,7 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       float relief = 1.0 - 2.0 * pow(across, 0.85);
       mossGroove = clamp(0.5 - relief * 0.5, 0.0, 1.0);
 
-      idx = N1 * 0.34;
+      idx = N1 * 0.42;      // (jogo: base mais clara, de 0,34 para 0,42: mais casca na luz)
       // plates are flatter than oak ridges: the column's round relief is
       // softened so the plate marks, not the ridge, carry the drawing
       float reliefGain = uPlatedMode > 0.5 ? 0.55 : 1.0;
@@ -2048,9 +2146,9 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       float seamWidth = uPlatedMode > 0.5
         ? 0.55 + lh2 * 0.35
         : 0.9 + uBarkVariation * 0.5 + lh2 * 0.5;
-      seamWidth *= uBarkDarkCoverage * 1.6;
+      seamWidth *= uBarkDarkCoverage * 1.15;      // (jogo: costura escura mais estreita, de 1,6 para 1,15)
       if (seamTexels < seamWidth) {
-        idx -= (1.6 + uShadowStrength * 1.6) * qs;
+        idx -= (1.15 + uShadowStrength * 1.1) * qs;      // (jogo: a costura escurece menos)
         crevice = 1.0;
         hiMask = 0.0;
       }
@@ -2110,6 +2208,12 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       idx = floor(idx + 0.5);
     } else {
       // Texture path, for the bark languages that are painted on the CPU.
+      // a grade é a da própria textura (o tamanho dela, textureSize): o sombreado é lido no centro do texel
+      {
+        vec2 cg = vBarkUv * vec2(textureSize(uStruct, 0));
+        cellS = cellShift(cg, floor(cg) + 0.5, 0.0);
+        colsQ = float(textureSize(uStruct, 0).x); cellG = cg; cellC = floor(cg) + 0.5; cellNX = 0.0;
+      }
       vec4 s = texture2D(uStruct, vBarkUv);
       idx = floor(s.r * N1 + 0.5);
       plateH = s.g;
@@ -2121,9 +2225,13 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       mossGroove = 0.35 + crevice * 0.65;
     }
 
-    vec3 N = normalize(vNormal);
+    // tudo o que vem da posição ou da normal (luz, altura, sombra da copa) é lido no CENTRO da célula, e não por fragmento: assim o sombreado muda só de uma célula
+    // para a outra, em degraus, e as bordas seguem a mesma grade da casca
+    vec3 cellWP = atCellCentre(vWorldPos, cellS);
+    vec3 N = normalize(atCellCentre(vNormal, cellS));
+    if (cellNX > 0.5) { vec3 nc; cellCentreSmooth(vWorldPos, normalize(vNormal), cellG, cellC, cellNX, cellWP, nc); N = nc; }
     float ndl = dot(N, normalize(uTexLightDir));
-    float heightN = clamp((vWorldPos.y - uRootY) / max(1.0, uTreeHeight), 0.0, 1.0);
+    float heightN = clamp((cellWP.y - uRootY) / max(1.0, uTreeHeight), 0.0, 1.0);
     // The dark well between the roots: only the downward-facing surfaces of the
     // buttress flare, and only very close to the ground.
     float rootWell = (1.0 - smoothstep(0.0, 0.08, heightN))
@@ -2142,23 +2250,23 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       // they climb into the leaves and their tips at the rim stay lit. The
       // trunk below the crown sits outside the mass and is untouched.
       vec3 q = vec3(
-        vWorldPos.x / max(0.5, uCrownRadius),
-        (vWorldPos.y - uCrownCenterY) / max(0.5, uCrownRadiusY),
-        vWorldPos.z / max(0.5, uCrownRadius));
+        cellWP.x / max(0.5, uCrownRadius),
+        (cellWP.y - uCrownCenterY) / max(0.5, uCrownRadiusY),
+        cellWP.z / max(0.5, uCrownRadius));
       crownCover = (1.0 - smoothstep(0.35, 1.0, length(q))) * uCrownShade;
     } else if (uCrownShade > 0.001) {
-      float ch = (vWorldPos.y - uCrownBottomY) / max(0.5, uCrownTopY - uCrownBottomY);
+      float ch = (cellWP.y - uCrownBottomY) / max(0.5, uCrownTopY - uCrownBottomY);
       // eased in over the lower part of the crown: the needles thicken
       // gradually, and a short ramp drew a hard dark band across the trunk
       float band = smoothstep(-0.2, 0.3, ch) * (1.0 - smoothstep(0.86, 1.0, ch));
       float tierR = max(0.4, uCrownRadius * pow(max(0.05, 1.0 - 0.76 * clamp(ch, 0.0, 1.0)), 0.82));
-      float radialF = length(vWorldPos.xz) / tierR;
+      float radialF = length(cellWP.xz) / tierR;
       crownCover = band * (1.0 - smoothstep(0.45, 1.05, radialF)) * uCrownShade;
     }
 
     float tone =
         ndl * 1.10 * (1.0 - crownCover * 0.75)   // the sun barely reaches it
-      - crevice * (1.05 + uShadowStrength * 1.5)
+      - crevice * (0.7 + uShadowStrength * 1.0)
       - rootWell * (0.9 + uShadowStrength * 0.8)
       + (heightN - 0.30) * 0.50
       + hiMask * uHighlightAmount * 0.80 * (1.0 - crownCover)
@@ -2201,7 +2309,7 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
     float up = clamp(N.y, 0.0, 1.0);
     // capped, so even the mossiest roots (Korok, mangrove) stay a patchwork
     // of cushions with bark between them instead of one green lawn
-    float mossWant = min(0.5,
+    float mossWant = min(0.38,
         pow(1.0 - heightN, 2.2) * (0.1 + damp * 0.45 + up * 0.3) * uMossAmount * 2.0
       + crevice * 0.15 * uMossAmount)
       * (0.55 + mossGroove * 0.9);
@@ -2211,11 +2319,13 @@ export const PIXEL_BARK_FRAGMENT_SHADER = /* glsl */ `
       bool topEdge = mossField(mossP + mossUp) >= mossWant;
       bool bottomEdge = mossField(mossP - mossUp) >= mossWant;
       // tone varies across a cushion in soft patches, not texel by texel
-      float mi = N1 * 0.35 + (ndl > 0.15 ? qs * 0.8 : -qs * 0.6) - crownCover * qs * 1.5
-               + (mnoise3(mossP / 3.0 + 41.0) - 0.5) * qs * 1.6
-               + (0.5 - mossGroove) * qs * 2.4;              // crests lighter, furrows darker
-      if (topEdge) mi += qs * 1.0;
-      if (bottomEdge) mi -= qs * 1.2;
+      // (jogo: musgo mais claro e com menos contraste, para não virar buraco preto no meio da casca iluminada)
+      float mi = N1 * 0.5 + (ndl > 0.15 ? qs * 0.8 : -qs * 0.3) - crownCover * qs * 1.0
+               + (mnoise3(mossP / 3.0 + 41.0) - 0.5) * qs * 1.0
+               + (0.5 - mossGroove) * qs * 1.2;              // crests lighter, furrows darker
+      if (topEdge) mi += qs * 0.8;
+      if (bottomEdge) mi -= qs * 0.6;
+      mi = max(mi, N1 * 0.3);
       idx = clamp(floor(mi + 0.5), 0.0, N1);
     }
 

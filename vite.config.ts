@@ -8,12 +8,12 @@ import { join, relative } from 'node:path';
  * (chunkCache.ts) a usa como parte da chave, então qualquer mudança nesses arquivos descarta os chunks guardados em vez de mostrar relevo velho.
  * Fica fora dela o que não muda o resultado (sombreadores, desenho das árvores, interface).
  */
-const GEN_DIRS = ['terrain', 'ecology', 'hydrology', 'geography', 'volcanology', 'geothermal', 'ice', 'math', 'seed', 'landmarks'];
+const GEN_DIRS = ['terrain', 'ecology', 'hydrology', 'geography', 'volcanology', 'geothermal', 'ice', 'math', 'seed', 'landmarks', 'settlements'];
 const GEN_FILES = ['src/config.ts', 'src/generation/types.ts', 'src/generation/vegetation/vegetationPlanner.ts', 'src/generation/vegetation/pixelTrees/oreAssign.ts'];
 const VIRTUAL = 'virtual:gen-hash';
 const RESOLVED = '\0' + VIRTUAL;
 // os arquivos desses diretórios que só desenham (não entram na geração): fora da impressão
-const SKIP = /(chunk\.ts|chunkManager\.ts|horizonTerrain\.ts|terrainHeightField\.ts|textureUploadQueue\.ts|textureWorkerPool\.ts|textureForge\.worker\.ts)$/;
+const SKIP = /(chunk\.ts|chunkManager\.ts|horizonTerrain\.ts|terrainHeightField\.ts|textureUploadQueue\.ts|textureWorkerPool\.ts|textureForge\.worker\.ts|builder\.ts|settlementManager\.ts|settlement\.worker\.ts)$/;
 
 function walk(dir: string, out: string[]): void {
   for (const name of readdirSync(dir)) {

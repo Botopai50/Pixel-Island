@@ -1,0 +1,2 @@
+import type {AccessSpec} from '../types';import {box,merge} from './common';
+export function buildStairs(a:AccessSpec){const dx=a.to[0]-a.from[0],dz=a.to[2]-a.from[2],height=a.to[1]-a.from[1],length=Math.hypot(dx,dz),count=Math.max(1,Math.ceil(Math.abs(height)/.2)),parts=[];for(let i=0;i<count;i++){const t=(i+.5)/count,h=height*(i+1)/count;const g=box([0,a.from[1]+h/2,0],[a.width,Math.abs(h),length/count+.001]);g.rotateY(Math.atan2(dx,dz));g.translate(a.from[0]+dx*t,0,a.from[2]+dz*t);parts.push(g);}return merge(parts);}

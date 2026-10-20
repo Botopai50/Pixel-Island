@@ -3,7 +3,10 @@ import { PRNG } from '../math/prng.ts';
 import { TerrainPoint, BiomeType } from '../types.ts';
 import { CONFIG } from '../../config.ts';
 import { landmarksNear } from '../landmarks/landmarkPlanner.ts';
+import { insideSettlement } from '../settlements/settlementField.ts';
 import { oreAt } from './pixelTrees/oreAssign.ts';
+import { rockBiomeForSpecies } from './pixelTrees/constants/rockBiomes.ts';
+import { BIOME_TYPE_TO_FORGE, B_MANGROVE } from '../terrain/terrainTextureForge.ts';
 
 /**
  * Onde vai cada árvore, pedra, arbusto, tronco e flor de um chunk. Separado do VegetationManager
@@ -20,6 +23,15 @@ export interface ITerrainQueryable {
 
 /** Só a altura (a mesma de getPointFast(x, z).height, sem a inclinação, a água e o bioma: ~4x mais barato) */
 const hAt = (g: ITerrainQueryable, x: number, z: number): number => g.getHeight ? g.getHeight(x, z) : g.getPointFast!(x, z).height;
+
+/** Inclinação do chão EXATAMENTE onde a planta cai (o sorteio olha só a inclinação do ponto da grade, e a folha ou flor sorteada a metros dali pode cair num barranco) e a normal dele. */
+const groundTilt = (g: ITerrainQueryable, x: number, z: number): { slope: number; normal: THREE.Vector3 } => {
+  const e = 0.5;
+  const gx = (hAt(g, x + e, z) - hAt(g, x - e, z)) / (2 * e), gz = (hAt(g, x, z + e) - hAt(g, x, z - e)) / (2 * e);
+  return { slope: Math.hypot(gx, gz), normal: new THREE.Vector3(-gx, 1, -gz).normalize() };
+};
+const UP = new THREE.Vector3(0, 1, 0);
+const FLAT_MAX_SLOPE = 0.4;
 
 export interface TreeTransformItem {
   matrix: THREE.Matrix4;
@@ -44,6 +56,32 @@ export function groveAt(wx: number, wz: number, biomeType: BiomeType, moisture: 
   const korokOk = biomeType === BiomeType.TROPICAL_RAINFOREST || biomeType === BiomeType.TEMPERATE_FOREST || biomeType === BiomeType.BOREAL_TAIGA;
   if (korokOk && moisture > 0.45 && gnoise(wx / 300, wz / 300, 2) > 0.78) return 'korok';
   return null;
+}
+
+/**
+ * Troncos e tocos do Pixel_Tree: um para cada madeira (a preset de cada árvore gera as quatro formas). A madeira de um tronco é a de uma das árvores do bioma,
+ * sorteada pelo peso dela, e nos bosques de cerejeira e de árvores ancestrais é a delas. Sai da posição (e não do sorteio do planejador), então escolher a
+ * madeira não muda o resto do mundo.
+ */
+const LOG_WOOD_OF: Record<string, string[]> = {
+  oak: ['hyrule_oak'], pine: ['hebra_pine'], birch: ['akkala_birch'], coastalPalm: ['faron_palm'], acacia: ['savanna_acacia'],
+  autumnMaple: ['maple_red', 'maple_orange', 'maple_yellow'], mangrove: ['swamp_mangrove'], deadBurntTree: ['dry_withered'],
+  snowPine: ['hebra_pine_snowy'], arcticWillow: ['hebra_pine_snowy'], cactus: ['dry_withered'],
+};
+function logWoodAt(wx: number, wz: number, biomeType: BiomeType, moisture: number, dist: Record<string, number | undefined>, fallback: string): string {
+  const sp = specialTree(wx, wz, biomeType, moisture);
+  if (sp) return sp === 'sakura' ? 'satori_sakura' : 'korok_ancient';
+  let total = 0;
+  for (const k in LOG_WOOD_OF) total += dist[k] || 0;
+  if (total <= 0) return fallback;
+  let r = gh(wx * 6.7, wz * 2.3, 31) * total;
+  for (const k in LOG_WOOD_OF) {
+    const w = dist[k] || 0;
+    if (w <= 0) continue;
+    if (r < w) { const woods = LOG_WOOD_OF[k]; return woods[Math.min(woods.length - 1, Math.floor(gh(wx * 1.9, wz * 8.1, 17) * woods.length))]; }
+    r -= w;
+  }
+  return fallback;
 }
 
 function specialTree(wx: number, wz: number, biomeType: BiomeType, moisture: number): 'sakura' | 'korok' | null {
@@ -101,7 +139,6 @@ export function* planChunkVegetationGen(
   const korokItems: TreeTransformItem[] = [];
   const lilyTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
   const petalTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-  const lanternTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
   const barrelTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
   const pearTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
   const tumbleTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
@@ -175,10 +212,10 @@ export function* planChunkVegetationGen(
   const rockMossyTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
 
   // Madeira e Troncos Caídos Variados (4 Formatos)
-  const logHollowTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-  const logRootedTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-  const logStumpTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
-  const logStraightTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
+  const logHollowTransforms: { matrix: THREE.Matrix4; tint: THREE.Color; wood?: string; pal?: number }[] = [];
+  const logRootedTransforms: { matrix: THREE.Matrix4; tint: THREE.Color; wood?: string; pal?: number }[] = [];
+  const logStumpTransforms: { matrix: THREE.Matrix4; tint: THREE.Color; wood?: string; pal?: number }[] = [];
+  const logStraightTransforms: { matrix: THREE.Matrix4; tint: THREE.Color; wood?: string; pal?: number }[] = [];
 
   // Sub-bosque e Flora Rasteira
   const fernTransforms: { matrix: THREE.Matrix4; tint: THREE.Color }[] = [];
@@ -211,6 +248,12 @@ export function* planChunkVegetationGen(
     for (const l of landmarks) if ((x - l.x) ** 2 + (z - l.z) ** 2 < l.radius * l.radius) return true;
     return false;
   };
+  // cidades: a vegetação natural deixa livre a área construída (a cidade planta as próprias árvores)
+  const towns = CONFIG.SETTLEMENTS_ENABLED && tgAny.settlements ? tgAny.settlements.near(startX, startZ, startX + chunkSize, startZ + chunkSize) : [];
+  const inTown = (x: number, z: number) => {
+    for (const e of towns) if (insideSettlement(e, x, z, 2.5)) return true;
+    return false;
+  };
 
   for (let ix = 0; ix < steps; ix++) {
     for (let iz = 0; iz < steps; iz++) {
@@ -220,6 +263,7 @@ export function* planChunkVegetationGen(
       const wx = startX + (ix + 0.5) * sampleStep + jx;
       const wz = startZ + (iz + 0.5) * sampleStep + jz;
       if (landmarks.length && inLandmark(wx, wz)) continue;
+      if (towns.length && inTown(wx, wz)) continue;
 
       const pt: TerrainPoint = terrainGen.getPointFast ? terrainGen.getPointFast(wx, wz) : terrainGen.getPoint(wx, wz);
 
@@ -255,7 +299,7 @@ export function* planChunkVegetationGen(
               dummy.rotation.set(flora.range(-0.06, 0.06), flora.range(0, Math.PI * 2), flora.range(-0.06, 0.06));
               dummy.scale.set(lsc, lsc, lsc);
               dummy.updateMatrix();
-              logStraightTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x3a2e22) });
+              logStraightTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x3a2e22), wood: 'swamp_mangrove', pal: B_MANGROVE });
             } else if (flora.chance(0.28)) {   // (era 0.09: depois de juncos, lentilha e troncos sobrava ~5% e elas eram raras)
               flora.range(0.8, 1.5);
               const ls = 1;
@@ -318,6 +362,7 @@ export function* planChunkVegetationGen(
           const fx = wx + flora.range(-J2, J2), fz = wz + flora.range(-J2, J2);
           const fh = terrainGen.getPointFast ? hAt(terrainGen, fx, fz) : pt.height;
           if (fh <= CONFIG.SEA_LEVEL + 0.1) continue;
+          if (groundTilt(terrainGen, fx, fz).slope > FLAT_MAX_SLOPE) continue;   // nada de flor nascendo no barranco
           const wScale = flora.range(1.0, 1.25);   // quase 1: esticar a instância esticaria também os pixels (o tamanho da flor vem do desenho)
           const hScale = wScale * flora.range(0.62, 0.74);   // altura: o caule fica mais curto que o natural
           dummy.position.set(fx, fh + 0.02, fz);
@@ -392,7 +437,7 @@ export function* planChunkVegetationGen(
           }
         }
       }
-      // Bosque de cerejeiras: tapetes de pétalas no chão, flores cor-de-rosa e lanternas de pedra
+      // Bosque de cerejeiras: tapetes de pétalas no chão, flores cor-de-rosa
       if (enableDetailFlora && biome.type === BiomeType.SAKURA_GROVE && pt.slope < 0.5) {
         const J = sampleStep * 0.45;
         const put = (list: { matrix: THREE.Matrix4; tint: THREE.Color }[], s: number, tint: THREE.Color, yawRange = Math.PI * 2, dy = 0.0) => {
@@ -405,9 +450,8 @@ export function* planChunkVegetationGen(
           list.push({ matrix: dummy.matrix.clone(), tint });
         };
         // folhas secas caídas (do Pixel_Tree) no lugar dos tapetes de pétalas
-        for (let k = 0; k < 3; k++) if (flora.chance(0.40)) { const lx = wx + flora.range(-J, J), lz = wz + flora.range(-J, J); dummy.position.set(lx, (terrainGen.getPointFast ? hAt(terrainGen, lx, lz) : pt.height) + 0.01, lz); dummy.scale.set(1, 1, 1); dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0); dummy.updateMatrix(); shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_satori' }); }
+        for (let k = 0; k < 3; k++) if (flora.chance(0.40)) { const lx = wx + flora.range(-J, J), lz = wz + flora.range(-J, J); const lt = groundTilt(terrainGen, lx, lz); if (lt.slope > FLAT_MAX_SLOPE) continue; dummy.position.set(lx, (terrainGen.getPointFast ? hAt(terrainGen, lx, lz) : pt.height) + 0.01, lz); dummy.scale.set(1, 1, 1); dummy.quaternion.setFromUnitVectors(UP, lt.normal).multiply(new THREE.Quaternion().setFromAxisAngle(UP, flora.range(0, Math.PI * 2))); dummy.updateMatrix(); shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_satori' }); }
         for (let k = 0; k < 2; k++) if (flora.chance(0.30)) put(wildflowerTransforms, flora.range(0.9, 1.4), new THREE.Color(0xf6a6c8), Math.PI * 2, -0.02);
-        if (flora.chance(0.025)) put(lanternTransforms, 1, new THREE.Color(1, 1, 1), Math.PI * 2, -0.04)   // escala 1: as células de pixel têm o tamanho da densidade do jogo (stoneLanternParts.ts);
       }
 
       // Folhas secas caídas no chão das florestas (cada clima com as suas)
@@ -425,11 +469,14 @@ export function* planChunkVegetationGen(
         }
         if (lk && flora.chance(lc)) {
           const lx = wx + flora.range(-2.4, 2.4), lz = wz + flora.range(-2.4, 2.4);
-          dummy.position.set(lx, (terrainGen.getPointFast ? hAt(terrainGen, lx, lz) : pt.height) + 0.01, lz);
-          dummy.scale.set(1, 1, 1);
-          dummy.rotation.set(0, flora.range(0, Math.PI * 2), 0);
-          dummy.updateMatrix();
-          shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_' + lk });
+          const lt = groundTilt(terrainGen, lx, lz);
+          if (lt.slope <= FLAT_MAX_SLOPE) {   // a folha deitada acompanha o chão, e não fica espetada no barranco
+            dummy.position.set(lx, (terrainGen.getPointFast ? hAt(terrainGen, lx, lz) : pt.height) + 0.01, lz);
+            dummy.scale.set(1, 1, 1);
+            dummy.quaternion.setFromUnitVectors(UP, lt.normal).multiply(new THREE.Quaternion().setFromAxisAngle(UP, flora.range(0, Math.PI * 2)));
+            dummy.updateMatrix();
+            shrubItems.push({ matrix: dummy.matrix.clone(), kind: 'leaves_' + lk });
+          }
         }
       }
 
@@ -488,10 +535,11 @@ export function* planChunkVegetationGen(
           dummy.scale.set(logScale, logScale, logScale);
           dummy.rotation.set(0, prng.range(0, Math.PI * 2), 0);
           dummy.updateMatrix();
+          const beachWood = logWoodAt(wx, wz, biome.type, biome.moisture, biome.treeTypeDistribution as Record<string, number | undefined>, 'faron_palm');
           if (prng.chance(0.60)) {
-            logHollowTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x4a3c30) });
+            logHollowTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x4a3c30), wood: beachWood, pal: BIOME_TYPE_TO_FORGE[biome.type] ?? 0 });
           } else {
-            logRootedTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x4a3c30) });
+            logRootedTransforms.push({ matrix: dummy.matrix.clone(), tint: new THREE.Color(0x4a3c30), wood: beachWood, pal: BIOME_TYPE_TO_FORGE[biome.type] ?? 0 });
           }
         }
         continue;
@@ -510,6 +558,43 @@ export function* planChunkVegetationGen(
         continue;
       }
 
+      // PENHASCOS E BARRANCOS: o topo de um barranco ganha uns afloramentos de rocha na beira (a rocha aparece onde o chão se rompe) e o pé dele ganha
+      // pedras caídas (tálus). Só nos pontos do chão que ainda são planos (a parede em si não leva nada) e com sorteio baixo.
+      if (enableDetailFlora && !isBeach && pt.slope < 0.42 && pt.height > CONFIG.SEA_LEVEL + 1.5 && biome.type !== BiomeType.DESERT_DUNES && flora.chance(0.09)) {
+        const D4: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        let dropDir = -1, dropMax = 0, riseDir = -1, riseMax = 0;
+        for (let k = 0; k < 4; k++) {
+          const dh = hAt(terrainGen, wx + D4[k][0] * 3.0, wz + D4[k][1] * 3.0) - pt.height;
+          if (-dh > dropMax) { dropMax = -dh; dropDir = k; }
+          if (dh > riseMax) { riseMax = dh; riseDir = k; }
+        }
+        const rockTint = () => new THREE.Color(0x8a8e92).multiplyScalar(flora.range(0.88, 1.08));
+        const pushRock = (list: { matrix: THREE.Matrix4; tint: THREE.Color }[], px: number, pz: number, sc: number, sink: number) => {
+          const q = groundTilt(terrainGen, px, pz);
+          if (q.slope > 0.5) return;
+          dummy.position.set(px, hAt(terrainGen, px, pz) - sink * sc, pz);
+          dummy.scale.set(sc * flora.range(0.9, 1.3), sc * flora.range(0.6, 0.9), sc * flora.range(0.9, 1.3));
+          dummy.quaternion.setFromUnitVectors(UP, q.normal).multiply(new THREE.Quaternion().setFromAxisAngle(UP, flora.range(0, Math.PI * 2)));
+          dummy.updateMatrix();
+          list.push({ matrix: dummy.matrix.clone(), tint: rockTint() });
+        };
+        if (dropMax > 2.2) {
+          // beira do barranco: duas ou três pedras encostadas na borda, para dentro (1,2 a 2 m), e uma pedrinha solta
+          const [ux, uz] = D4[dropDir];
+          const along = (flora.next() - 0.5) * 3.0;
+          const inX = wx - ux * flora.range(1.2, 2.0) + uz * along, inZ = wz - uz * flora.range(1.2, 2.0) + ux * along;
+          pushRock(flora.chance(0.5) ? rockSlateTransforms : rockBoulderTransforms, inX, inZ, flora.range(0.55, 0.95), 0.2);
+          if (flora.chance(0.6)) pushRock(rockPebblesTransforms, inX + flora.range(-1, 1), inZ + flora.range(-1, 1), flora.range(0.5, 0.9), 0.05);
+        } else if (riseMax > 2.4) {
+          // pé do barranco: pedras caídas da parede, espalhadas para longe dela
+          const [ux, uz] = D4[riseDir];
+          const n = 2 + Math.floor(flora.range(0, 3));
+          for (let j = 0; j < n; j++) {
+            const dist = flora.range(0.4, 2.8), side = flora.range(-2.0, 2.0);
+            pushRock(j === 0 && flora.chance(0.5) ? rockBoulderTransforms : rockPebblesTransforms, wx - ux * dist + uz * side, wz - uz * dist + ux * side, flora.range(0.45, 0.9), 0.08);
+          }
+        }
+      }
       const canTree = pt.slope <= CONFIG.VEGETATION.MAX_SLOPE_FOR_TREES;
       let treeChance = canTree ? biome.vegetationDensity * 0.75 : 0;
       // (o deserto tem bem menos arbustos: ficam espaçados)
@@ -527,9 +612,16 @@ export function* planChunkVegetationGen(
       // casca se esticava até o chão. Mede o desnível a 1,6 m do pé nos 4 lados: acima de 0,7 m a árvore não nasce (o sorteio cai nas outras coisas).
       // (o plano é o mesmo do horizonte, então as árvores distantes também não nascem ali)
       if (roll < treeChance) {
-        const h0 = pt.height, R = 1.6;
+        const h0 = pt.height;
         const hh = (dx: number, dz: number) => terrainGen.getPointFast ? hAt(terrainGen, wx + dx, wz + dz) : terrainGen.getPoint(wx + dx, wz + dz).height;
-        if (Math.max(Math.abs(hh(R, 0) - h0), Math.abs(hh(-R, 0) - h0), Math.abs(hh(0, R) - h0), Math.abs(hh(0, -R) - h0)) > 0.7) treeChance = 0;
+        // 8 direções, em dois raios: o pé (raízes, ~1,1 m) e a copa baixa (2,2 m). O barranco que cai para um lado só (a borda do platô) passa pelos 4 lados
+        // de 1,6 m sem acusar desnível: as raízes ficavam na beira, com a parede ao lado
+        const D8: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1], [0.7071, 0.7071], [-0.7071, 0.7071], [0.7071, -0.7071], [-0.7071, -0.7071]];
+        let ledge = false;
+        for (const [ux, uz] of D8) {
+          if (Math.abs(hh(ux * 1.1, uz * 1.1) - h0) > 0.4 || Math.abs(hh(ux * 2.2, uz * 2.2) - h0) > 0.85) { ledge = true; break; }
+        }
+        if (ledge) treeChance = 0;
       }
 
       if (roll < treeChance) {
@@ -570,8 +662,10 @@ export function* planChunkVegetationGen(
 
         // VEGETAÇÃO DO INTERIOR
         const isSapling = prng.chance(0.24);
-        const heightScale = prng.range(0.90, 1.22);
-        const widthScale = prng.range(0.90, 1.18);
+        // andar de altitude: as árvores ficam mais baixas e tortas perto da linha das árvores (mata de montanha, e não de planície)
+        const alt = biome.altitude ?? 0;
+        const heightScale = prng.range(0.90, 1.22) * (1 - 0.42 * alt);
+        const widthScale = prng.range(0.90, 1.18) * (1 - 0.16 * alt);
         const yaw = prng.range(0, Math.PI * 2);
 
         const treeEmbed = Math.max(0.06, pt.slope * 0.15);   // as raízes se esticam até o chão no shader (ver gameTrees.ts)
@@ -603,7 +697,9 @@ export function* planChunkVegetationGen(
             shrubItems.push({ matrix: dummy.matrix.clone(), kind: special === 'sakura' ? 'sakuraSapling' : 'korokSapling' });
             continue;
           }
-          dummy.scale.set(widthScale * 1.05, heightScale, widthScale * 1.05);
+          // cerejeira e árvore ancestral são as árvores grandes do bosque: 1,5x o tamanho das comuns (eram pequenas perto do carvalho)
+          const bigSpecial = 1.5;
+          dummy.scale.set(widthScale * 1.05 * bigSpecial, heightScale * bigSpecial, widthScale * 1.05 * bigSpecial);
           dummy.updateMatrix();
           (special === 'sakura' ? sakuraItems : korokItems).push({
             matrix: dummy.matrix.clone(),
@@ -894,14 +990,19 @@ export function* planChunkVegetationGen(
 
         const logTint = new THREE.Color(0x6a5442).multiplyScalar(prng.range(0.85, 1.15));
         const logPick = prng.next();
+        const logWood = logWoodAt(wx, wz, biome.type, biome.moisture, biome.treeTypeDistribution as Record<string, number | undefined>, 'hyrule_oak');
+        const logPal = BIOME_TYPE_TO_FORGE[biome.type] ?? 0;   // o chão do tronco (relva, terra) na paleta do bioma onde ele nasceu
         if (logPick < 0.38) {
-          logHollowTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
+          logHollowTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint, wood: logWood, pal: logPal });
         } else if (logPick < 0.65) {
-          logRootedTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
+          logRootedTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint, wood: logWood, pal: logPal });
         } else if (logPick < 0.88) {
-          logStumpTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
+          // o toco fica em pé (só gira): inclinado pela normal do terreno ele ficava torto na encosta; quem acompanha o chão são as raízes (no shader, pelo mapa de alturas),
+          // e na encosta ele afunda um pouco mais para o lado de cima não ficar com o corte no ar
+          const stumpPos = dummy.position.clone().add(new THREE.Vector3(0, -Math.min(0.3, pt.slope * 0.25) * logScale, 0));
+          logStumpTransforms.push({ matrix: new THREE.Matrix4().compose(stumpPos, yawQuat, dummy.scale), tint: logTint, wood: logWood, pal: logPal });
         } else {
-          logStraightTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint });
+          logStraightTransforms.push({ matrix: dummy.matrix.clone(), tint: logTint, wood: logWood, pal: logPal });
         }
       } else {
         // 5. SUB-BOSQUE E FLORA RASTEIRA NAS CLAREIRAS
@@ -995,10 +1096,16 @@ export function* planChunkVegetationGen(
     }
   }
   // troncos e tocos do Pixel_Tree (no tamanho do desenho: esticar a instância esticaria os pixels)
+  // o chão (relva, terra) e a pedra presa nas raízes do tronco seguem o bioma do lugar: o sufixo @paleta~pedra só aparece quando difere do padrão da madeira
+  const logGround = (wood: string, pal: number, x: number, z: number): string => {
+    const bk = rockBiomeKeyAt(x, z);
+    const rk = bk !== rockBiomeForSpecies(wood as never) ? bk : '';
+    return pal || rk ? '@' + pal + (rk ? '~' + rk : '') : '';
+  };
   const logSets: [typeof logHollowTransforms, string][] = [[logHollowTransforms, 'logHollow'], [logRootedTransforms, 'logRooted'], [logStumpTransforms, 'logStump'], [logStraightTransforms, 'logFallen']];
   const lp = new THREE.Vector3(), lq = new THREE.Quaternion(), ls1 = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
   for (const [list, lk] of logSets) {
-    for (const it of list) { it.matrix.decompose(lp, lq, ls1); shrubItems.push({ matrix: new THREE.Matrix4().compose(lp, lq, one), kind: lk }); }
+    for (const it of list) { it.matrix.decompose(lp, lq, ls1); shrubItems.push({ matrix: new THREE.Matrix4().compose(lp, lq, one), kind: it.wood ? lk + '_' + it.wood + logGround(it.wood, it.pal ?? 0, lp.x, lp.z) : lk }); }
     list.length = 0;
   }
   for (const it of fernTransforms) shrubItems.push({ matrix: it.matrix, kind: 'fernPlant' });
@@ -1010,13 +1117,47 @@ export function* planChunkVegetationGen(
   }
   fernTransforms.length = 0; reedTransforms.length = 0; wildflowerTransforms.length = 0;
 
+  // Pedra e tronco caído são sólidos que apoiam no chão por TODA a base: o sorteio só olha a inclinação do ponto central, e a peça caía com um lado
+  // dentro da parede de um barranco e o outro no ar. Mede o desnível do chão debaixo da peça (centro e 8 pontos em volta): pedra e tronco não nascem
+  // onde passa do limite, e a pedra que fica em chão torto afunda um pouco do lado alto, em vez de flutuar do lado baixo.
+  {
+    const spread = (x: number, z: number, r: number): number => {
+      let lo = hAt(terrainGen, x, z), hi = lo;
+      for (let k = 0; k < 8; k++) {
+        const a = k * Math.PI / 4, h = hAt(terrainGen, x + Math.cos(a) * r, z + Math.sin(a) * r);
+        if (h < lo) lo = h; if (h > hi) hi = h;
+      }
+      return hi - lo;
+    };
+    for (let i = shrubItems.length - 1; i >= 0; i--) {
+      const s = shrubItems[i], k = s.kind;
+      const isRockK = k.startsWith('rock_') || k.startsWith('ore_'), isLogK = /^log(Fallen|Hollow|Rooted)/.test(k);
+      if (!isRockK && !isLogK) continue;
+      const e = s.matrix.elements;
+      const sc = Math.min(1.8, Math.max(0.6, Math.hypot(e[0], e[1], e[2]) || 1));
+      const sp = spread(e[12], e[14], isLogK ? 2.0 : (k.startsWith('ore_') ? 1.5 : 1.2) * sc);
+      if (sp > (isLogK ? 0.7 : 0.9)) { shrubItems.splice(i, 1); continue; }
+      if (isRockK && sp > 0.3) e[13] -= (sp - 0.3) * 0.5;
+    }
+    // as pedras das listas próprias (rochedos, lajes, agulhas, pedras com musgo) seguem a mesma regra
+    for (const list of [rockBoulderTransforms, rockSlateTransforms, rockSpireTransforms, rockMossyTransforms]) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        const e = list[i].matrix.elements;
+        const sc = Math.min(2.2, Math.max(0.6, Math.hypot(e[0], e[1], e[2]) || 1));
+        const sp = spread(e[12], e[14], 1.3 * sc);
+        if (sp > 1.0) { list.splice(i, 1); continue; }
+        if (sp > 0.3) e[13] -= (sp - 0.3) * 0.5;
+      }
+    }
+  }
+
   // Nada de planta, pedra ou tronco "dentro" de outra coisa: arbustos, samambaias, flores, mudas e juncos saem de perto de
   // troncos, cactos, pedras e troncos caídos; pedras e troncos caídos saem de perto dos troncos das árvores
   {
     type Ob = { x: number; z: number; r: number };
     const trunks: Ob[] = [];
     for (const [list] of [[oakItems], [broadOakItems], [pineItems], [birchItems], [twinBirchItems], [palmItems], [acaciaItems], [mapleItems], [mangroveItems], [snowPineItems], [arcticWillowItems], [sakuraItems], [korokItems], [deadTreeTransforms]] as { matrix: THREE.Matrix4 }[][][]) {
-      for (const it of list) { const e = it.matrix.elements; trunks.push({ x: e[12], z: e[14], r: 1.15 * Math.min(1.6, Math.max(0.7, Math.hypot(e[0], e[1], e[2]) || 1)) }); }
+      for (const it of list) { const e = it.matrix.elements; trunks.push({ x: e[12], z: e[14], r: 1.5 * Math.min(1.6, Math.max(0.7, Math.hypot(e[0], e[1], e[2]) || 1)) }); }
     }
     for (const it of cactusTransforms) { const e = it.matrix.elements; trunks.push({ x: e[12], z: e[14], r: 0.8 }); }
     const hit = (x: number, z: number, pad: number, list: Ob[]): boolean => {
@@ -1025,6 +1166,10 @@ export function* planChunkVegetationGen(
     };
     const isRock = (k: string) => k.startsWith('rock_') || k.startsWith('ore_'), isLog = (k: string) => k.startsWith('log');
     const isPlant = (k: string) => k.startsWith('shrub') || k.startsWith('flowers_') || k === 'fernPlant' || k === 'reedClump' || k.endsWith('Sapling') || k.startsWith('gravel_') || k.startsWith('leaves_');
+    // as listas próprias (troncos caídos, tocos, rochedos, lajes, agulhas, samambaias, flores e juncos) também saem de perto dos troncos das árvores
+    for (const [list, pad] of [[logHollowTransforms, 1.8], [logRootedTransforms, 1.8], [logStumpTransforms, 0.8], [logStraightTransforms, 1.8], [rockBoulderTransforms, 1.0], [rockSlateTransforms, 1.0], [rockSpireTransforms, 1.0], [rockMossyTransforms, 1.0], [rockPebblesTransforms, 0.3], [fernTransforms, 0.5], [wildflowerTransforms, 0.5], [reedTransforms, 0.4]] as [{ matrix: THREE.Matrix4 }[], number][]) {
+      for (let i = list.length - 1; i >= 0; i--) { const e = list[i].matrix.elements; if (hit(e[12], e[14], pad, trunks)) list.splice(i, 1); }
+    }
     // pedras e troncos caídos primeiro (saem de perto dos troncos), depois eles viram obstáculos das plantas
     const solids: Ob[] = [];
     for (let i = shrubItems.length - 1; i >= 0; i--) {
@@ -1054,7 +1199,7 @@ export function* planChunkVegetationGen(
   }
   rockRingFerns.length = 0;
 
-  return { oakItems, broadOakItems, oakSaplingItems, pineItems, pineSaplingItems, birchItems, twinBirchItems, birchSaplingItems, palmItems, palmSaplingItems, acaciaItems, acaciaSaplingItems, mapleItems, mangroveItems, mangroveSaplingItems, snowPineItems, arcticWillowItems, sakuraItems, korokItems, deadTreeTransforms, cactusTransforms, cactusSaplingTransforms, shrubItems, rockBoulderTransforms, rockSlateTransforms, rockPebblesTransforms, rockSpireTransforms, rockMossyTransforms, logHollowTransforms, logRootedTransforms, logStumpTransforms, logStraightTransforms, fernTransforms, wildflowerTransforms, reedTransforms, lilyTransforms, duckTransforms, moundTransforms, barrelTransforms, pearTransforms, tumbleTransforms, petalTransforms, lanternTransforms };
+  return { oakItems, broadOakItems, oakSaplingItems, pineItems, pineSaplingItems, birchItems, twinBirchItems, birchSaplingItems, palmItems, palmSaplingItems, acaciaItems, acaciaSaplingItems, mapleItems, mangroveItems, mangroveSaplingItems, snowPineItems, arcticWillowItems, sakuraItems, korokItems, deadTreeTransforms, cactusTransforms, cactusSaplingTransforms, shrubItems, rockBoulderTransforms, rockSlateTransforms, rockPebblesTransforms, rockSpireTransforms, rockMossyTransforms, logHollowTransforms, logRootedTransforms, logStumpTransforms, logStraightTransforms, fernTransforms, wildflowerTransforms, reedTransforms, lilyTransforms, duckTransforms, moundTransforms, barrelTransforms, pearTransforms, tumbleTransforms, petalTransforms };
 }
 
 export type ChunkVegetationPlan = ReturnType<typeof planChunkVegetationGen> extends Generator<unknown, infer R, unknown> ? R : never;

@@ -108,8 +108,11 @@ export class CanyonGenerator {
     const canyonDistance = Math.abs(canyonAxis);
 
     // Ravinas afluentes estreitas (slot canyons)
-    const tributaryNoise = Math.abs(this.noise.fbm2D((x + warpX) * 0.022, (z + warpZ) * 0.022, 3));
-    const isRavineCut = tributaryNoise < 0.18 && zoneInfluence > 0.4;
+    // A ravina segue a linha onde o ruído passa por zero. O ruído era lido com o desvio inteiro (85 m) e com oitavas finas: o gradiente chegava a 0,25 por
+    // metro, a faixa |ruído| < 0,18 encolhia para 2 ou 3 m, e a ravina virava uma fenda de 3 m de fundo, um "buraco" no chão. Com o desvio fraco e as
+    // oitavas finas quase sem peso, o gradiente cai a ~0,05 e a ravina é uma valeta larga (uns 10 m) de encosta suave.
+    const tributaryNoise = Math.abs(this.noise.fbm2D((x + warpX * 0.15) * 0.009, (z + warpZ * 0.15) * 0.009, 3, 0.3));
+    const isRavineCut = tributaryNoise < 0.25 && zoneInfluence > 0.3;
 
     let carveDepth = 0.0;
     let isCanyonFloor = false;
@@ -131,15 +134,19 @@ export class CanyonGenerator {
       if (prog < 0.18) {
         isCanyonFloor = true;
       }
-    } else if (isRavineCut) {
+    }
+    // (a ravina e o cânion principal valem ao mesmo tempo, e vale o corte mais fundo: com "um ou outro" a ravina sumia de uma vez na borda do cânion,
+    // um degrau de 3 m no meio do terreno)
+    if (isRavineCut) {
       // Ravinas: valetas rasas (até 7m) de encosta suave. Seguem as linhas onde o ruído passa por
       // zero, que formam laços fechados e trechos curtos: fundas (22m) e estreitas, viravam poços
       // e fendas de paredão soltos no meio do terreno
-      const rProg = tributaryNoise / 0.18;
-      const maxRavineCarve = Math.min(currentElevation - 5.0, 7.0);
+      const rProg = tributaryNoise / 0.25;
+      const maxRavineCarve = Math.max(0.0, Math.min(currentElevation - 5.0, 7.0));
       const t = 1.0 - rProg;
-      carveDepth = t * t * (3.0 - 2.0 * t) * maxRavineCarve * zoneInfluence;
-      isRavine = true;
+      // (a ravina some devagar na borda da zona, de 0,3 a 0,5: o corte seco em 0,4 deixava um degrau de 3 m, uma parede reta no meio do terreno)
+      const ravineCarve = t * t * (3.0 - 2.0 * t) * maxRavineCarve * zoneInfluence * smoothstep(0.3, 0.5, zoneInfluence);
+      if (ravineCarve > carveDepth) { carveDepth = ravineCarve; isRavine = true; isCanyonFloor = false; }
     }
 
     // Camada de estrato sedimentar para o shader (0 a 1)

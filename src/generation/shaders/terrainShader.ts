@@ -130,11 +130,17 @@ export function createChunkTerrainMaterial(
     #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 2
     gSC0 = vDirectionalShadowCoord[ 0 ]; gSC1 = vDirectionalShadowCoord[ 1 ]; gSC2 = vDirectionalShadowCoord[ 2 ];
     if (uShadowGrid > 0.5 && wn.y > 0.55 && nearK > 0.0) {
+      // O plano para onde o ponto é levado é o do TRIÂNGULO (normal geométrico, das derivadas da posição) e não o do normal suavizado da malha: nas encostas os dois diferem, o
+      // ponto saía da superfície a cada centro de pixel e caía na sombra do próprio terreno (uma trama regular de triângulos pretos, de acne, dia e noite)
+      vec3 gn = normalize(cross(dFdx(vWPos), dFdy(vWPos)));
+      if (gn.y < 0.0) gn = -gn;
+      float gny = max(gn.y, 0.25);
       vec2 dxz = pixWorld - vWPos.xz;
-      vec3 sp = vec3(pixWorld.x, vWPos.y - (wn.x * dxz.x + wn.z * dxz.y) / wn.y, pixWorld.y);
-      gSC0 = uSM[ 0 ] * vec4(sp + wn * uSNB.x, 1.0);
-      gSC1 = uSM[ 1 ] * vec4(sp + wn * uSNB.y, 1.0);
-      gSC2 = uSM[ 2 ] * vec4(sp + wn * uSNB.z, 1.0);
+      vec3 sp = vec3(pixWorld.x, vWPos.y - (gn.x * dxz.x + gn.z * dxz.y) / gny, pixWorld.y);
+      float steepK = 1.0 + 4.0 * (1.0 - clamp(gn.y, 0.0, 1.0));
+      gSC0 = uSM[ 0 ] * vec4(sp + gn * uSNB.x * steepK, 1.0);
+      gSC1 = uSM[ 1 ] * vec4(sp + gn * uSNB.y * steepK, 1.0);
+      gSC2 = uSM[ 2 ] * vec4(sp + gn * uSNB.z * steepK, 1.0);
     }
     #endif
 

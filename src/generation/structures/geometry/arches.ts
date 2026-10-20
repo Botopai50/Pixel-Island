@@ -1,0 +1,2 @@
+import {merge,extrudePolygon} from './common';
+export function buildArch(span:number,thickness:number,depth=thickness){const radius=span/2,parts=[];for(let i=0;i<10;i++){const a=i*Math.PI/10,b=(i+1)*Math.PI/10;parts.push(extrudePolygon([[Math.cos(a)*radius,Math.sin(a)*radius],[Math.cos(b)*radius,Math.sin(b)*radius],[Math.cos(b)*(radius+thickness),Math.sin(b)*(radius+thickness)],[Math.cos(a)*(radius+thickness),Math.sin(a)*(radius+thickness)]],depth));}return merge(parts);}

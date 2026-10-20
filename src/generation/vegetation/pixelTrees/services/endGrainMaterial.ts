@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { TreeConfig } from '../types';
 import { pixelTextureLightDir, resolvePixelTextureParams } from './pixelArtTextureSystem';
+import { pixelMossNoiseGLSL } from './mossStyle';
+import { rockSnowColors, ROCK_SNOW_PAINT_GLSL, ROCK_SNOW_COVERAGE_GLSL, ROCK_SNOW_RIM_GLSL } from './rockSnowStyle';
 
 /**
  * Pixel-art end grain: the wood seen where a trunk is cut or snapped (the
@@ -54,8 +56,10 @@ const VERTEX = /* glsl */ `
   varying vec2 vUv;
   varying float vGrainR;
   varying vec3 vNormal;
+  varying vec3 vWorldPos;
   void main() {
     vUv = uv;
+    vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
     vGrainR = aGrainR;
     vNormal = normalize(mat3(modelMatrix) * normal);
     gl_Position = projectionMatrix * viewMatrix * modelMatrix * vec4(position, 1.0);
@@ -69,9 +73,18 @@ const FRAGMENT = /* glsl */ `
   uniform float uSeed;
   uniform float uCompactCuts;
   uniform vec3 uTexLightDir;
+  uniform float uSnow;
+  uniform float uSnowSeed;
+  uniform vec3 uSnowColors[4];
   varying vec2 vUv;
   varying float vGrainR;
   varying vec3 vNormal;
+  varying vec3 vWorldPos;
+
+  ${pixelMossNoiseGLSL('uSnowSeed')}
+  ${ROCK_SNOW_PAINT_GLSL}
+  ${ROCK_SNOW_COVERAGE_GLSL}
+  ${ROCK_SNOW_RIM_GLSL}
 
   float h1(float n) { return fract(sin(n * 12.9898 + 4.1) * 43758.5453); }
 
@@ -132,7 +145,16 @@ const FRAGMENT = /* glsl */ `
       }
     }
     idx = clamp(idx, 0.0, 5.0);
-    gl_FragColor = vec4(texture2D(uPalette, vec2((idx + 0.5) / 6.0, 0.5)).rgb, 1.0);
+    vec3 grain = texture2D(uPalette, vec2((idx + 0.5) / 6.0, 0.5)).rgb;
+    if (uSnow > 0.001) {
+      // the rocks' own snow settles on the cut top as well (world texels, 1/21.33 m)
+      vec3 sN = normalize(vNormal);
+      vec3 snowP = floor(vWorldPos * 21.33) + 0.5;
+      vec3 snowDown = vec3(0.0, 0.0, 1.0);
+      vec3 snowAcross = vec3(1.0, 0.0, 0.0);
+      grain = rockSnowSurface(grain, snowP, sN, snowDown, vec3(0.0), snowAcross, vec3(0.0), uTexLightDir, uSnow, 1.0);
+    }
+    gl_FragColor = vec4(grain, 1.0);
   }
 `;
 
@@ -153,6 +175,9 @@ export function createPixelEndGrainMaterial(config: TreeConfig): EndGrainMateria
       uSeed: { value: (config.seed % 991) * 0.61 },
       uCompactCuts: { value: 0 },
       uTexLightDir: { value: pixelTextureLightDir(params) },
+      uSnow: { value: THREE.MathUtils.clamp((config.snowCover ?? 0) * 0.45, 0, 1) }, // a patchy dusting: the rings still show through
+      uSnowSeed: { value: (config.seed % 991) * 0.37 },
+      uSnowColors: { value: rockSnowColors() },
     },
     vertexShader: VERTEX,
     fragmentShader: FRAGMENT,

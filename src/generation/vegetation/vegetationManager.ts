@@ -8,7 +8,10 @@ import { WIND_U, GRASS_PUSHER } from '../../atmosphere/wind.ts';
 import { planChunkVegetation, planChunkVegetationGen, ITerrainQueryable } from './vegetationPlanner.ts';
 import { MD, mergeVariantGeometries, makeMdMaterials } from './multiDraw.ts';
 import type { MultiSpec } from './instancePool.ts';
-import { getGameTrees, tickGameTrees, singleLodKind, GameTreeKind } from './pixelTrees/gameTrees.ts';
+import { addTreeFall, removeTreeFall, fallStyleOf } from '../../atmosphere/treeFall.ts';
+import { addFlowerSpot, removeFlowerSpots } from '../../atmosphere/flyers.ts';
+import { addTrunkSpot, removeTrunkSpots, trunksIn } from './trunkSpots.ts';
+import { advanceGameTrees, getGameTrees, getGameTreeVariant, tickGameTrees, singleLodKind, GameTreeKind } from './pixelTrees/gameTrees.ts';
 import type { GameTreeLod, GameTreeVariant } from './pixelTrees/gameTrees.ts';
 
 /** O desenho leve (3º degrau) que faz o papel de uma parte que projeta sombra nas faixas de sombra distantes: a n-ésima parte que projeta sombra do degrau. */
@@ -21,8 +24,6 @@ function shadowLiteOf(lod: GameTreeLod, lightest: GameTreeLod, partIndex: number
 }
 import { GRASS_SPRITE_W, GRASS_SPRITE_H } from './grassSprites.ts';
 import { enableAssetEnvironment } from './pixelTrees/services/assetEnvironment';
-import { getStoneLanternParts } from './structures/stoneLanternParts.ts';
-import type { LanternPart } from './structures/stoneLanternParts.ts';
 
 /** Um lugar de árvore: a matriz e (nas árvores do plano) a cor da copa. */
 interface GameTreeItem { matrix: THREE.Matrix4; leafTint?: THREE.Color }
@@ -106,8 +107,6 @@ export class VegetationGeometries {
   public static reeds: THREE.BufferGeometry;
   public static lilyPads: THREE.BufferGeometry;
   public static petalCarpet: THREE.BufferGeometry;
-  /** Lanterna de pedra do pacote gerador-lanterna-de-pedra: pedra, madeira, placas e núcleo, cada um com o seu material (structures/stoneLanternParts.ts) */
-  public static stoneLanternParts: LanternPart[];
   public static barrelCactus: THREE.BufferGeometry;
   public static pricklyPear: THREE.BufferGeometry;
   public static tumbleweed: THREE.BufferGeometry;
@@ -231,7 +230,6 @@ export class VegetationGeometries {
     this.reeds = BotanicalGeometryFactory.buildReeds().body;
     this.lilyPads = BotanicalGeometryFactory.buildLilyPads().body;
     this.petalCarpet = BotanicalGeometryFactory.buildPetalCarpet().body;
-    this.stoneLanternParts = getStoneLanternParts();
     this.barrelCactus = BotanicalGeometryFactory.buildBarrelCactus().body;
     this.pricklyPear = BotanicalGeometryFactory.buildPricklyPear().body;
     this.tumbleweed = BotanicalGeometryFactory.buildTumbleweed().body;
@@ -736,56 +734,61 @@ export class VegetationManager {
     enableDetailFlora: boolean = true,
     plan?: ReturnType<typeof planChunkVegetation>
   ): Generator<undefined, void, unknown> {
-    const { oakItems, broadOakItems, oakSaplingItems, pineItems, pineSaplingItems, birchItems, twinBirchItems, birchSaplingItems, palmItems, palmSaplingItems, acaciaItems, acaciaSaplingItems, mapleItems, mangroveItems, mangroveSaplingItems, snowPineItems, arcticWillowItems, sakuraItems, korokItems, deadTreeTransforms, cactusTransforms, cactusSaplingTransforms, shrubItems, rockBoulderTransforms, rockSlateTransforms, rockPebblesTransforms, rockSpireTransforms, rockMossyTransforms, logHollowTransforms, logRootedTransforms, logStumpTransforms, logStraightTransforms, lilyTransforms, duckTransforms, moundTransforms, barrelTransforms, pearTransforms, tumbleTransforms, petalTransforms, lanternTransforms } = plan ?? planChunkVegetation(chunkX, chunkZ, chunkSize, terrainGen, enableDetailFlora);
+    const { oakItems, broadOakItems, oakSaplingItems, pineItems, pineSaplingItems, birchItems, twinBirchItems, birchSaplingItems, palmItems, palmSaplingItems, acaciaItems, acaciaSaplingItems, mapleItems, mangroveItems, mangroveSaplingItems, snowPineItems, arcticWillowItems, sakuraItems, korokItems, deadTreeTransforms, cactusTransforms, cactusSaplingTransforms, shrubItems, rockBoulderTransforms, rockSlateTransforms, rockPebblesTransforms, rockSpireTransforms, rockMossyTransforms, logHollowTransforms, logRootedTransforms, logStumpTransforms, logStraightTransforms, lilyTransforms, duckTransforms, moundTransforms, barrelTransforms, pearTransforms, tumbleTransforms, petalTransforms } = plan ?? planChunkVegetation(chunkX, chunkZ, chunkSize, terrainGen, enableDetailFlora);
+
+    // as flores do chunk, para as borboletas (flyers.ts): só nascem perto delas
+    for (const it of shrubItems) {
+      if (it.kind.startsWith('flowers_')) { const e = it.matrix.elements; addFlowerSpot(owner, e[12], e[13], e[14]); }
+    }
 
     // Instanciação em Pares de Árvores (Adultas, Mudas e Variantes)
-    this.createGameTrees('oak', VegetationGeometries.oakTrunk, VegetationGeometries.oakLeaves, oakItems, owner);
+    yield* this.createGameTrees('oak', VegetationGeometries.oakTrunk, VegetationGeometries.oakLeaves, oakItems, owner);
     yield;
-    this.createGameTrees('oak', VegetationGeometries.broadOakTrunk, VegetationGeometries.broadOakLeaves, broadOakItems, owner);
+    yield* this.createGameTrees('oak', VegetationGeometries.broadOakTrunk, VegetationGeometries.broadOakLeaves, broadOakItems, owner);
     yield;
     // mudas do Pixel_Tree: no tamanho do próprio desenho (o planejador já dá a escala de muda)
-    this.createGameTrees('oakSapling', null, null, oakSaplingItems, owner);
+    yield* this.createGameTrees('oakSapling', null, null, oakSaplingItems, owner);
     yield;
 
-    this.createGameTrees('pine', VegetationGeometries.pineTrunk, VegetationGeometries.pineLeaves, pineItems, owner);
+    yield* this.createGameTrees('pine', VegetationGeometries.pineTrunk, VegetationGeometries.pineLeaves, pineItems, owner);
     yield;
-    this.createGameTrees('pineSapling', null, null, pineSaplingItems, owner);
-    yield;
-
-    this.createGameTrees('birch', VegetationGeometries.birchTrunk, VegetationGeometries.birchLeaves, birchItems, owner);
-    yield;
-    this.createGameTrees('birch', VegetationGeometries.twinBirchTrunk, VegetationGeometries.twinBirchLeaves, twinBirchItems, owner);
-    yield;
-    this.createGameTrees('birchSapling', null, null, birchSaplingItems, owner);
+    yield* this.createGameTrees('pineSapling', null, null, pineSaplingItems, owner);
     yield;
 
-    this.createGameTrees('palm', VegetationGeometries.palmTrunk, VegetationGeometries.palmLeaves, palmItems, owner);
+    yield* this.createGameTrees('birch', VegetationGeometries.birchTrunk, VegetationGeometries.birchLeaves, birchItems, owner);
     yield;
-    this.createGameTrees('palmSapling', null, null, palmSaplingItems, owner);
+    yield* this.createGameTrees('birch', VegetationGeometries.twinBirchTrunk, VegetationGeometries.twinBirchLeaves, twinBirchItems, owner);
     yield;
-
-    this.createGameTrees('acacia', VegetationGeometries.acaciaTrunk, VegetationGeometries.acaciaLeaves, acaciaItems, owner);
-    yield;
-    this.createGameTrees('acaciaSapling', null, null, acaciaSaplingItems, owner);
+    yield* this.createGameTrees('birchSapling', null, null, birchSaplingItems, owner);
     yield;
 
-    this.createGameTrees(mapleKind, VegetationGeometries.mapleTrunk, VegetationGeometries.mapleLeaves, mapleItems, owner);
+    yield* this.createGameTrees('palm', VegetationGeometries.palmTrunk, VegetationGeometries.palmLeaves, palmItems, owner);
+    yield;
+    yield* this.createGameTrees('palmSapling', null, null, palmSaplingItems, owner);
     yield;
 
-    this.createGameTrees('mangrove', VegetationGeometries.mangroveTrunk, VegetationGeometries.mangroveLeaves, mangroveItems, owner);
+    yield* this.createGameTrees('acacia', VegetationGeometries.acaciaTrunk, VegetationGeometries.acaciaLeaves, acaciaItems, owner);
     yield;
-    this.createGameTrees('mangroveSapling', null, null, mangroveSaplingItems, owner);
+    yield* this.createGameTrees('acaciaSapling', null, null, acaciaSaplingItems, owner);
     yield;
 
-    this.createGameTrees('snowPine', VegetationGeometries.snowPineTrunk, VegetationGeometries.snowPineLeaves, snowPineItems, owner);
+    yield* this.createGameTrees(mapleKind, VegetationGeometries.mapleTrunk, VegetationGeometries.mapleLeaves, mapleItems, owner);
+    yield;
+
+    yield* this.createGameTrees('mangrove', VegetationGeometries.mangroveTrunk, VegetationGeometries.mangroveLeaves, mangroveItems, owner);
+    yield;
+    yield* this.createGameTrees('mangroveSapling', null, null, mangroveSaplingItems, owner);
+    yield;
+
+    yield* this.createGameTrees('snowPine', VegetationGeometries.snowPineTrunk, VegetationGeometries.snowPineLeaves, snowPineItems, owner);
     yield;
     // salgueiro-anão: no tamanho do próprio desenho (uma moita rasteira, larga e achatada), e não na altura do antigo
-    this.createGameTrees('willow', null, null, arcticWillowItems, owner);
+    yield* this.createGameTrees('willow', null, null, arcticWillowItems, owner);
     yield;
     // cerejeiras e árvores ancestrais: não existiam antes, então não há desenho antigo para igualar
-    this.createGameTrees('sakura', null, null, sakuraItems, owner);
+    yield* this.createGameTrees('sakura', null, null, sakuraItems, owner);
     yield;
-    this.createGameTrees('korok', null, null, korokItems, owner);
+    yield* this.createGameTrees('korok', null, null, korokItems, owner);
     yield;
 
     // Instanciação de Meshes Individuais
@@ -795,14 +798,14 @@ export class VegetationManager {
     };
 
     // árvore seca: no tamanho da própria árvore (o toco antigo era um cotoco de ~1 m)
-    this.createGameTrees('dead', null, null, deadTreeTransforms.map((t) => ({ matrix: t.matrix })), owner);
+    yield* this.createGameTrees('dead', null, null, deadTreeTransforms.map((t) => ({ matrix: t.matrix })), owner);
     yield;
-    this.createGameTrees('cactus', VegetationGeometries.cactusBody, null, cactusTransforms.map((t) => ({ matrix: t.matrix })), owner);
+    yield* this.createGameTrees('cactus', VegetationGeometries.cactusBody, null, cactusTransforms.map((t) => ({ matrix: t.matrix })), owner);
     yield;
-    this.createGameTrees('cactusSapling', null, null, cactusSaplingTransforms.map((t) => ({ matrix: t.matrix })), owner);
+    yield* this.createGameTrees('cactusSapling', null, null, cactusSaplingTransforms.map((t) => ({ matrix: t.matrix })), owner);
     yield;
     // arbustos do Pixel_Tree (a espécie de cada um vem do clima do lugar)
-    this.createGameTrees((it) => (it as GameTreeItem & { kind: GameTreeKind }).kind, null, null, shrubItems as unknown as GameTreeItem[], owner);
+    yield* this.createGameTrees((it) => (it as GameTreeItem & { kind: GameTreeKind }).kind, null, null, shrubItems as unknown as GameTreeItem[], owner);
     yield;
 
     // Rochas variadas (5 Formatos)
@@ -836,11 +839,6 @@ export class VegetationManager {
     createSingle(VegetationGeometries.mudMound, this.swampMaterial, moundTransforms, 'mudMound');
     yield;
     createSingle(VegetationGeometries.petalCarpet, this.swampMaterial, petalTransforms, 'petalCarpet');
-    yield;
-    for (const part of VegetationGeometries.stoneLanternParts) {
-      if (lanternTransforms.length === 0) break;
-      this.instances.add(owner, part.geometry, part.material, lanternTransforms.map((it) => it.matrix), lanternTransforms.map((it) => it.tint), part.name, part.castShadow);
-    }
     yield;
     createSingle(VegetationGeometries.barrelCactus, this.swampMaterial, barrelTransforms, 'barrelCactus');
     yield;
@@ -891,13 +889,14 @@ export class VegetationManager {
    * (quando há) fica só como sombra (a nova não projeta sombra recortada).
    * kind pode ser uma função (a espécie depende do item: as cores dos bordos).
    */
-  private createGameTrees(
+  /** Em etapas (um `yield` entre as partes pesadas): o plantio de um chunk divide o trabalho em pedaços curtos que cabem no orçamento do quadro. */
+  private *createGameTrees(
     kind: GameTreeKind | ((it: GameTreeItem) => GameTreeKind),
     oldTrunk: THREE.BufferGeometry | null,
     oldLeaves: THREE.BufferGeometry | null,
     items: GameTreeItem[],
     owner: number
-  ): void {
+  ): Generator<undefined, void, unknown> {
     if (items.length === 0) return;
     // sem desenho antigo: a árvore fica no tamanho original (escala 1)
     let oh = oldTrunk ? this.oldTreeHeight.get(oldTrunk) : -1;
@@ -909,6 +908,13 @@ export class VegetationManager {
     }
     // quatro desenhos por árvore: de perto (até 70 m) e três degraus mais simples (até 150 m, até 260 m e dali em diante)
     const bands: [number, number][] = [[0, 70], [70, 150], [150, 260], [260, 1e9]];
+    // As espécies que o chunk usa e ainda não foram geradas são feitas aos poucos, um degrau de detalhe por quadro, ANTES de plantar: gerar uma espécie
+    // inteira de uma vez (`getGameTrees`) travava o quadro por 0,2 a 1,2 s ao entrar num bioma novo. O chunk espera (a vegetação dele aparece um pouco depois).
+    {
+      const need = new Set<GameTreeKind>();
+      for (const it of items) need.add(typeof kind === 'function' ? kind(it) : kind);
+      for (const k of need) while (!advanceGameTrees(k)) { yield undefined; }
+    }
     // espécie e variação de cada item
     const byKind = new Map<GameTreeKind, GameTreeItem[][]>();
     for (const it of items) {
@@ -922,6 +928,30 @@ export class VegetationManager {
     const scaleM = new THREE.Matrix4();
     for (const [k, lists] of byKind) {
       const variants = getGameTrees(k);
+      // as copas que soltam folhas e pétalas (treeFall.ts): centro da copa a ~70% da altura da árvore, raio ~ um terço dela
+      const fallStyle = fallStyleOf(k);
+      // os troncos (a grama não nasce dentro deles): raio ~ 0,3 m + 3,5% da altura, no máximo 1 m (o alargamento da raiz entra)
+      lists.forEach((list, vi) => {
+        const v = variants[vi];
+        const s = (oh! > 0 ? oh! / v.height : 1) * (KIND_SIZE[k] ?? 1);
+        for (const it of list) {
+          const e = it.matrix.elements, sc = Math.hypot(e[0], e[1], e[2]) || 1;
+          addTrunkSpot(owner, e[12], e[14], Math.min(1.0, 0.3 + 0.035 * v.height * s * sc));
+        }
+      });
+      yield undefined;
+      if (fallStyle >= 0) {
+        lists.forEach((list, vi) => {
+          const v = variants[vi];
+          const s = (oh! > 0 ? oh! / v.height : 1) * (KIND_SIZE[k] ?? 1);
+          for (const it of list) {
+            const e = it.matrix.elements, sc = Math.hypot(e[0], e[1], e[2]) || 1;
+            const h = v.height * s * sc;
+            addTreeFall(owner, e[12], e[13] + h * 0.72, e[14], Math.min(7.5, h * 0.3), e[13], fallStyle);
+          }
+        });
+      }
+      yield undefined;
       // Multi-draw (ver multiDraw.ts): nos dois degraus próximos todas as variações da espécie vão no MESMO grupo (uma chamada de desenho em
       // vez de uma por variação). Só para as árvores comuns ('pixelTree'); o que não der para juntar cai no caminho por variação, logo abaixo.
       const mdDone = new Set<string>();
@@ -937,15 +967,18 @@ export class VegetationManager {
         for (let l = 0; l < 2; l++) {
           for (let pj = 0; pj < variants[0].lods[l].parts.length; pj++) {
             const key = `${k}|${l}|${pj}`;
-            if (this.instances.ensureMulti(key, () => this.buildMultiSpec(variants, l, pj), bands[l], 'pixelTree')) {
+            const okMulti = this.instances.ensureMulti(key, () => this.buildMultiSpec(variants, l, pj), bands[l], 'pixelTree');
+            if (okMulti) {
               this.instances.addMulti(owner, key, perV);
               mdDone.add(l + '|' + pj);
+              yield undefined;
             }
           }
         }
       }
-      lists.forEach((list, vi) => {
-        if (list.length === 0) return;
+      for (let vi = 0; vi < lists.length; vi++) {
+        const list = lists[vi];
+        if (list.length === 0) continue;
         const v = variants[vi];
         const s = (oh! > 0 ? oh! / v.height : 1) * (KIND_SIZE[k] ?? 1);
         scaleM.makeScale(s, s, s);
@@ -957,16 +990,19 @@ export class VegetationManager {
         const kb: [number, number][] = small ? [[0, 90], [90, 90], [90, 90], [90, 90]] : rockish ? (k.startsWith('gravel_') ? [[0, 80], [80, 80], [80, 80], [80, 80]] : [[0, 170], [170, 170], [170, 170], [170, 170]]) : bands;
         // de perto (degraus 0 e 1) cada variação tem o seu desenho; dali em diante todas usam o mesmo (mais abaixo)
         for (let l = 0; l < (singleLodKind(k) ? 1 : 2); l++) {
-          v.lods[l].parts.forEach((part, pj) => {
-            if (mdDone.has(l + '|' + pj)) return;
+          const parts = v.lods[l].parts;
+          for (let pj = 0; pj < parts.length; pj++) {
+            const part = parts[pj];
+            if (mdDone.has(l + '|' + pj)) continue;
             // no reflexo da água (pequeno e borrado) os desenhos próximos são trocados pelo simplificado (ver main.ts)
             if (l < 2 && !singleLodKind(k)) part.geometry.userData.reflGeo = v.lods[2].parts[pj]?.geometry ?? null;
             part.geometry.userData.lodIdx = l;
             if (!singleLodKind(k)) part.geometry.userData.shadowLite = shadowLiteOf(v.lods[l], v.lods[3], pj);
             this.instances.add(owner, part.geometry, part.material, matrices, white, small || k === 'willow' ? 'pt:' + k : 'pixelTree', part.castShadow, kb[l]);
-          });
+            yield undefined;
+          }
         }
-      });
+      }
       // De longe (acima de 110 m) todas as variações da espécie usam o MESMO desenho: de lá a diferença não se vê, e cada
       // desenho a menos é uma chamada de desenho a menos (a CPU gastava ~25 µs por chamada, e eram mais de 300 por quadro).
       if (!singleLodKind(k)) {
@@ -978,11 +1014,14 @@ export class VegetationManager {
           const matrices = all.map((it) => it.matrix.clone().multiply(scaleM));
           const white = matrices.map(() => new THREE.Color(1, 1, 1));
           for (let l = 2; l < 4; l++) {
-            v0.lods[l].parts.forEach((part, pj) => {
+            const parts = v0.lods[l].parts;
+            for (let pj = 0; pj < parts.length; pj++) {
+              const part = parts[pj];
               part.geometry.userData.lodIdx = l;
               part.geometry.userData.shadowLite = l < 3 ? shadowLiteOf(v0.lods[l], v0.lods[3], pj) : null;
               this.instances.add(owner, part.geometry, part.material, matrices, white, k === 'willow' ? 'pt:' + k : 'pixelTree', part.castShadow, bands[l]);
-            });
+              yield undefined;
+            }
           }
         }
       }
@@ -1159,7 +1198,31 @@ export class VegetationManager {
     const burntTint = new THREE.Color(0.62, 0.50, 0.42);
     const up = new THREE.Vector3(0, 1, 0), normal = new THREE.Vector3();
     const yaw = new THREE.Quaternion(), tilt = new THREE.Quaternion(), q = new THREE.Quaternion();
+    // a grama não nasce dentro de tronco: os troncos da região deste lote (grade de 2 m para achar o mais próximo sem varrer todos)
+    let tx0 = Infinity, tz0 = Infinity, tx1 = -Infinity, tz1 = -Infinity;
+    for (let k = from; k + 8 < end; k += 9) { const gx = data[k], gz = data[k + 2]; if (gx < tx0) tx0 = gx; if (gx > tx1) tx1 = gx; if (gz < tz0) tz0 = gz; if (gz > tz1) tz1 = gz; }
+    const trunkList = trunksIn(tx0, tz0, tx1, tz1, 0.4);
+    const trunkGrid = new Map<number, number[]>();
+    for (let t = 0; t < trunkList.length; t += 3) {
+      const rx = trunkList[t + 2] + 0.4;
+      for (let gx = Math.floor((trunkList[t] - rx) / 2); gx <= Math.floor((trunkList[t] + rx) / 2); gx++) {
+        for (let gz = Math.floor((trunkList[t + 1] - rx) / 2); gz <= Math.floor((trunkList[t + 1] + rx) / 2); gz++) {
+          const key = gx * 100003 + gz;
+          let c = trunkGrid.get(key);
+          if (!c) trunkGrid.set(key, c = []);
+          c.push(trunkList[t], trunkList[t + 1], rx);
+        }
+      }
+    }
     for (let k = from; k + 8 < end; k += 9) {
+      if (trunkGrid.size) {
+        const c = trunkGrid.get(Math.floor(data[k] / 2) * 100003 + Math.floor(data[k + 2] / 2));
+        if (c) {
+          let inside = false;
+          for (let t = 0; t < c.length; t += 3) { const dx = data[k] - c[t], dz = data[k + 2] - c[t + 1]; if (dx * dx + dz * dz < c[t + 2] * c[t + 2]) { inside = true; break; } }
+          if (inside) continue;
+        }
+      }
       const s = data[k + 3];
       const sy = s * data[k + 7], sxz = s * data[k + 8];
       normal.set(-data[k + 5], 1, -data[k + 6]).normalize();
@@ -1208,6 +1271,9 @@ export class VegetationManager {
   /** Remove todas as instâncias que um chunk adicionou. */
   public releaseChunk(owner: number): void {
     this.instances.remove(owner);
+    removeTreeFall(owner);
+    removeFlowerSpots(owner);
+    removeTrunkSpots(owner);
   }
 
   /**
@@ -1217,7 +1283,12 @@ export class VegetationManager {
    * do horizonte, com a mesma iluminação cartoon das árvores de perto.
    * info: por tipo (lado do quadrado S, centro x, centro y) em metros, escala 1.
    */
-  public buildTreeImpostors(renderer: THREE.WebGLRenderer): { texture: THREE.Texture; info: THREE.Vector3[]; cols: number; rows: number } {
+  /**
+   * Atlas de impostores das árvores distantes, montado AOS POUCOS: a textura e a lista de medidas são devolvidas na hora (vazias) e cada
+   * chamada de `step()` gera e desenha UMA espécie (gerar a árvore é o que custa ~0,4 s). Assim o jogo abre sem esperar as ~17 espécies
+   * (os ~8 s do carregamento), e a floresta distante vai aparecendo enquanto o jogador já anda.
+   */
+  public buildTreeImpostors(renderer: THREE.WebGLRenderer): { texture: THREE.Texture; info: THREE.Vector3[]; cols: number; rows: number; step: () => boolean } {
     VegetationGeometries.init();
     const G = VegetationGeometries;
     // cada espécie: as partes desenhadas (geometria, material, tinta), a tinta da copa (fundo) e a escala
@@ -1228,38 +1299,35 @@ export class VegetationManager {
     });
     // as árvores do Pixel_Tree: a variação simplificada (a de longe), com a mesma altura da antiga
     const gt = (kind: GameTreeKind, tg: THREE.BufferGeometry, lg: THREE.BufferGeometry | null, bg: number): ImpSpec => {
-      const v = getGameTrees(kind)[0];
+      const v = getGameTreeVariant(kind, 0);
       tg.computeBoundingBox();
       let oh = tg.boundingBox!.max.y;
       if (lg) { lg.computeBoundingBox(); oh = Math.max(oh, lg.boundingBox!.max.y); }
       return { parts: v.lods[2].parts.map((p) => ({ geo: p.geometry, mat: p.material, tint: 0xffffff })), bg, scale: (oh / v.height) * (KIND_SIZE[kind] ?? 1) };
     };
     const gtNew = (kind: GameTreeKind, bg: number): ImpSpec => {
-      const v = getGameTrees(kind)[0];
+      const v = getGameTreeVariant(kind, 0);
       return { parts: v.lods[2].parts.map((p) => ({ geo: p.geometry, mat: p.material, tint: 0xffffff })), bg, scale: 1 };
     };
-    const specs: ImpSpec[] = [
-      gt('oak', G.oakTrunk, G.oakLeaves, 0x48aa32),
-      gt('oak', G.broadOakTrunk, G.broadOakLeaves, 0x429c2c),
-      gt('pine', G.pineTrunk, G.pineLeaves, 0x2a7238),
-      gt('birch', G.birchTrunk, G.birchLeaves, 0x6ec430),
-      gt('palm', G.palmTrunk, G.palmLeaves, 0x4cb828),
-      gt('acacia', G.acaciaTrunk, G.acaciaLeaves, 0x6e9c2e),
-      gt('mapleRed', G.mapleTrunk, G.mapleLeaves, 0xd44022),
-      gt('mapleOrange', G.mapleTrunk, G.mapleLeaves, 0xe87a1a),
-      gt('mapleYellow', G.mapleTrunk, G.mapleLeaves, 0xe8b824),
-      gt('mangrove', G.mangroveTrunk, G.mangroveLeaves, 0x348c2c),
-      gt('snowPine', G.snowPineTrunk, G.snowPineLeaves, 0xffffff),
-      gt('willow', G.arcticWillowTrunk, G.arcticWillowLeaves, 0x72927c),
-      gtNew('dead', 0x22201e),
-      gt('cactus', G.cactusBody, null, 0x4e8e42),
-      old(G.cactusSaplingBody, null, this.cactusMaterial, null, 0x5ca850, 0x5ca850),
-      gtNew('sakura', 0xf0a0c0),
-      gtNew('korok', 0x5ab04a),
+    const specs: (() => ImpSpec)[] = [
+      () => gt('oak', G.oakTrunk, G.oakLeaves, 0x48aa32),
+      () => gt('oak', G.broadOakTrunk, G.broadOakLeaves, 0x429c2c),
+      () => gt('pine', G.pineTrunk, G.pineLeaves, 0x2a7238),
+      () => gt('birch', G.birchTrunk, G.birchLeaves, 0x6ec430),
+      () => gt('palm', G.palmTrunk, G.palmLeaves, 0x4cb828),
+      () => gt('acacia', G.acaciaTrunk, G.acaciaLeaves, 0x6e9c2e),
+      () => gt('mapleRed', G.mapleTrunk, G.mapleLeaves, 0xd44022),
+      () => gt('mapleOrange', G.mapleTrunk, G.mapleLeaves, 0xe87a1a),
+      () => gt('mapleYellow', G.mapleTrunk, G.mapleLeaves, 0xe8b824),
+      () => gt('mangrove', G.mangroveTrunk, G.mangroveLeaves, 0x348c2c),
+      () => gt('snowPine', G.snowPineTrunk, G.snowPineLeaves, 0xffffff),
+      () => gt('willow', G.arcticWillowTrunk, G.arcticWillowLeaves, 0x72927c),
+      () => gtNew('dead', 0x22201e),
+      () => gt('cactus', G.cactusBody, null, 0x4e8e42),
+      () => old(G.cactusSaplingBody, null, this.cactusMaterial, null, 0x5ca850, 0x5ca850),
+      () => gtNew('sakura', 0xf0a0c0),
+      () => gtNew('korok', 0x5ab04a),
     ];
-    // (a troca seca com o impostor não vale aqui: as árvores estão na origem, longe da "câmera")
-    const savedSwap = FADE.uTreeSwap.value.clone();
-    FADE.uTreeSwap.value.set(1e9, 1e9 + 1);
     const CELL = 128, cols = 4, rows = Math.ceil(specs.length / cols);
     const rt = new THREE.WebGLRenderTarget(CELL * cols, CELL * rows, {
       minFilter: THREE.LinearMipmapLinearFilter, magFilter: THREE.NearestFilter, generateMipmaps: true,
@@ -1268,21 +1336,26 @@ export class VegetationManager {
     const scene = new THREE.Scene();
     scene.add(new THREE.AmbientLight(0xffffff, Math.PI));
     const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
-    const prevTarget = renderer.getRenderTarget();
-    const prevColor = renderer.getClearColor(new THREE.Color());
-    const prevAlpha = renderer.getClearAlpha();
-    const prevAutoClear = renderer.autoClear;
-    renderer.autoClear = false;
     rt.scissorTest = true;
-    const info: THREE.Vector3[] = [];
+    // medidas de cada espécie: começam zeradas (o impostor ainda não existe: não desenha nada) e são preenchidas no lugar, a cada espécie pronta
+    const info: THREE.Vector3[] = specs.map(() => new THREE.Vector3(0, 0, 0));
     const box = new THREE.Box3(), tmp = new THREE.Box3();
-    specs.forEach((spec, i) => {
+    let next = 0;
+    const renderOne = (i: number): void => {
+      const spec = specs[i]();
+      // (a troca seca com o impostor não vale aqui: as árvores estão na origem, longe da "câmera")
+      const savedSwap = FADE.uTreeSwap.value.clone();
+      FADE.uTreeSwap.value.set(1e9, 1e9 + 1);
+      const prevTarget = renderer.getRenderTarget();
+      const prevColor = renderer.getClearColor(new THREE.Color());
+      const prevAlpha = renderer.getClearAlpha();
+      const prevAutoClear = renderer.autoClear;
+      renderer.autoClear = false;
       box.makeEmpty();
       for (const p of spec.parts) { p.geo.computeBoundingBox(); box.union(tmp.copy(p.geo.boundingBox!)); }
       const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
       const S = Math.max(w, h) * 1.04;
       const cx = (box.min.x + box.max.x) / 2, cy = (box.min.y + box.max.y) / 2;
-      info.push(new THREE.Vector3(S * spec.scale, cx * spec.scale, cy * spec.scale));
       cam.left = -S / 2; cam.right = S / 2; cam.top = S / 2; cam.bottom = -S / 2;
       cam.position.set(cx, cy, 100); cam.lookAt(cx, cy, 0);
       cam.updateProjectionMatrix();
@@ -1302,11 +1375,17 @@ export class VegetationManager {
       renderer.clear(true, true, false);
       renderer.render(scene, cam);
       for (const m of meshes) { scene.remove(m); m.dispose(); }
-    });
-    FADE.uTreeSwap.value.copy(savedSwap);
-    renderer.setRenderTarget(prevTarget);
-    renderer.setClearColor(prevColor, prevAlpha);
-    renderer.autoClear = prevAutoClear;
-    return { texture: rt.texture, info, cols, rows };
+      info[i].set(S * spec.scale, cx * spec.scale, cy * spec.scale);
+      FADE.uTreeSwap.value.copy(savedSwap);
+      renderer.setRenderTarget(prevTarget);
+      renderer.setClearColor(prevColor, prevAlpha);
+      renderer.autoClear = prevAutoClear;
+    };
+    const step = (): boolean => {
+      if (next >= specs.length) return false;
+      renderOne(next++);
+      return next < specs.length;
+    };
+    return { texture: rt.texture, info, cols, rows, step };
   }
 }

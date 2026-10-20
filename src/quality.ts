@@ -29,9 +29,26 @@ export const QUALITY_LEVELS: QualityLevel[] = [
   { name: 'muito baixa', renderScale: 1.00, shadowMapSize: 512,  maxViewRadius: 12, baseViewRadius: 8,  vegetationRadius: 5, shadowStep: 3.5, reflectionSize: 160, textureDensityCap: 2 },
 ];
 
-/** Nível inicial pelo hardware (índice em QUALITY_LEVELS). */
+const PREF_KEY = 'pie.quality';
+
+/** Escolha salva no menu do jogo: 'auto' (o jogo decide) ou o índice fixo em QUALITY_LEVELS. */
+export function loadQualityPref(): 'auto' | number {
+  try {
+    const v = localStorage.getItem(PREF_KEY);
+    const n = Number(v);
+    if (v !== null && v !== 'auto' && Number.isInteger(n) && n >= 0 && n < QUALITY_LEVELS.length) return n;
+  } catch { /* armazenamento indisponível */ }
+  return 'auto';
+}
+export function saveQualityPref(p: 'auto' | number): void {
+  try { localStorage.setItem(PREF_KEY, String(p)); } catch { /* sem armazenamento: vale só nesta sessão */ }
+}
+
+/** Nível inicial pelo hardware (índice em QUALITY_LEVELS); a escolha salva no menu vale mais, a URL (?quality=) vale mais que ela. */
 export function detectInitialQuality(gl: WebGLRenderingContext | WebGL2RenderingContext): number {
   const forced = new URLSearchParams(window.location.search).get('quality');
+  const pref = loadQualityPref();
+  if (!forced && pref !== 'auto') return pref;
   if (forced === 'high') return 0;
   if (forced === 'medium') return 2;
   if (forced === 'low') return 4;
@@ -66,13 +83,27 @@ export class AdaptiveQuality {
   private badWindows = 0;
   private lastChange = 0;
   private startedAt = performance.now();
+  /** false = nível fixo escolhido no menu: a medição de FPS não troca mais de nível */
+  public auto = true;
 
   constructor(public level: number, private readonly apply: (level: QualityLevel, index: number) => void) {
     apply(QUALITY_LEVELS[level], level);
+    const forced = new URLSearchParams(window.location.search).get('quality');
+    if (!forced && loadQualityPref() !== 'auto') this.auto = false;
+  }
+
+  /** Escolha do menu: um nível fixo, ou 'auto' para voltar a deixar o jogo decidir pelo FPS. */
+  public choose(p: 'auto' | number): void {
+    saveQualityPref(p);
+    this.badWindows = 0; this.goodWindows = 0; this.samples = []; this.windowStart = 0;
+    if (p === 'auto') { this.auto = true; return; }
+    this.auto = false;
+    if (p !== this.level) this.set(p, performance.now());
   }
 
   public frame(dtMs: number, generating: boolean = false): void {
     const now = performance.now();
+    if (!this.auto) return;
     if (now - this.startedAt < 4000) return; // carga inicial do mundo
     // geração de terreno em andamento (workers ocupando a CPU): a janela não conta
     if (generating) {

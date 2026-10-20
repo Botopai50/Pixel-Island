@@ -1,0 +1,7 @@
+import type { StructureConfig } from './types';
+import { STRUCTURE_DESCRIPTORS } from './catalog';
+export function normalizeStructureConfig(input:StructureConfig):StructureConfig {
+ const d=STRUCTURE_DESCRIPTORS[input.type]??STRUCTURE_DESCRIPTORS.house;
+ const clamp=(n:number,min:number,max:number,fallback=min)=>Math.max(min,Math.min(max,Number.isFinite(n)?n:fallback));
+ return {...input,pathWidth:clamp(input.pathWidth??1.1,.4,3,1.1),pathStyle:(['straight','curve','junction'] as const).includes(input.pathStyle??'straight')?input.pathStyle??'straight':'straight',...(input.type==='stable'?{hayAmount:clamp(input.hayAmount??.7,0,1,.7)}:{}),...(input.type==='bridge'?{bridgeStyle:(['timber','stoneArch','covered','suspension','stepped'] as const).includes(input.bridgeStyle??'timber')?input.bridgeStyle??'timber':'timber'}:{}),...(input.type==='camp'?{campTentCount:Math.round(clamp(input.campTentCount??0,0,4))}:{}),width:clamp(input.width,...d.width),depth:clamp(input.depth,...d.depth),height:clamp(input.height,...d.height),floors:Math.round(clamp(input.floors,1,d.floors)),scale:clamp(input.scale,.3,3,1),complexity:clamp(input.complexity,0,1),asymmetry:clamp(input.asymmetry,0,1),ruin:clamp(input.ruin,0,1),vegetation:clamp(input.vegetation,0,1),snow:clamp(input.snow,0,1),finish:clamp(input.finish,0,1),openingDensity:clamp(input.openingDensity,0,1),roofPitch:clamp(input.roofPitch,.15,1),eaves:clamp(input.eaves,.1,1.2),texelsPerMetre:clamp(input.texelsPerMetre,8,40,20),palette:{...input.palette}};
+}

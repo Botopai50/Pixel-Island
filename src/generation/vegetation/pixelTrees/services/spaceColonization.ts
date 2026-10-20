@@ -1611,6 +1611,12 @@ export function buildFullTreeGeometry(
     let renderedRadii = chainRenderedRadii(chain, isSwampTree, smoothJoins, minRadius * WOOD_LOD.minRadiusMul);
     // jogo (degraus de detalhe distantes): usa só 1 nó em cada ringSkip do galho (os do começo, escondidos no galho-pai, e o último ficam).
     // O número de anéis do tubo cai na mesma proporção, e é o que dominava os triângulos de madeira das árvores grandes.
+    // A casca não pode mudar quando a árvore troca de nível de detalhe: o raio representativo (conta de sulcos e colunas) e a distância ao longo da madeira (linhas e
+    // deriva dos sulcos) saem da lista COMPLETA de nós, e não dos poucos que sobram nos níveis distantes.
+    const chainMeanRadiusFull = chainRepresentativeRadius(nodes.slice(leadIn), renderedRadii.slice(leadIn));
+    const alongNodesFull: number[] = [0];
+    for (let i = 1; i < nodes.length; i++) alongNodesFull.push(alongNodesFull[i - 1] + nodes[i].position.distanceTo(nodes[i - 1].position));
+    let nodeFullIdx: number[] = nodes.map((_, i) => i);
     const ringSkip = WOOD_LOD.ringSkip ?? 1;
     if (ringSkip > 1 && nodes.length > leadIn + 3) {
       const idx: number[] = [];
@@ -1620,6 +1626,7 @@ export function buildFullTreeGeometry(
       const full = nodes, fullR = renderedRadii;
       nodes = idx.map((i) => full[i]);
       renderedRadii = idx.map((i) => fullR[i]);
+      nodeFullIdx = idx;
     }
 
     // One representative radius for the WHOLE chain. The bark shader turns this
@@ -1629,7 +1636,7 @@ export function buildFullTreeGeometry(
     // instead of running unbroken from root to tip. With a fixed count the
     // ridges simply narrow as the wood narrows, which is what real bark does.
     // (The lead-in, hidden inside the parent, is left out of it.)
-    const chainMeanRadius = chainRepresentativeRadius(nodes.slice(leadIn), renderedRadii.slice(leadIn));
+    const chainMeanRadius = chainMeanRadiusFull;
     // (the plain sweep widens only the first ring, after the mean is taken)
     if (!smoothJoins && chain.baseRadius) renderedRadii[0] = Math.max(0.04, chain.baseRadius);
 
@@ -1697,8 +1704,13 @@ export function buildFullTreeGeometry(
 
     for (let i = 0; i < path.length; i++) {
       const sample = path[i];
-      if (i > 0) {
-        accumulatedLength += sample.p.distanceTo(path[i - 1].p);
+      {
+        // distância ao longo da madeira medida nos nós COMPLETOS (igual em todos os níveis de detalhe): s é o índice (fracionário) do nó nesta lista reduzida
+        const s0 = Math.max(0, Math.min(nodes.length - 1, sample.s));
+        const k0 = Math.floor(s0), k1 = Math.min(nodes.length - 1, k0 + 1), fr = s0 - k0;
+        const fi = nodeFullIdx[k0] + (nodeFullIdx[k1] - nodeFullIdx[k0]) * fr;
+        const f0 = Math.floor(fi), f1 = Math.min(alongNodesFull.length - 1, f0 + 1);
+        accumulatedLength = chainStartAlong + alongNodesFull[f0] + (alongNodesFull[f1] - alongNodesFull[f0]) * (fi - f0);
       }
       alongAtSample.push(accumulatedLength);
 

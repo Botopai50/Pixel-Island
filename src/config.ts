@@ -8,6 +8,8 @@ export const CONFIG = {
   MAX_VIEW_RADIUS_CHUNKS: 22, // Raio no zoom mais afastado (~1.4km): preenche a tela inteira
   VEGETATION_RADIUS_CHUNKS: 6, // Raio de instanciamento botânico otimizado (~384m)
   GRASS_RADIUS_CHUNKS: 4,      // Raio (chunks) com grama 3D em tufos (0 = desligada)
+  SETTLEMENTS_ENABLED: true,   // Cidades procedurais (generation/settlements): casas, ruas e praça sobre o relevo achatado
+  SETTLEMENT_CHANCE: 0.7,     // chance de uma célula de 1 km ter uma cidade (se o relevo servir)
   LANDMARKS_ENABLED: false,    // Cenas procedurais (landmarks): desligadas até a integração definitiva
   UNLOAD_MARGIN_CHUNKS: 1, // Margem antes de descarregar chunk da memória
 

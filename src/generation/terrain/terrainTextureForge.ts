@@ -1,3 +1,4 @@
+import { settlementGroundMask, GROUND_COBBLE, GROUND_YARD, GROUND_DIRT } from '../settlements/settlementField.ts';
 import * as THREE from 'three';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { CONFIG } from '../../config.ts';
@@ -1193,6 +1194,8 @@ export function genChunkTexture(
   })();
 
   // Avaliação dos biomas e máscaras de materiais
+  const townEntries = CONFIG.SETTLEMENTS_ENABLED ? terrainGen.settlements.near(PX / D, PY / D, (PX + W) / D, (PY + W) / D) : [];
+  const townMask = townEntries.length ? settlementGroundMask(townEntries, PX, PY, W, D) : null;
   (() => {
     for (let ly = 0; ly < W; ly++) {
       const row = ly * W;
@@ -1245,6 +1248,14 @@ export function genChunkTexture(
         if (isSand && b !== B_MANGROVE) { mat[i] = M_SAND; gl[i] = Math.min(gl[i], 1); }
         else if (isRock) { mat[i] = M_ROCK; gl[i] = Math.min(gl[i], 2); }
         else mat[i] = M_DIRT;
+        // cidades: ruas, praça e quintais não têm capim
+        if (townMask) {
+          const tm = townMask[i];
+          // a calçada/terra batida some aos poucos nas encostas (a pedra do barranco não é cortada em linha dura)
+          const keep = 1 - clamp((sl - 0.62) / 0.4, 0, 1); // até 0,62 (o limite das ruas do planejador) a rua segue inteira: só o paredão vertical a quebra
+          // só a calçada troca o material; caminhos e vielas mantêm o chão de baixo (grama, terra...) e só o escurecem no passo 4e
+          if (tm === GROUND_COBBLE && (keep >= 1 || ihash(tx, ty, sd + 93) < keep * keep)) { mat[i] = M_ROCK; gl[i] = 0; }
+        }
       }
     }
   })();
@@ -1702,6 +1713,38 @@ export function genChunkTexture(
     }
   })();
 
+  /* ---- passo 4e: cidades - pedras de passagem ----
+     Vielas e caminhos até as portas: lajes planas de pedra espaçadas ao longo do caminho (estilo caminho de jardim), com o chão
+     natural (grama, terra...) entre elas. Os tufos 3D de grama não nascem na faixa, para as lajes aparecerem. */
+  if (townMask) {
+    const CELLT = Math.max(8, Math.round(D * 1.05));
+    for (let ly = 0; ly < W; ly++) {
+      for (let lx = 0; lx < W; lx++) {
+        const i = ly * W + lx;
+        const tm = townMask[i];
+        if (tm !== GROUND_YARD && tm !== GROUND_DIRT) continue;
+        if (mat[i] === M_ROCK) continue;
+        gl[i] = Math.min(gl[i], 1);
+        const tx = PX + lx, ty = PY + ly;
+        const cx = Math.floor(tx / CELLT), cy = Math.floor(ty / CELLT);
+        if (ihash(cx, cy, sd + 101) > 0.82) continue;                                   // falha entre as lajes
+        const ccx = cx * CELLT + CELLT * (0.5 + (ihash(cx, cy, sd + 102) - 0.5) * 0.28);
+        const ccy = cy * CELLT + CELLT * (0.5 + (ihash(cx, cy, sd + 105) - 0.5) * 0.28);
+        const clx = Math.round(ccx) - PX, cly = Math.round(ccy) - PY;
+        if (clx < 0 || cly < 0 || clx >= W || cly >= W) continue;
+        const ct = townMask[cly * W + clx];
+        if (ct !== GROUND_YARD && ct !== GROUND_DIRT) continue;                         // a laje só existe onde o centro dela está no caminho
+        const hx = CELLT * (0.26 + ihash(cx, cy, sd + 103) * 0.14), hy = CELLT * (0.22 + ihash(cx, cy, sd + 104) * 0.14);
+        const dx = tx + 0.5 - ccx, dy = ty + 0.5 - ccy;
+        if (Math.abs(dx) > hx || Math.abs(dy) > hy) continue;
+        const edge = Math.abs(dx) > hx - 1 || Math.abs(dy) > hy - 1;
+        mat[i] = M_ROCK;
+        const n = cluster(tx * 0.6 + 5, ty * 0.6 + 9, sd + 61);
+        idx[i] = edge ? 1 : (n > 0.6 ? 4 : n > 0.3 ? 3 : 2);
+      }
+    }
+  }
+
   /* ---- passo 5 & 6: cavidade + encosta escurecem & índices -> RGB, recortando a margem ---- */
   const nC  = CW * CW;
   const img  = new Uint8ClampedArray(nC * 4);
@@ -1806,6 +1849,9 @@ export function genChunkTexture(
           const wx = minWorldX + cx + jx, wz = minWorldZ + cz + jz;
           const surf = meshSurface(wx, wz);
           if (surf.gx * surf.gx + surf.gz * surf.gz > 1.0) continue; // encosta íngreme demais (> 45°)
+          // beira de barranco: o chão cai mais de 0,8 m a 1,2 m do tufo (o triângulo da malha que atravessa a beira ainda parece plano, e o tufo ficava no ar)
+          if (surf.h - meshSurface(wx + 1.2, wz).h > 0.8 || surf.h - meshSurface(wx - 1.2, wz).h > 0.8
+            || surf.h - meshSurface(wx, wz + 1.2).h > 0.8 || surf.h - meshSurface(wx, wz - 1.2).h > 0.8) continue;
           // Altura própria de cada tufo (suave: o formato do tufo - leque, alto, baixo, espiga,
           // tombado - é escolhido depois, na vegetação): trechos mais altos/baixos + variação individual
           const tall = per.fbm(wx * 0.16 + 31.7, wz * 0.16 + 8.9, 2) * 0.5 + 0.5;

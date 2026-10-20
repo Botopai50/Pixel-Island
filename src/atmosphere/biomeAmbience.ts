@@ -3,6 +3,12 @@ import { BiomeType } from '../generation/types.ts';
 import type { TerrainGenerator } from '../generation/terrain/terrainGenerator.ts';
 import { AERIAL, WET } from './atmosphericFog.ts';
 import { BiomeParticles, type ParticleKind, PARTICLE_KINDS } from './biomeParticles.ts';
+import { Flyers, FLYER_KINDS, type FlyerKind } from './flyers.ts';
+import { TreeFall } from './treeFall.ts';
+
+/** tudo o que o ar de um bioma pode ter: partículas e bichos voadores (flyers.ts) */
+type AmbientKind = ParticleKind | FlyerKind;
+const AMBIENT_KINDS: readonly AmbientKind[] = [...PARTICLE_KINDS, ...FLYER_KINDS];
 import { Wind, WIND_U } from './wind.ts';
 import { WindStreaks } from './windStreaks.ts';
 import { Rain } from './rain.ts';
@@ -53,7 +59,7 @@ interface Profile {
   cloud?: { cov?: number; hue?: string; amt?: number; lit?: number; shade?: number; wind?: number; grey?: number };
   /** rastros de vento (windStreaks.ts), 0-1 */
   streaks?: number;
-  particles: Partial<Record<ParticleKind, number>>;
+  particles: Partial<Record<AmbientKind, number>>;
 }
 
 const NEUTRAL: Profile = { fog: ['#ffffff', 0, 1], dens: [1, 1, 1], tint: [1, 1, 1], sat: 1, con: 1, particles: {} };
@@ -61,17 +67,17 @@ const NEUTRAL: Profile = { fog: ['#ffffff', 0, 1], dens: [1, 1, 1], tint: [1, 1,
 const P: Record<string, Profile> = {
   coast: NEUTRAL,
   beach: { ...NEUTRAL, fog: ['#e0d8c0', 0.1, 1], tint: [1.02, 1.01, 0.98], sat: 1.04, cloud: { cov: -0.08 }, streaks: 0.5, particles: { pollen: 0.15 } },
-  meadow: { fog: ['#d0e0c8', 0.1, 1], dens: [1, 1.1, 1], tint: [1.02, 1.02, 0.97], sat: 1.07, con: 1, streaks: 0.45, particles: { pollen: 1.0, fireflies: 0.35 } },
-  temperate: { fog: ['#c8dcc8', 0.12, 1], dens: [1.05, 1.3, 1.05], tint: [1.0, 1.01, 0.98], sat: 1.04, con: 1.01, cloud: { cov: 0.05 }, streaks: 0, particles: { pollen: 0.55, fireflies: 0.6 } },
-  sakura: { fog: ['#f2d4e2', 0.30, 1.0], dens: [1.12, 1.5, 1.1], tint: [1.04, 1.0, 1.01], sat: 1.12, con: 1.0, cloud: { cov: 0.12, hue: '#f6dce8', amt: 0.2, lit: 1.0, shade: 0.92, grey: 0.05 }, streaks: 0.15, particles: { petals: 1.0, pollen: 0.25 } },
-  autumn: { fog: ['#e8c8a0', 0.28, 1], dens: [1.1, 1.5, 1.08], tint: [1.05, 0.99, 0.91], sat: 1.12, con: 1.03, cloud: { cov: 0.12, hue: '#f0d0a8', amt: 0.2, shade: 0.95, grey: 0.1 }, streaks: 0, particles: { leaves: 1.0 } },
+  meadow: { fog: ['#d0e0c8', 0.1, 1], dens: [1, 1.1, 1], tint: [1.02, 1.02, 0.97], sat: 1.07, con: 1, streaks: 0.45, particles: { pollen: 1.0, fireflies: 0.35, butterflies: 1.0, dragonflies: 0.4 } },
+  temperate: { fog: ['#c8dcc8', 0.12, 1], dens: [1.05, 1.3, 1.05], tint: [1.0, 1.01, 0.98], sat: 1.04, con: 1.01, cloud: { cov: 0.05 }, streaks: 0, particles: { pollen: 0.55, fireflies: 0.6, butterflies: 0.6, dragonflies: 0.3 } },
+  sakura: { fog: ['#f2d4e2', 0.30, 1.0], dens: [1.12, 1.5, 1.1], tint: [1.04, 1.0, 1.01], sat: 1.12, con: 1.0, cloud: { cov: 0.12, hue: '#f6dce8', amt: 0.2, lit: 1.0, shade: 0.92, grey: 0.05 }, streaks: 0.15, particles: { petals: 1.0, pollen: 0.25, fireflies: 0.4, butterflies: 0.8 } },
+  autumn: { fog: ['#e8c8a0', 0.28, 1], dens: [1.1, 1.5, 1.08], tint: [1.05, 0.99, 0.91], sat: 1.12, con: 1.03, cloud: { cov: 0.12, hue: '#f0d0a8', amt: 0.2, shade: 0.95, grey: 0.1 }, streaks: 0, particles: { leaves: 1.0, fireflies: 0.2, butterflies: 0.25 } },
   taiga: { fog: ['#a8c4c8', 0.32, 0.97], dens: [1.35, 2.0, 1.12], tint: [0.95, 0.99, 1.03], sat: 0.86, con: 1.0, cloud: { cov: 0.3, hue: '#b8c8d0', amt: 0.35, lit: 0.92, shade: 0.85, wind: 1.2, grey: 0.3 }, streaks: 0, particles: { motes: 0.7, snow: 0.15 } },
   polar: { fog: ['#d8e6f4', 0.32, 1.03], dens: [1.3, 1.2, 1.25], tint: [0.95, 0.99, 1.06], sat: 0.82, con: 1.04, cloud: { cov: 0.3, hue: '#e0e8f0', amt: 0.3, shade: 0.92, wind: 1.8, grey: 0.35 }, streaks: 0.7, particles: { snow: 1.0 } },
   alpine: { fog: ['#c8d8e8', 0.15, 1], dens: [1.1, 0.8, 1.0], tint: [0.97, 1.0, 1.03], sat: 0.92, con: 1.03, cloud: { cov: 0.15, hue: '#d8e0ea', amt: 0.2, wind: 1.5, grey: 0.15 }, streaks: 0.8, particles: { snow: 0.35 } },
   desert: { fog: ['#e0b478', 0.78, 1.02], dens: [1.55, 0.6, 1.6], tint: [1.09, 1.01, 0.87], sat: 1.08, con: 1.1, cloud: { cov: -0.33, hue: '#fff0d8', amt: 0.2, wind: 0.6 }, streaks: 1, particles: { sand: 1.0 } },
   savanna: { fog: ['#e6cf9a', 0.38, 1.02], dens: [0.9, 0.5, 1.15], tint: [1.05, 1.0, 0.9], sat: 1.08, con: 1.03, cloud: { cov: -0.18, hue: '#f4dca8', amt: 0.3, wind: 0.8 }, streaks: 0.75, particles: { dust: 1.0, fireflies: 0.2 } },
-  tropical: { fog: ['#b8d8c0', 0.32, 0.98], dens: [1.3, 2.0, 1.2], tint: [0.97, 1.02, 0.97], sat: 1.12, con: 1.02, cloud: { cov: 0.32, hue: '#c8d8cc', amt: 0.25, lit: 0.95, shade: 0.82, wind: 0.9, grey: 0.15 }, streaks: 0, particles: { motes: 0.5, fireflies: 1.0 } },
-  mangrove: { fog: ['#b0c8b0', 0.5, 0.96], dens: [1.6, 3.6, 1.4], tint: [0.97, 1.01, 0.96], sat: 1.04, con: 1.0, cloud: { cov: 0.3, hue: '#c0d0c0', amt: 0.3, shade: 0.82, grey: 0.2 }, streaks: 0, particles: { motes: 0.7, fireflies: 0.8 } },
+  tropical: { fog: ['#b8d8c0', 0.32, 0.98], dens: [1.3, 2.0, 1.2], tint: [0.97, 1.02, 0.97], sat: 1.12, con: 1.02, cloud: { cov: 0.32, hue: '#c8d8cc', amt: 0.25, lit: 0.95, shade: 0.82, wind: 0.9, grey: 0.15 }, streaks: 0, particles: { motes: 0.5, fireflies: 1.0, butterflies: 0.9, dragonflies: 0.6 } },
+  mangrove: { fog: ['#b0c8b0', 0.5, 0.96], dens: [1.6, 3.6, 1.4], tint: [0.97, 1.01, 0.96], sat: 1.04, con: 1.0, cloud: { cov: 0.3, hue: '#c0d0c0', amt: 0.3, shade: 0.82, grey: 0.2 }, streaks: 0, particles: { motes: 0.7, fireflies: 0.8, dragonflies: 1.0, butterflies: 0.3 } },
   volcanic: { fog: ['#a08078', 0.6, 0.78], dens: [1.6, 1.4, 1.4], tint: [1.04, 0.93, 0.88], sat: 0.85, con: 1.08, cloud: { cov: 0.35, hue: '#6a5a54', amt: 0.7, lit: 0.6, shade: 0.5, wind: 1.3, grey: 0.5 }, streaks: 0, particles: { ash: 1.0, embers: 0.6 } },
   geothermal: { fog: ['#e8ecec', 0.42, 1.05], dens: [1.3, 2.6, 1.2], tint: [1.0, 0.99, 0.98], sat: 0.9, con: 0.97, cloud: { cov: 0.2, hue: '#f0f0f0', amt: 0.3, grey: 0.2 }, streaks: 0, particles: { steam: 1.0 } },
 };
@@ -156,12 +162,12 @@ const fogTermsOf = (p: Profile) => { let t = FOG_TERMS.get(p); if (!t) FOG_TERMS
 
 interface Mix {
   fog: number[]; dens: number[]; tint: number[]; sat: number; con: number; cloud: number[]; streaks: number;
-  particles: Record<ParticleKind, number>;
+  particles: Record<AmbientKind, number>;
 }
 
 function emptyMix(): Mix {
-  const particles = {} as Record<ParticleKind, number>;
-  for (const k of PARTICLE_KINDS) particles[k] = 0;
+  const particles = {} as Record<AmbientKind, number>;
+  for (const k of AMBIENT_KINDS) particles[k] = 0;
   return { fog: [1, 0, 0, 0], dens: [1, 1, 1], tint: [1, 1, 1], sat: 1, con: 1, cloud: cloudTerms(NEUTRAL), streaks: 0, particles };
 }
 
@@ -181,6 +187,8 @@ export class BiomeAmbience {
   private current = emptyMix();
   private target = emptyMix();
   private particles: BiomeParticles;
+  private flyers: Flyers;
+  private treeFall: TreeFall;
   private wind = new Wind();
   private streaks: WindStreaks;
   private rain: Rain;
@@ -197,6 +205,8 @@ export class BiomeAmbience {
 
   constructor(scene: THREE.Scene) {
     this.particles = new BiomeParticles(scene);
+    this.flyers = new Flyers(scene);
+    this.treeFall = new TreeFall(scene);
     this.streaks = new WindStreaks(scene);
     this.rain = new Rain(scene);
   }
@@ -236,7 +246,7 @@ export class BiomeAmbience {
     // alvo = média ponderada dos perfis amostrados
     const t = this.target;
     t.fog = [0, 0, 0, 0]; t.cloud = t.cloud.map(() => 0); t.dens = [0, 0, 0]; t.tint = [0, 0, 0]; t.sat = 0; t.con = 0; t.streaks = 0;
-    for (const k of PARTICLE_KINDS) t.particles[k] = 0;
+    for (const k of AMBIENT_KINDS) t.particles[k] = 0;
     let wSum = 0, pSum = 0;
     const share = new Map<Profile, number>();
     this.samples.forEach((p, i) => {
@@ -263,7 +273,7 @@ export class BiomeAmbience {
     for (const [p, w] of share) {
       const s = w / pSum;
       const k = THREE.MathUtils.smoothstep(s, 0.3, 0.7);
-      for (const kind in p.particles) t.particles[kind as ParticleKind] += (p.particles[kind as ParticleKind] ?? 0) * k;
+      for (const kind in p.particles) t.particles[kind as AmbientKind] += (p.particles[kind as AmbientKind] ?? 0) * k;
     }
 
     // transição lenta: na divisa de dois biomas o alvo oscila com o anel de amostras, e uma resposta rápida piscava o céu e as árvores
@@ -273,7 +283,7 @@ export class BiomeAmbience {
     for (let c = 0; c < 4; c++) cur.fog[c] = lerp(cur.fog[c], t.fog[c]);
     for (let c = 0; c < 3; c++) { cur.dens[c] = lerp(cur.dens[c], t.dens[c]); cur.tint[c] = lerp(cur.tint[c], t.tint[c]); }
     cur.sat = lerp(cur.sat, t.sat); cur.con = lerp(cur.con, t.con); cur.streaks = lerp(cur.streaks, t.streaks);
-    for (const k of PARTICLE_KINDS) cur.particles[k] = lerp(cur.particles[k], t.particles[k]);
+    for (const k of AMBIENT_KINDS) cur.particles[k] = lerp(cur.particles[k], t.particles[k]);
     // nuvens: o céu inteiro muda junto, então devagar (~30s para assentar)
     const ac = 1 - Math.exp(-dt / 9);
     for (let c = 0; c < cur.cloud.length; c++) cur.cloud[c] += (t.cloud[c] - cur.cloud[c]) * ac;
@@ -323,6 +333,11 @@ export class BiomeAmbience {
     sky.setWindDirection(this.wind.x, this.wind.z);
     const parts = snowAmt > 0.01 ? { ...cur.particles, snow: Math.max(cur.particles.snow, snowAmt) } : cur.particles;
     this.particles.update(dt, camera, parts, this.nearMode, viewportHeight, this.wind);
+    // folhas e pétalas que saem das copas de perto (treeFall.ts); só em primeira pessoa
+    this.treeFall.update(dt, camera, this.nearMode, viewportHeight, this.wind, terrainGen, Math.max(0.2, 1 - snowAmt));
+    // sem borboleta nem libélula na chuva forte
+    const calm = Math.max(0, 1 - this.wx.rain * 2.5);
+    this.flyers.update(dt, camera, { butterflies: cur.particles.butterflies * calm, dragonflies: cur.particles.dragonflies * calm }, this.nearMode, viewportHeight, this.wind, terrainGen);
     this.rain.update(dt, camera, this.wind, rainAmt * this.nearMode, viewportWidth, viewportHeight, (x, z) => {
       const p = terrainGen.getPointFast(x, z);
       const water = p.isWater || p.waterSurfaceY > p.height;

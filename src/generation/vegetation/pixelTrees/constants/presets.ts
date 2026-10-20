@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { TreeConfig } from '../types';
+import { TreeConfig, TreeSpecies } from '../types';
 import { createRockPresets } from './rockBiomes';
 import { createGroundPropPresets } from './groundProps';
 
@@ -2250,3 +2250,64 @@ export const TREE_PRESETS: Record<string, TreeConfig> = {
     windStrength: 0.55,
   },
 };
+
+// Every full-size tree has the same four deadwood forms as the generic logs.
+// Derive their bark, proportions and seed from the living tree so a birch,
+// pine or palm log remains recognisably that species in every form.
+const LOG_FORMS = [
+  { prefix: 'fallen_log', label: 'Tronco Caído', length: 0.58, radius: 0.67, roots: 0.8 },
+  { prefix: 'hollow_log', label: 'Tronco Oco', length: 0.48, radius: 0.77, roots: 0.8 },
+  { prefix: 'rooted_log', label: 'Com Raízes', length: 0.57, radius: 0.65, roots: 1.35 },
+  { prefix: 'tree_stump', label: 'Toco', length: 0.11, radius: 0.72, roots: 1.1 },
+] as const;
+
+// A fallen lower trunk does not taper all the way to the living crown.
+// These profiles preserve the defining proportions of each parent species.
+const LOG_SHAPES: Record<string, { tip: number; bend: number; branches: number; roots: number; length?: number }> = {
+  satori_sakura: { tip: 0.72, bend: 1.15, branches: 5, roots: 1.0 },
+  akkala_birch: { tip: 0.8, bend: 0.45, branches: 2, roots: 0.75 },
+  hebra_pine: { tip: 0.72, bend: 0.35, branches: 5, roots: 0.8 },
+  hebra_pine_snowy: { tip: 0.72, bend: 0.35, branches: 5, roots: 0.8 },
+  faron_palm: { tip: 0.93, bend: 1.6, branches: 0, roots: 0.55, length: 1.1 },
+  korok_ancient: { tip: 0.7, bend: 1.25, branches: 5, roots: 1.25 },
+  swamp_mangrove: { tip: 0.78, bend: 1.15, branches: 4, roots: 1.1 },
+  savanna_acacia: { tip: 0.75, bend: 1.25, branches: 3, roots: 0.85 },
+  dry_withered: { tip: 0.74, bend: 1.35, branches: 5, roots: 0.9 },
+};
+
+for (const tree of Object.values(TREE_PRESETS).filter(
+  (preset) => preset.id !== 'gerudo_cactus' &&
+    (preset.growthStage === 'adult' || (preset.growthStage === undefined && !preset.prop))
+)) {
+  for (const [formIndex, form] of LOG_FORMS.entries()) {
+    const id = `${form.prefix}_${tree.id}` as TreeSpecies;
+    const isStump = form.prefix === 'tree_stump';
+    const shape = LOG_SHAPES[tree.id] ?? { tip: 0.72, bend: 1, branches: 4, roots: 1 };
+    const baseRadius = Math.max(0.38, tree.trunkRadiusBase * form.radius);
+    TREE_PRESETS[id] = {
+      ...LOG_BASE,
+      id,
+      species: id,
+      name: `${form.label} · ${tree.name}`,
+      seed: tree.seed + 7100 + formIndex * 109,
+      trunkHeight: isStump
+        ? Math.max(0.65, Math.min(1.75, tree.trunkHeight * form.length))
+        : Math.max(3.2, Math.min(8.2, tree.trunkHeight * form.length * (shape.length ?? 1))),
+      trunkRadiusBase: baseRadius,
+      trunkRadiusTop: Math.min(baseRadius, Math.max(0.28, tree.trunkRadiusTop * form.radius,
+        baseRadius * (form.prefix === 'hollow_log' ? Math.max(0.82, shape.tip) : shape.tip))),
+      trunkCurvature: Math.max(0.03, (tree.trunkCurvature ?? 0.2) * shape.bend),
+      rootSpread: Math.max(0.4, (tree.rootSpread ?? 1) * form.roots * shape.roots),
+      branchCount: isStump || (tree.id === 'swamp_mangrove' && form.prefix === 'rooted_log')
+        ? 0 : form.prefix === 'hollow_log' ? Math.min(1, shape.branches) : shape.branches,
+      barkColor: tree.barkColor,
+      barkStyle: tree.barkStyle,
+      barkRoughness: tree.barkRoughness,
+      mossAmount: Math.max(0, (tree.mossAmount ?? 0) * 0.75),
+      snowCover: tree.snowCover ?? 0,
+      mushroomCount: tree.showMushrooms === false ? 0 : isStump ? 3 : 4,
+      showMushrooms: tree.showMushrooms !== false,
+    };
+  }
+}
+

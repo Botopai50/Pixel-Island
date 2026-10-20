@@ -20,6 +20,7 @@ import { WakeSim } from './atmosphere/wakeSim.ts';
 import { Splash } from './atmosphere/splash.ts';
 import { Bloom } from './atmosphere/bloom.ts';
 import { WET, SHADOW_GRID } from './atmosphere/atmosphericFog.ts';
+import { OBJECT_GRID } from './generation/vegetation/pixelTrees/services/assetEnvironment.ts';
 import { PuddleSSR } from './atmosphere/puddleSSR.ts';
 import { WaterVisibility } from './generation/hydrology/waterVisibility.ts';
 import { DropReticle } from './player/dropReticle.ts';
@@ -32,6 +33,8 @@ import { TouchControlsWidget } from './ui/touchControlsWidget.ts';
 import { CONFIG } from './config.ts';
 import { setForgeTextureAnisotropy, DEFAULT_D } from './generation/terrain/terrainTextureForge.ts';
 import { AdaptiveQuality, QualityLevel, QUALITY_LEVELS, detectInitialQuality } from './quality.ts';
+import { QualityWidget } from './ui/qualityWidget.ts';
+import { installBench, phase, phaseStart, phaseEnd } from './tools/bench.ts';
 
 // névoa atmosférica (da cor do horizonte): antes de compilar qualquer material
 installAtmosphericFog();
@@ -210,6 +213,7 @@ class App {
     // pingos de chuva na água viram anelzinhos (as mesmas ondulações do clique, bem menores)
     this.ambience.setRainRippleSink((x, z) => this.worldEngine.addRipple(x, z, 0.7, 0.8, 1.8, 0.955));
     this.worldEngine.initTreeImpostors(this.renderer);
+    this.worldEngine.setSettlementPrecompiler((obj) => this.renderer.compileAsync(obj, this.playerController.getCamera(), this.scene));
     this.syncAtmosphereWithWorld();
 
     // Configuração do Render Target de Água com DepthTexture (1x nativo para máximo fillrate)
@@ -443,6 +447,8 @@ class App {
     (window as any).__TEXTURE_WIDGET__ = this.textureForgeWidget;
     (window as any).__TOUCH_CONTROLS__ = this.touchControlsWidget;
     (window as any).__QUALITY__ = this.quality;
+    installBench({ world: this.worldEngine, player: this.playerController, renderer: this.renderer });
+    new QualityWidget(this.quality);
 
     // Clique interativo na água para gerar ondas e ondulações (Ripples)
     container.addEventListener('pointerdown', (e) => {
@@ -647,6 +653,11 @@ class App {
   private fpsTime = 0;
   private fpsWorst = 0;
   private fpsOn = true;
+  private farWarmed = false;
+  private readonly _lastMovePos = new THREE.Vector3(1e9, 0, 1e9);
+  private lastMovedAt = 0;
+  /** o jogador andou (ou a câmera se mexeu) há menos de ~0,6 s: trabalho de fundo que trava o quadro espera */
+  public isMoving(): boolean { return performance.now() - this.lastMovedAt < 600; }
   private tickFpsCounter(ms: number): void {
     if (!this.fpsEl) {
       const el = document.createElement('div');
@@ -658,6 +669,12 @@ class App {
         e.preventDefault();
         this.fpsOn = !this.fpsOn;
         el.style.display = this.fpsOn ? 'block' : 'none';
+      });
+      // F4: mostra a grade de texels dos objetos (linhas vermelhas sobre a casca, as pedras e o resto)
+      window.addEventListener('keydown', (e) => {
+        if (e.key !== 'F4') return;
+        e.preventDefault();
+        OBJECT_GRID.value = OBJECT_GRID.value > 0.5 ? 0 : 1;
       });
     }
     this.fpsFrames++; this.fpsTime += ms; this.fpsWorst = Math.max(this.fpsWorst, ms);
@@ -693,6 +710,8 @@ class App {
     requestAnimationFrame(this.animate);
 
     const rawDt = this.clock.getDelta();
+    phaseEnd(rawDt * 1000);
+    phaseStart();
     beginFrameBudget();
     updateRenderOptimizations(this.renderer);
     pumpTextureUploads();
@@ -704,6 +723,8 @@ class App {
     // 1. Atualização do Controlador de Câmera/Jogador (Aéreo / Primeira Pessoa / Transição)
     this.playerController.update(dt, this.worldEngine.getTerrainGenerator());
     const playerPos = this.playerController.getPosition();
+    if (playerPos.distanceToSquared(this._lastMovePos) > 0.0025) { this._lastMovePos.copy(playerPos); this.lastMovedAt = performance.now(); }
+    phase('jogador');
 
     // Grama 3D se afasta do personagem em 1ª pessoa (pés = olhos - altura dos olhos)
     if (this.playerController.getMode() === CameraMode.FIRST_PERSON) {
@@ -734,8 +755,13 @@ class App {
     if (this.playerController.getMode() === CameraMode.OBSERVER) {
       this.worldEngine.setViewRadius(this.observerViewRadius(), CONFIG.MAX_VIEW_RADIUS_CHUNKS);
     }
+    phase('pés/rastros');
     this.worldEngine.updateObserverPosition(playerPos.x, playerPos.z);
+    phase('mundo.observador');
+    this.worldEngine.stepTreeImpostors();
+    phase('impostores');
     this.worldEngine.updateSimulation(dt);
+    phase('simulação');
     this.syncAtmosphereWithWorld();
     this.atmosphere.updateTarget(playerPos.x, playerPos.y, playerPos.z);
     // sombra na grade do chão: as matrizes das 3 faixas de sombra (as próprias Matrix4 das luzes)
@@ -805,7 +831,9 @@ class App {
     // (no máximo ~6x/s, como no carregamento de chunks)
     // (se o conjunto mudou dentro dos 160 ms do último refazer, o pedido fica guardado: antes se perdia, e com o jogador parado
     // depois de girar a câmera as árvores novas na vista ficavam sem sombra até algo mexer de novo)
+    phase('sombras.antes');
     if (this.worldEngine.cullVegetation(activeCamera)) this.vegShadowPending = true;
+    phase('cullVegetação');
     if (this.vegShadowPending && now - this.lastVegShadowRefresh > 250) {
       this.shadowsNearOnly = true;
       this.lastVegShadowRefresh = now;
@@ -820,6 +848,7 @@ class App {
       skybox);
     const isFirstPerson = this.playerController.getMode() === CameraMode.FIRST_PERSON;
     const seaLevel = 0.0;
+    phase('ambiência');
 
     // 3. Renderização Multi-Pass para o Pixel Water Shader
     // No Modo 1ª Pessoa: Renderiza a reflexão a cada frame para sincronia total com o movimento do jogador (elimina 100% de flicadas e stutter ao andar)
@@ -914,6 +943,8 @@ class App {
           }
         });
       }
+      // arbustos e flores dos jardins da cidade, como o capim e as plantas pequenas do mundo, não entram no reflexo (a imagem é de 256 x 256), e as peças da cidade a mais de 150 m (como as árvores) também não
+      if (reflWork !== 'b') hidden.push(...this.worldEngine.hideSettlementForReflection(activeCamera.position, 150));
       const vegRoot = this.worldEngine.getVegetationRoot();
       const hiddenTop: THREE.Object3D[] = [];
       let savedBg: THREE.Scene['background'] = null;
@@ -982,6 +1013,7 @@ class App {
       canvasStyle.transform = '';
     }
 
+    phase('reflexo');
     // Passo 2: Renderizar mundo opaco (sem água) com câmera principal e atualização sob demanda de sombras
     this.worldEngine.setWaterVisible(false);
     const clip = this.atmosphere.getShadowClipmap();
@@ -1000,15 +1032,23 @@ class App {
     else if (this.farOn && this.farEma < 0.0045) this.farOn = false;
     const farWanted = isFirstPerson && (activeCamera as THREE.PerspectiveCamera).isPerspectiveCamera && this.farMode !== 'off' && (this.farMode === 'on' || this.farOn);
     let farEngaged = false;
+    // uma vez, com o jogador parado e o mundo já carregado: aloca e desenha a camada distante antes de o jogo precisar dela (ver FarLayer.warmUp)
+    if (!this.farWarmed && !farWanted && isFirstPerson && (activeCamera as THREE.PerspectiveCamera).isPerspectiveCamera && this.farMode !== 'off'
+      && !this.isMoving() && performance.now() - this.lastMovedAt > 2500 && this.worldEngine.getChunkManager().getSceneVersion() > 40) {
+      this.farWarmed = true;
+      this.farLayer.warmUp(activeCamera as THREE.PerspectiveCamera, this.waterRenderTarget.width, this.waterRenderTarget.height, this.farFrame++);
+    }
     if (farWanted) {
       farEngaged = this.farLayer.begin(activeCamera as THREE.PerspectiveCamera, this.waterRenderTarget.width, this.waterRenderTarget.height, this.farFrame++);
     } else if ((this.farFrame++ % 30) === 0) {
       // desligado: os chunks continuam divididos entre perto e longe (o grupo distante é desenhado normalmente)
       this.worldEngine.updateFarMembership();
     }
+    phase('far/sombras.prep');
     this.renderer.setRenderTarget(this.waterRenderTarget);
     this.renderer.clear();
     this.renderer.render(this.scene, activeCamera);
+    phase('render.principal');
     if (farEngaged) this.farLayer.finish();
 
     // God rays + lens flare (sunFX.ts): raios a partir do depth da cena opaca; somados no fim
@@ -1065,8 +1105,10 @@ class App {
       this.waterRenderTarget.texture
     );
 
+    phase('godrays/fx');
     this.renderer.autoClear = false;
     this.renderer.render(this.worldEngine.getWaterGroup(), activeCamera);
+    phase('água');
     this.renderer.autoClear = true;
 
     // Passo 5: FXAA da imagem final para a tela
@@ -1079,6 +1121,7 @@ class App {
     this.renderer.setRenderTarget(null);
     this.sunFX.overlay(this.renderer);
     this.bloom.composite(this.renderer);
+    phase('pós');
 
     if (snapCam) {
       snapCam.position.copy(this._camSaved);
@@ -1089,15 +1132,17 @@ class App {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  new App();
+  const app = new App();
   // gera as árvores e plantas aos poucos, em segundo plano (uma variação por vez, só com o navegador ocioso):
   // andar até um bioma novo não trava mais o jogo com a geração de uma árvore inteira
   const idle = (cb: () => void) => ((window as unknown as { requestIdleCallback?: (f: () => void, o: { timeout: number }) => void }).requestIdleCallback ?? ((f: () => void) => setTimeout(f, 60)))(cb, { timeout: 1500 });
   const warm = () => {
     if (document.hidden) { setTimeout(() => idle(warm), 1000); return; }
+    // cada passo custa 50 a 210 ms de quadro parado: só com o jogador parado (andando, quem precisa de uma espécie nova a gera aos poucos por conta própria)
+    if (app.isMoving()) { setTimeout(() => idle(warm), 400); return; }
     let more = true;
     try { more = warmGameTreesStep(); } catch { more = false; }
-    if (more) setTimeout(() => idle(warm), 250);
+    if (more) setTimeout(() => idle(warm), 120);
   };
   setTimeout(() => idle(warm), 8000);
 });

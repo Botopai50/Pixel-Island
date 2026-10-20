@@ -1,0 +1,1 @@
+import type {StructurePlan} from './types';export function settleDebris(plan:StructurePlan){plan.debris.forEach(d=>{d.position[1]=d.size[1]/2;});return plan;}

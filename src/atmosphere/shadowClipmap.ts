@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SHADOW_CASCADE_CAMS, setShadowCascade } from '../generation/vegetation/instancePool.ts';
 import { FAR } from '../generation/farLayer.ts';
+import { SHADOW_LIFT } from './shadowLift.ts';
 
 export interface ClipmapCascadeConfig {
   radius: number;        // Raio/extensão ortográfica em metros (ex: 35m, 120m, 450m)
@@ -22,7 +23,7 @@ export const DEFAULT_CLIPMAP_CONFIGS: ClipmapCascadeConfig[] = [
     bias: -0.00002,
     // (0,12 m afastava o ponto do chão para cima, para dentro de um tronco ou pedra deitados, e a sombra deles só começava a uns 10 a 20 cm do contato:
     // uma faixa de chão claro entre o objeto e a sombra. Com 0,04 m (~1,2 texel do mapa) a sombra encosta; com 0 o próprio tronco ganha ruído.)
-    normalBias: 0.04,
+    normalBias: 0.012,
     near: 1,
     far: 1050,
     lightDistance: 800
@@ -174,6 +175,16 @@ export class ShadowClipmap {
 
   public setSunDirection(sunDir: THREE.Vector3): void {
     this.currentSunDir.copy(sunDir).normalize();
+    // O afastamento do ponto de leitura da sombra no chão (normalBias) tem duas pontas. Pequeno: a sombra encosta no pé da pedra e do tronco (com o sol a 30 graus, 4 cm de
+    // afastamento deixavam uns 7 cm de chão claro entre o objeto e a sombra: a faixa é afastamento / tan(altura do sol)). Grande: o chão iluminado não se auto-sombreia em listras
+    // quando a luz é rasante. Então: pequeno com o sol alto (acima de uns 17 graus) e o valor maior com o sol baixo (abaixo de uns 7 graus), mudando aos poucos entre os dois.
+    const base = this.configs[0]?.normalBias;
+    if (base !== undefined && this.lights[0]) {
+      const k = THREE.MathUtils.smoothstep(this.currentSunDir.y, 0.12, 0.30);       // 0 = sol baixo, 1 = sol alto
+      this.lights[0].shadow.normalBias = THREE.MathUtils.lerp(base * 3.3, base, k);
+      // sombra das pedras: sobe o normalBias (o ponto lido do chão é levantado) mais uma folga de 22 cm de chão (a leitura no centro do pixel do chão, de 4,7 cm, contra o texel do mapa)
+      SHADOW_LIFT.value = this.lights[0].shadow.normalBias + 0.22 * Math.min(1.5, Math.tan(Math.asin(Math.min(1, Math.max(0.02, this.currentSunDir.y)))));
+    }
     this.updatePositions(this.lastTargetPos.x, this.lastTargetPos.y, this.lastTargetPos.z);
   }
 

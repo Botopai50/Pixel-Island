@@ -1,4 +1,8 @@
 // @ts-nocheck
+import { buildSwampRootsAndAccessories } from './swampGenerator';
+import { rootFibreTexture, FIBRE_TEXELS_PER_METRE } from './rootFibreSprite';
+import { boulderGeometry, createPixelRockMaterial } from './rockSystem';
+import { ROCK_BIOMES, rockBiomeForSpecies } from '../constants/rockBiomes';
 import * as THREE from 'three';
 import { TreeConfig } from '../types';
 import { createPixelEndGrainMaterial } from './endGrainMaterial';
@@ -196,6 +200,8 @@ interface TubeOptions {
   pointEnd?: boolean;
   /** radius of the hollow core, as a fraction of the outer radius */
   hollow?: number;
+  /** scales the wood metrics the bark shader sees, so thin roots keep readable bark grain */
+  woodScale?: number;
 }
 
 /** Adds a bark tube; returns the rim rings of both ends for the caps. */
@@ -235,7 +241,8 @@ function addBarkTube(
         r = 0.01;
         p = f.p.clone();
       }
-      buf.push(p, j / radial, along, r, opt.meanRadius, Math.cos(a), Math.sin(a));
+      const ws = opt.woodScale ?? 1;
+      buf.push(p, j / radial, along * ws, r * ws, opt.meanRadius * ws, Math.cos(a), Math.sin(a));
       if (j < radial) {
         if (i === 0) startRim.push(p.clone());
         if (i === n - 1) endRim.push(p.clone());
@@ -420,8 +427,13 @@ export function buildProceduralLog(
 
   // knots and bumps along the bark, so it is not a machined cylinder
   const knotPhase = rnd() * 10;
+  const palmScars = config.species.endsWith('_faron_palm');
+  const mangroveRoots = config.species.endsWith('_swamp_mangrove');
+  const ancientWood = config.species.endsWith('_korok_ancient');
   const bumpy = (s: number, a: number) =>
-    1 + 0.035 * Math.sin(a * 5 + s * 9 + knotPhase) + 0.025 * Math.sin(a * 3 - s * 14 + knotPhase * 2);
+    1 + 0.035 * Math.sin(a * 5 + s * 9 + knotPhase) + 0.025 * Math.sin(a * 3 - s * 14 + knotPhase * 2)
+    + (palmScars ? 0.045 * Math.sin(s * length * 12) : 0)
+    + (ancientWood ? 0.065 * Math.sin(a * 4 + s * 8 + knotPhase) : 0);
 
   // ---------------------------------------------------------------------------
   // STUMP
@@ -441,13 +453,15 @@ export function buildProceduralLog(
     const hingeA = rnd() * Math.PI * 2;
     const cutJag = (a: number) => {
       const d = Math.abs(((a - hingeA + Math.PI) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI);
-      const hinge = d < 0.5 ? (1 - d / 0.5) * r0 * 0.55 : 0;
+      const hinge = d < 0.5 ? (1 - d / 0.5) * r0 * (palmScars ? 0.12 : 0.55) : 0;
       return 0.02 * Math.sin(a * 7 + knotPhase) + hinge;
     };
+    // the ancient Korok stump keeps its roots, just a quarter as spread out
+    const stumpSpread = ancientWood ? spread * 0.25 : spread;
     const flare = (s: number) => {
       const y = s * (height + 0.12) - 0.12;
-      const k = Math.max(0, 1 - y / Math.min(0.55, height * 0.8));
-      return 1 + 0.45 * spread * k * k;
+      const k = Math.max(0, 1 - y / Math.min(ancientWood ? 0.45 : 0.55, height * 0.8));
+      return 1 + (palmScars ? 0.32 : mangroveRoots ? 0.12 : 0.45) * stumpSpread * k * k;
     };
     const rimOf = addBarkTube(bark, frames, {
       radial,
@@ -458,12 +472,40 @@ export function buildProceduralLog(
     });
     addEndFace(grain, frames[frames.length - 1], rimOf.endRim, frames[frames.length - 1].t, 'cut', rnd);
 
+    // a mangrove stump keeps the stilt roots of the living tree
+    if (mangroveRoots) {
+      const mangrove = buildSwampRootsAndAccessories(
+        {
+          ...config,
+          trunkRadiusBase: r0,
+          aerialRootHeight: Math.min(config.aerialRootHeight ?? 1.8, Math.max(0.5, height * 0.75)),
+          showShelfMushrooms: false,
+          showHangingMoss: false,
+          showSwampWater: false,
+        },
+        { allNodes: [] },
+        barkMaterial,
+        { uTime: { value: 0 }, uWindStrength: { value: 0 }, uWindSpeed: { value: 0 }, uLightDir: { value: new THREE.Vector3(0.4, 0.8, 0.3) } },
+        branchTips,
+        rnd,
+      );
+      // keep every root below the cut: squash the whole root set if it climbs past the top
+      const rootTop = new THREE.Box3().setFromObject(mangrove.group).max.y;
+      const maxTop = height * 0.88;
+      if (rootTop > maxTop) mangrove.group.scale.y = Math.max(0.2, maxTop / rootTop);
+      group.add(mangrove.group);
+      geometriesToDispose.push(...mangrove.geometriesToDispose);
+      for (const m of mangrove.materialsToDispose) {
+        if (Array.isArray(m)) materialsToDispose.push(...m); else materialsToDispose.push(m);
+      }
+      extent = Math.max(extent, r0 + 1.25 * (config.aerialRootSpread ?? 1.4));
+    }
     // buttress roots running off into the soil
-    const rootCount = 5 + Math.floor(rnd() * 3);
-    for (let k = 0; k < rootCount; k++) {
+    const rootCount = (palmScars ? 8 : mangroveRoots ? 9 : 5) + Math.floor(rnd() * 3);
+    for (let k = 0; k < (mangroveRoots ? 0 : rootCount); k++) {
       const a = (k / rootCount) * Math.PI * 2 + (rnd() - 0.5) * 0.5;
       const dir = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
-      const reach = (0.8 + rnd() * 0.7) * spread + r0;
+      const reach = (palmScars ? 0.45 + rnd() * 0.3 : ancientWood ? 0.6 + rnd() * 0.5 : 0.8 + rnd() * 0.7) * stumpSpread + r0;
       const pts: THREE.Vector3[] = [];
       const rootSegs = 10;
       for (let i = 0; i <= rootSegs; i++) {
@@ -473,7 +515,7 @@ export function buildProceduralLog(
         pts.push(dir.clone().multiplyScalar(d).add(new THREE.Vector3(0, y, 0))
           .add(new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(Math.sin(t * 3 + k) * 0.08)));
       }
-      const rr = r0 * (0.24 + rnd() * 0.08);
+      const rr = r0 * (palmScars ? 0.12 + rnd() * 0.04 : 0.24 + rnd() * 0.08);
       addBarkTube(bark, framesAlong(pts), {
         radial: 10,
         meanRadius: rr * 0.6,
@@ -498,9 +540,9 @@ export function buildProceduralLog(
     const side = new THREE.Vector3(-dir.z, 0, dir.x);
     const bendSign = rnd() > 0.5 ? 1 : -1;
     // sunk a little into the soil, never floating
-    const sink = kind === 'hollow' ? 0.9 : 0.82;
+    const sink = kind === 'hollow' ? 0.9 : palmScars ? 0.94 : 0.82;
     // an uprooted trunk still rests with its root end lifted
-    const lift = kind === 'rooted' ? r0 * 0.6 : 0;
+    const lift = kind === 'rooted' ? r0 * (palmScars ? 0.2 : mangroveRoots ? 0.7 : 0.6) : 0;
     const path: THREE.Vector3[] = [];
     for (let i = 0; i <= segs; i++) {
       const t = i / segs;
@@ -514,13 +556,16 @@ export function buildProceduralLog(
 
     // base flare at the thick end (where the tree stood)
     const baseFlare = (s: number, a: number) => {
-      if (kind === 'hollow') return 1;
-      const k = Math.max(0, 1 - s / 0.14);
-      return 1 + (kind === 'rooted' ? 0.4 : 0.22) * k * k * (1 + 0.3 * Math.cos(a * 5 + knotPhase));
+      if (kind === 'hollow' || (mangroveRoots && kind === 'rooted')) return 1;
+      const k = Math.max(0, 1 - s / (palmScars ? 0.2 : 0.14));
+      const flareStrength = palmScars
+        ? (kind === 'rooted' ? 0.3 : 0.08)
+        : (kind === 'rooted' ? 0.4 : 0.22);
+      return 1 + flareStrength * k * k * (1 + 0.3 * Math.cos(a * 5 + knotPhase));
     };
     const radiusAt = (s: number, a: number) => THREE.MathUtils.lerp(r0, r1, s) * bumpy(s, a) * baseFlare(s, a);
 
-    const startKind: EndKind = kind === 'rooted' ? 'cut' : kind === 'hollow' ? 'cut' : 'broken';
+    const startKind: EndKind = kind === 'rooted' && !mangroveRoots ? 'cut' : kind === 'hollow' ? 'cut' : 'broken';
     const endKind: EndKind = 'broken';
     const startJag = startKind === 'broken' ? makeSplinters(rnd, 11, r0 * 0.7) : (a: number) => 0.03 * Math.sin(a * 4 + knotPhase);
     const endJag = makeSplinters(rnd, 11, r1 * (kind === 'hollow' ? 0.6 : 0.9));
@@ -529,14 +574,14 @@ export function buildProceduralLog(
       radial,
       meanRadius: (r0 + r1) * 0.5,
       radius: radiusAt,
-      startJag: kind === 'rooted' ? undefined : startJag,
+      startJag: kind === 'rooted' && !mangroveRoots ? undefined : startJag,
       endJag,
     });
 
     const f0 = frames[0];
     const fN = frames[frames.length - 1];
-    // (the rooted trunk's end is hidden in its root plate, but closed anyway)
-    const innerStartRim=addEndFace(grain, f0, rims.startRim, f0.t.clone().negate(), startKind, rnd, hollow);
+    // A mangrove's rooted end continues into a woody root crown below.
+    const innerStartRim = addEndFace(grain, f0, rims.startRim, f0.t.clone().negate(), startKind, rnd, hollow);
     const innerEndRim=addEndFace(grain, fN, rims.endRim, fN.t.clone(), endKind, rnd, hollow);
 
     // ---- the hollow ---------------------------------------------------------
@@ -601,6 +646,8 @@ export function buildProceduralLog(
 
     // ---- broken branch stubs ------------------------------------------------
     const stubCount = kind === 'hollow' ? Math.min(2, config.branchCount) : Math.min(6, config.branchCount);
+    const stubScale = mangroveRoots || config.species.includes('_hebra_pine') ? 0.65
+      : ancientWood ? 1.15 : 1;
     for (let b = 0; b < stubCount; b++) {
       const s = 0.25 + rnd() * 0.6;
       const f = frames[Math.round(s * (frames.length - 1))];
@@ -608,8 +655,8 @@ export function buildProceduralLog(
       const a = (rnd() - 0.5) * Math.PI * 1.1;
       const out = f.u.clone().multiplyScalar(Math.cos(a)).addScaledVector(f.v, Math.sin(a)).normalize();
       const rTrunk = THREE.MathUtils.lerp(r0, r1, s);
-      const rStub = rTrunk * (0.2 + rnd() * 0.12);
-      const len = rTrunk * (0.9 + rnd() * 0.9);
+      const rStub = rTrunk * (0.2 + rnd() * 0.12) * stubScale;
+      const len = rTrunk * (0.9 + rnd() * 0.9) * stubScale;
       const grow = out.clone().addScaledVector(f.t, 0.35 + rnd() * 0.3).normalize();
       const pts: THREE.Vector3[] = [];
       for (let i = 0; i <= 4; i++) {
@@ -631,7 +678,208 @@ export function buildProceduralLog(
     if (kind === 'rooted') {
       const base = f0;
       const back = base.t.clone().negate();
-      const plateR = r0 * (1.6 + 0.4 * spread);
+      if (mangroveRoots) {
+        // A windthrown mangrove: the trunk end closes in a rounded root crown,
+        // and thick stilt roots arch out of it and down into the soil, holding
+        // the lifted end up like a tripod.
+        const up = new THREE.Vector3(0, 1, 0);
+        const backFlat = new THREE.Vector3(back.x, 0, back.z).normalize();
+        const sideFlat = new THREE.Vector3().crossVectors(backFlat, up).normalize();
+
+        // roots are rooted INSIDE the trunk, a little ahead of its torn end
+        // trunk cross-section axes aligned with world up / side, so each root keeps its side
+        const trunkUp = up.clone().addScaledVector(base.t, -up.dot(base.t)).normalize();
+        const trunkSide = sideFlat.clone().addScaledVector(base.t, -sideFlat.dot(base.t));
+        trunkSide.addScaledVector(trunkUp, -trunkSide.dot(trunkUp)).normalize();
+        const crown = base.p.clone().addScaledVector(base.t, r0 * 0.6);
+        const legCount = 10 + Math.floor(rnd() * 3);
+        const spreadK = Math.max(0.8, Math.min(1.6, config.aerialRootSpread ?? 1.4));
+        const addLeg = (pts: THREE.Vector3[], rStart: number, rEnd: number) => {
+          const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+          const samples = curve.getSpacedPoints(Math.max(14, Math.ceil(curve.getLength() / 0.12)));
+          addBarkTube(bark, framesAlong(samples, up), {
+            radial: 10,
+            meanRadius: (rStart + rEnd) * 0.5,
+            radius: (s, a) => THREE.MathUtils.lerp(rStart, rEnd, Math.pow(s, 0.8))
+              * (0.08 + 0.92 * Math.min(1, s / 0.12)) // buried start tapers shut: no open root end showing
+              * (1 + 0.1 * Math.cos(a * 3 + knotPhase) + Math.max(0, 1 - s / 0.15) * 0.25),
+            pointEnd: true,
+          });
+        };
+        let reach = r0 * 2;
+        for (let k = 0; k < legCount; k++) {
+          // angle around the trunk axis; roots leave all round, upper ones arch over
+          const th = ((k + 0.5) / legCount) * Math.PI * 2 + (rnd() - 0.5) * 0.35;
+          const e = up.clone().multiplyScalar(Math.cos(th)).addScaledVector(sideFlat, Math.sin(th));
+          const sideSign = Math.sin(th) >= 0 ? 1 : -1;
+          // same angle, but in the trunk's own cross-section so the roots seat in its bark
+          const eT = trunkUp.clone().multiplyScalar(Math.cos(th)).addScaledVector(trunkSide, Math.sin(th));
+          const out = r0 * (0.5 + rnd() * 0.35) * spreadK;
+          const footBack = r0 * (1.5 + rnd() * 1.5) * spreadK;
+          const footSide = sideSign * r0 * (0.9 + rnd() * 1.1) * spreadK * Math.max(0.5, Math.abs(Math.sin(th)) + 0.3);
+          const foot = new THREE.Vector3(
+            crown.x + backFlat.x * footBack + sideFlat.x * footSide,
+            -0.06,
+            crown.z + backFlat.z * footBack + sideFlat.z * footSide,
+          );
+          const apex = crown.clone()
+            .addScaledVector(e, r0 * 1.05 + out * 0.6)
+            .addScaledVector(back, r0 * (1.0 + rnd() * 0.4));
+          apex.y = Math.max(apex.y, r0 * 0.55 + rnd() * r0 * 0.3);
+          const shoulder = apex.clone().lerp(foot, 0.55);
+          shoulder.y = Math.max(0.12, shoulder.y * 0.8);
+          const preFoot = foot.clone().lerp(shoulder, 0.25);
+          preFoot.y = 0.18;
+          const pts = [
+            crown.clone().addScaledVector(eT, r0 * 0.2),
+            crown.clone().addScaledVector(eT, r0 * 0.85).addScaledVector(back, r0 * 0.2),
+            apex,
+            shoulder,
+            preFoot,
+            foot,
+          ];
+          const rs = r0 * (0.2 + rnd() * 0.08);
+          addLeg(pts, rs, rs * 0.4);
+          reach = Math.max(reach, Math.hypot(foot.x - base.p.x, foot.z - base.p.z));
+          // a thinner forked leg off every second one
+          if (k % 2 === 0) {
+            const fork = foot.clone()
+              .addScaledVector(backFlat, r0 * (0.3 + rnd() * 0.5))
+              .addScaledVector(sideFlat, sideSign * r0 * (0.5 + rnd() * 0.6));
+            fork.y = -0.06;
+            const from = shoulder.clone().lerp(preFoot, 0.35);
+            const mid = from.clone().lerp(fork, 0.5);
+            mid.y = Math.max(0.15, from.y * 0.5);
+            addLeg([from.clone().addScaledVector(e, -r0 * 0.05), mid, fork], rs * 0.55, rs * 0.25);
+          }
+        }
+        footprint.push({
+          a: new THREE.Vector2(base.p.x, base.p.z),
+          b: new THREE.Vector2(crown.x, crown.z),
+          r: reach,
+        });
+        extent = Math.max(extent, Math.hypot(base.p.x, base.p.z) + reach);
+      } else if (palmScars) {
+        // Coconut-palm root skirt: a dense bell of thin, straight, grey-brown
+        // fibres flaring out of the trunk base (a standing palm has no thick roots).
+        // On the fallen trunk the bell opens backwards along its axis.
+        const up = new THREE.Vector3(0, 1, 0);
+        const backFlat = new THREE.Vector3(back.x, 0, back.z).normalize();
+        const sideFlat = new THREE.Vector3().crossVectors(backFlat, up).normalize();
+        const trunkUp = up.clone().addScaledVector(base.t, -up.dot(base.t)).normalize();
+        const trunkSide = sideFlat.clone().addScaledVector(base.t, -sideFlat.dot(base.t));
+        trunkSide.addScaledVector(trunkUp, -trunkSide.dot(trunkUp)).normalize();
+        const rootCount = 0; // the skirt planes replace the thick tube roots
+        const reach = r0 * (1.9 + 0.15 * spread);
+        for (let k = 0; k < rootCount; k++) {
+          const th = k * 2.399963 + rnd() * 0.3; // golden angle: even coverage all round
+          const eT = trunkUp.clone().multiplyScalar(Math.cos(th)).addScaledVector(trunkSide, Math.sin(th));
+          const onFace = k % 3 === 0; // a third of the fibres grow out of the end face itself
+          const rho = onFace ? Math.sqrt(rnd()) * 0.8 : 0.9 + rnd() * 0.2;
+          const along = onFace ? r0 * 0.1 : r0 * (0.05 + rnd() * 0.6);
+          const start = base.p.clone().addScaledVector(base.t, along).addScaledVector(eT, rho * r0 * 1.05);
+          const flare = onFace ? 0.35 + rho * 0.4 : 0.85 + rnd() * 0.3;
+          const dir = back.clone().multiplyScalar(0.7 + rnd() * 0.3).addScaledVector(eT, flare).normalize();
+          const len = reach * (0.7 + rnd() * 0.5);
+          const mid = start.clone().addScaledVector(dir, len * 0.5);
+          const tip = start.clone().addScaledVector(dir, len);
+          tip.y -= len * 0.18; // a little weight at the tips
+          mid.y = Math.max(0.02, mid.y);
+          tip.y = Math.max(0.02, tip.y);
+          const pts = [start.clone().addScaledVector(base.t, -r0 * 0.15), start, mid, tip];
+          const samples = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5).getSpacedPoints(10);
+          const rr = r0 * 0.11 * (0.8 + rnd() * 0.5);
+          addBarkTube(bark, framesAlong(samples, up), {
+            radial: 8,
+            woodScale: 3,
+            meanRadius: rr * 0.6,
+            radius: (s) => rr * (1 - s * 0.85) + 0.008,
+            pointEnd: true,
+          });
+        }
+        // The fibre skirt itself: crossed pixel-art planes, in two staggered rings
+        // that lean outward and back like the bell in a coconut palm's photo.
+        // every panel gets a texture of exactly its own size in texels, so one texel is
+        // 1/21.33 m (about 4.7 cm) everywhere; panels are bucketed to share textures
+        const fibreMats = new Map<string, THREE.MeshBasicMaterial>();
+        const fibreMatFor = (wTex: number, hTex: number, variant: number) => {
+          const key = wTex + "x" + hTex + "v" + variant;
+          let m = fibreMats.get(key);
+          if (!m) {
+            const tex = rootFibreTexture(config.seed * 7 + wTex * 31 + hTex * 17 + variant * 101, wTex, hTex);
+            texturesToDispose.push(tex);
+            m = new THREE.MeshBasicMaterial({ map: tex, alphaTest: 0.5, side: THREE.DoubleSide });
+            materialsToDispose.push(m);
+            fibreMats.set(key, m);
+          }
+          return m;
+        };
+        const fibreGeo = new THREE.PlaneGeometry(1, 1);
+        geometriesToDispose.push(fibreGeo);
+        // dark packed fibre mat over the torn end, so the growth rings never show through
+        const matGeo = new THREE.CircleGeometry(radiusAt(0, 0) * 1.05, 20);
+        geometriesToDispose.push(matGeo);
+        const matMat = new THREE.MeshBasicMaterial({ color: 0x4d2a1d, side: THREE.DoubleSide });
+        materialsToDispose.push(matMat);
+        const endMat = new THREE.Mesh(matGeo, matMat);
+        endMat.name = 'RootFibreMat';
+        endMat.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), back);
+        endMat.position.copy(base.p).addScaledVector(back, 0.03);
+        endMat.userData.excludeFromOBJ = true;
+        group.add(endMat);
+        // Irregular skirt: panels start anywhere from the torn end up the first
+        // stretch of trunk, denser near the end, with random angle, lean, size and roll.
+        const placePanel = (surface: THREE.Vector3, eT: THREE.Vector3, slantBack: number, slantOut: number, lenBase: number, widthBase: number, inset = r0 * 0.35) => {
+          // buried: the plane begins inside the wood and comes out through the bark
+          const start = surface.clone().addScaledVector(eT, -inset);
+          const slant = back.clone().multiplyScalar(slantBack).addScaledVector(eT, slantOut).add(new THREE.Vector3((rnd() - 0.5) * 0.25, (rnd() - 0.5) * 0.15, (rnd() - 0.5) * 0.25)).normalize();
+          let len = lenBase + inset;
+          if (slant.y < -0.01) len = Math.min(len, Math.max(0.05, (start.y - 0.02) / -slant.y));
+          const tangent = new THREE.Vector3().crossVectors(slant, eT).normalize();
+          const normal = new THREE.Vector3().crossVectors(tangent, slant).normalize();
+          // roll the plane a little around its own length so they do not all face alike
+          const roll = new THREE.Quaternion().setFromAxisAngle(slant, (rnd() - 0.5) * 1.2);
+          tangent.applyQuaternion(roll);
+          normal.applyQuaternion(roll);
+          const wTex = Math.min(48, Math.max(8, Math.floor(widthBase * FIBRE_TEXELS_PER_METRE / 4) * 4));
+          const hTex = Math.min(96, Math.max(8, Math.floor(len * FIBRE_TEXELS_PER_METRE / 4) * 4));
+          len = hTex / FIBRE_TEXELS_PER_METRE;
+          const panelW = wTex / FIBRE_TEXELS_PER_METRE;
+          const panel = new THREE.Mesh(fibreGeo, fibreMatFor(wTex, hTex, Math.floor(rnd() * 3)));
+          panel.name = 'RootFibres';
+          panel.matrixAutoUpdate = false;
+          panel.matrix.makeBasis(tangent.multiplyScalar(panelW), slant.clone().multiplyScalar(len), normal)
+            .setPosition(start.clone().addScaledVector(slant, len * 0.5));
+          panel.userData.excludeFromOBJ = true;
+          group.add(panel);
+        };
+        const climb = r0 * 2.6; // how far up the trunk the skirt reaches
+        for (let k = 0; k < 230; k++) {
+          const along = climb * Math.pow(rnd(), 1.05);
+          const eT = trunkUp.clone().multiplyScalar(0).addScaledVector(trunkUp, Math.cos(rnd() * Math.PI * 2));
+          const th = rnd() * Math.PI * 2;
+          eT.copy(trunkUp).multiplyScalar(Math.cos(th)).addScaledVector(trunkSide, Math.sin(th));
+          // the real radius of the flared trunk there, or the planes would sit buried in the swelling
+          const start = base.p.clone().addScaledVector(base.t, along).addScaledVector(eT, radiusAt(Math.min(1, along / length), 0) * 1.03);
+          const high = along / climb; // 0 at the end, 1 at the top of the skirt
+          placePanel(start, eT, 0.6 + rnd() * 0.4, 0.3 + rnd() * 0.55, reach * (0.7 + rnd() * 0.8), r0 * (0.7 + rnd() * 0.9));
+        }
+        // a short bunch straight out of the middle of the end
+        for (let k = 0; k < 70; k++) {
+          const th = rnd() * Math.PI * 2;
+          const eT = trunkUp.clone().multiplyScalar(Math.cos(th)).addScaledVector(trunkSide, Math.sin(th));
+          const start = base.p.clone().addScaledVector(eT, radiusAt(0, 0) * 0.95 * Math.sqrt(rnd()));
+          placePanel(start, eT, 1, 0.05 + rnd() * 0.45, reach * (0.6 + rnd() * 0.7), r0 * (0.6 + rnd() * 0.6), 0);
+        }
+        extent = Math.max(extent, Math.hypot(base.p.x, base.p.z) + reach + r0 * 1.2);
+        footprint.push({
+          a: new THREE.Vector2(base.p.x, base.p.z),
+          b: new THREE.Vector2(base.p.x, base.p.z),
+          r: reach + r0,
+        });
+        extent = Math.max(extent, Math.hypot(base.p.x, base.p.z) + reach + r0);
+      } else {
+      const plateR = r0 * (ancientWood ? 1.4 + 0.2 * spread : 1.6 + 0.4 * spread);
       // soil torn up with the roots: a thick disc standing on edge
       const soilGeo = new THREE.IcosahedronGeometry(1, 1);
       const pos = soilGeo.attributes.position as THREE.BufferAttribute;
@@ -645,10 +893,21 @@ export function buildProceduralLog(
         pos.setXYZ(i, v.x, v.y, v.z);
       }
       soilGeo.computeVertexNormals();
+      // one clod: the turf is the same mesh, painted green on the face that was the ground surface
+      const soilCol = new THREE.Color(0x5b4130);
+      const turfCol = new THREE.Color(0x5f8f34);
+      const colors = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i += 3) {
+        const cx = (pos.getX(i) + pos.getX(i + 1) + pos.getX(i + 2)) / 3;
+        const c = cx < -0.3 ? turfCol : soilCol;
+        for (let j = 0; j < 3; j++) { colors[(i + j) * 3] = c.r; colors[(i + j) * 3 + 1] = c.g; colors[(i + j) * 3 + 2] = c.b; }
+      }
+      soilGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
       geometriesToDispose.push(soilGeo);
-      const soilMat = new THREE.MeshToonMaterial({ color: 0x5b4130 });
+      const soilMat = new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true });
       materialsToDispose.push(soilMat);
       const soil = new THREE.Mesh(soilGeo, soilMat);
+      soil.name = 'RootPlateSoil';
       soil.scale.set(plateR * 0.28, plateR, plateR);
       // disc axis along the trunk
       soil.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), back);
@@ -660,35 +919,31 @@ export function buildProceduralLog(
       soil.receiveShadow = true;
       group.add(soil);
 
-      // grass still growing on what was the ground surface: it turned over
-      // with the tree, and now faces along the trunk
-      const turfMat = new THREE.MeshToonMaterial({ color: 0x5f8f34 });
-      materialsToDispose.push(turfMat);
-      const turf = new THREE.Mesh(soilGeo, turfMat);
-      turf.scale.set(plateR * 0.08, plateR * 0.96, plateR * 0.96);
-      turf.quaternion.copy(soil.quaternion);
-      turf.position.copy(plateCentre).addScaledVector(back, -plateR * 0.24);
-      group.add(turf);
-
-      // stones caught in the roots
-      const stoneMat = new THREE.MeshToonMaterial({ color: 0x7d766c });
+      // stones caught in the roots: the project's own boulders, in this biome's rock
+      const rockSettings = ROCK_BIOMES[rockBiomeForSpecies(config.species)].config;
+      const { material: stoneMat, lightDir: stoneLight } = createPixelRockMaterial({ ...config, growthStage: 'rock' }, rockSettings);
+      stoneMat.userData.stoneCfg = { ...config, growthStage: 'rock' };   // (o jogo refaz a pedra na paleta do bioma onde o tronco nasce: gameTrees.ts)
       materialsToDispose.push(stoneMat);
-      const stoneGeo = new THREE.DodecahedronGeometry(1, 0);
-      geometriesToDispose.push(stoneGeo);
       for (let s = 0; s < 4; s++) {
         const a = rnd() * Math.PI * 2;
-        const rr = plateR * (0.3 + rnd() * 0.55);
+        const rr = plateR * (0.2 + rnd() * 0.5);
+        const k = 0.1 + rnd() * 0.12;
+        const size = new THREE.Vector3(k * 4.4, k * 3.4, k * 4);
+        const stoneGeo = boulderGeometry(rnd, size, rnd() * Math.PI * 2, stoneLight, {
+          irregularity: rockSettings.irregularity, detail: Math.min(1, rockSettings.detail), shape: rockSettings.shape, grounded: true,
+        });
+        geometriesToDispose.push(stoneGeo);
         const st = new THREE.Mesh(stoneGeo, stoneMat);
         const upv = new THREE.Vector3(0, 1, 0);
         const sidev = back.clone().cross(upv).normalize();
         st.position.copy(plateCentre)
-          .addScaledVector(upv, Math.sin(a) * rr)
+          .addScaledVector(upv, Math.sin(a) * rr - size.y * 0.35)
           .addScaledVector(sidev, Math.cos(a) * rr)
-          .addScaledVector(back, -plateR * 0.22);
-        const k = 0.1 + rnd() * 0.12;
-        st.scale.set(k, k * 0.8, k);
-        st.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3);
+          // on the clod's face: depth follows the ellipsoid surface at this radius, sunk in a little
+          .addScaledVector(back, -plateR * 0.28 * Math.sqrt(Math.max(0, 1 - (rr / plateR) ** 2)) * 0.95);
+        st.position.y = Math.max(st.position.y, 0.02);
         st.castShadow = true;
+        st.receiveShadow = true;
         group.add(st);
       }
 
@@ -738,6 +993,7 @@ export function buildProceduralLog(
         }
       }
       extent = Math.max(extent, plateCentre.clone().setY(0).length() + plateR * 0.5);
+      }
     }
 
     // footprint and extent

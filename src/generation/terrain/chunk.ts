@@ -493,6 +493,9 @@ export class Chunk {
 
   private syncGrass(): void {
     if (this.isDestroyed || !this.vegetationMgr) return;
+    // a grama espera as árvores do chunk estarem plantadas (ela não nasce dentro de tronco: trunkSpots.ts): se a vegetação ainda está a caminho, volta para a fila
+    const vegPending = !this.hasVegetation && !this.isSubmerged && (this.vegReq !== null || this.vegPlan !== null || this.vegGen !== null || this.vegInst !== null);
+    if (this.grassWanted && !this.grassPlanted && this.grassData && vegPending) { this.queueGrassSync(); return; }
     if (this.grassWanted && !this.grassPlanted && this.grassData) {
       // ~1500 tufos por vez (um chunk inteiro custava 10 a 14 ms): o resto volta para a fila e segue no quadro seguinte
       const next = this.vegetationMgr.populateGrass(this.grassOwner, this.grassData, this.grassCursor, 9 * 1500);

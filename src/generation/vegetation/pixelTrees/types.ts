@@ -39,6 +39,10 @@ export type TreeSpecies =
   | 'hollow_log'
   | 'rooted_log'
   | 'tree_stump'
+  | `fallen_log_${string}`
+  | `hollow_log_${string}`
+  | `rooted_log_${string}`
+  | `tree_stump_${string}`
   | 'maple_red'
   | 'maple_orange'
   | 'maple_yellow'

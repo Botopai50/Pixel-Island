@@ -144,6 +144,7 @@ class SharedInstances {
     // O recorte é feito aqui mesmo (cull), instância por instância; o culling por objeto do
     // three.js usaria a esfera da geometria-base e esconderia o grupo inteiro por engano.
     mesh.frustumCulled = false;
+    mesh.matrixAutoUpdate = false;     // a malha fica na origem (a posição vem de cada instância): o motor não precisa recompor a matriz a cada quadro
     if (this.band && this.castShadow) {
       this.shadowLod = lodOfBand(this.band[0]);
       SHADOW_POOLS.add(this);
@@ -207,6 +208,7 @@ class SharedInstances {
     lite.instanceMatrix = mesh.instanceMatrix;      // mesmo buffer da GPU do desenho principal
     lite.count = 0;
     lite.frustumCulled = false;
+    lite.matrixAutoUpdate = false;
     lite.castShadow = true;
     lite.receiveShadow = false;
     if (this.material.userData.depthMaterial) lite.customDepthMaterial = this.material.userData.depthMaterial;
@@ -489,6 +491,7 @@ class MultiVariantInstances {
     mesh.castShadow = castShadow;
     mesh.receiveShadow = true;
     mesh.frustumCulled = false;
+    mesh.matrixAutoUpdate = false;
     if (mats.depth) mesh.customDepthMaterial = mats.depth;
     // os ganchos vêm ANTES do enableAssetEnvironment, que os chama primeiro e depois cuida da luz
     mesh.onBeforeRender = (_r, _s, _c, g) => this.prepare(g);

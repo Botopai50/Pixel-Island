@@ -45,6 +45,8 @@ export interface BiomeData {
   shrubDensity: number;
   rockDensity: number;
   fallenLogDensity: number;
+  /** 0 na planície, 1 na linha das árvores: o andar de altitude dentro do bioma (biomes.ts) */
+  altitude?: number;
   groundColorHex: string;
 }
 

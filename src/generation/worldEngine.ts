@@ -7,7 +7,6 @@ import { VegetationManager } from './vegetation/vegetationManager.ts';
 import { ChunkManager } from './terrain/chunkManager.ts';
 import { GeothermalManager } from './geothermal/geothermalManager.ts';
 import { GlacialIceManager } from './ice/glacialIceManager.ts';
-import { CaveFeatureManager } from './caves/caveFeatureManager.ts';
 import { LavaFluidManager } from './volcanology/lavaFluidManager.ts';
 import { InlandWaterManager } from './hydrology/inlandWaterManager.ts';
 import { createTerrainMaterial } from './shaders/terrainShader.ts';
@@ -17,6 +16,7 @@ import { TerrainTextureForge } from './terrain/terrainTextureForge.ts';
 import { getTextureWorkerPool } from './terrain/textureWorkerPool.ts';
 import { HorizonTerrain } from './terrain/horizonTerrain.ts';
 import { LandmarkManager } from './landmarks/landmarkManager.ts';
+import { SettlementManager } from './settlements/settlementManager.ts';
 import { WaterBiomeMap } from './hydrology/waterBiomeMap.ts';
 import { RiverFlowMap, FLOW_MAX_SPEED, FLOW_PHASE_PERIOD } from './hydrology/riverFlowMap.ts';
 import { TerrainPoint, WorldSpawnPoint } from './types.ts';
@@ -52,7 +52,6 @@ export class WorldEngine {
   /** altura (px) da imagem da cena, para o tamanho dos pixels do vapor (main.ts) */
   public thermalViewH = 540;
   public glacialIceMgr: GlacialIceManager;
-  public caveFeatureMgr: CaveFeatureManager;
   public lavaFluidMgr: LavaFluidManager;
   public inlandWaterMgr: InlandWaterManager;
 
@@ -67,6 +66,7 @@ export class WorldEngine {
   private horizon: HorizonTerrain;
   /** cenas procedurais (arcos, ruínas, naufrágios...) montadas onde o lugar combina com elas */
   public landmarks: LandmarkManager;
+  public settlementMgr: SettlementManager;
   private lastObserverX: number = 0;
   private lastObserverZ: number = 0;
 
@@ -113,11 +113,11 @@ export class WorldEngine {
     // terreno distante (horizonte) além dos chunks detalhados
     this.horizon = new HorizonTerrain(this.scene, this.forge.gradMap, numericSeed);
     this.landmarks = new LandmarkManager(this.scene, this.terrainGen);
+    this.settlementMgr = new SettlementManager(this.scene, this.terrainGen, this.waterMaterial, () => this.chunkMgr.notifySceneChanged());
 
     // Inicializa todos os subsistemas especiais do mundo de forma 100% procedural
     this.geothermalMgr = new GeothermalManager(this.scene, this.terrainGen.getGeothermalGenerator());
     this.glacialIceMgr = new GlacialIceManager(this.scene, numericSeed, this.terrainGen);
-    this.caveFeatureMgr = new CaveFeatureManager(this.scene, numericSeed, this.terrainGen);
     this.lavaFluidMgr = new LavaFluidManager(this.scene, this.terrainGen.getVolcanoGenerator());
 
     // Grupo de água dedicado para controle no passe de renderização
@@ -136,6 +136,7 @@ export class WorldEngine {
     this.waterGroup.add(this.localWater);
 
     this.scene.add(this.waterGroup);
+    this.settlementMgr.attachWater(this.waterGroup);
     this.inlandWaterMgr = new InlandWaterManager(this.waterGroup, this.terrainGen.getHydrology(), this.waterMaterial);
     this.inlandWaterMgr.reflectionLod = new ReflectionLod(this.scene, () => this.chunkMgr.getSceneVersion(), () => this.chunkMgr.farGroup);
     this.inlandWaterMgr.onRipple = (x, z) => this.addRipple(x, z, 0.7, 2.2, 2.0, 0.93);
@@ -184,9 +185,23 @@ export class WorldEngine {
   }
 
   /** Desenha o atlas de impostores (árvores distantes) com os modelos e texturas originais. */
+  private impostorStep: (() => boolean) | null = null;
+  public hideSettlementForReflection(cam: THREE.Vector3, maxDist: number): THREE.Object3D[] { return this.settlementMgr.hideForReflection(cam, maxDist); }
+  public setSettlementPrecompiler(fn: (obj: THREE.Object3D) => Promise<unknown>): void { this.settlementMgr.setPrecompiler(fn); }
   public initTreeImpostors(renderer: THREE.WebGLRenderer): void {
     const atlas = this.vegetationMgr.buildTreeImpostors(renderer);
     this.horizon.setTreeAtlas(atlas.texture, atlas.info, atlas.cols, atlas.rows);
+    this.impostorStep = atlas.step;
+  }
+
+  /** Gera mais uma espécie do atlas de árvores distantes (uma por chamada, só enquanto faltar). */
+  private impostorAt = 0;
+  public stepTreeImpostors(): void {
+    if (!this.impostorStep) return;
+    const now = performance.now();
+    if (now - this.impostorAt < 250) return;   // uma espécie por vez, com folga: cada uma custa algumas centenas de ms
+    this.impostorAt = now;
+    if (!this.impostorStep()) this.impostorStep = null;
   }
 
   public updateObserverPosition(x: number, z: number): void {
@@ -208,6 +223,7 @@ export class WorldEngine {
     // o horizonte começa um pouco antes dos chunks começarem a sumir (fica por baixo deles)
     this.horizon.update(x, z, chunkEnd - 120);
     this.landmarks.update(x, z);
+    this.settlementMgr.update(x, z);
     this.chunkMgr.update(x, z);
     this.inlandWaterMgr.updateObserver(x,z);
     // Move a malha de água com snap na grade de 8m (tamanho exato dos quads centrais).
@@ -317,6 +333,7 @@ export class WorldEngine {
     this.chunkMgr.clearAll();
     this.horizon.reset(newSeed);
     this.landmarks.reset();
+    this.settlementMgr.reset();
 
     const spawn = this.getSpawnCoordinate();
     this.chunkMgr.update(spawn.x, spawn.z, true);

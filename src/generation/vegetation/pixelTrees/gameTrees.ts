@@ -4,8 +4,11 @@ import { createTree, WOOD_LOD } from './services/treeGenerator';
 import { TREE_PRESETS } from './constants/presets';
 import { ORE_BY_BIOME, type OreName } from './oreAssign';
 import { FADE, FADE_GLSL } from '../../shaders/fadeDither';
-import { GRASS, DIRT, ROCK } from '../../terrain/terrainTextureForge';
+import { GRASS, DIRT, ROCK, BIOMES, M_SHORE, M_GROUND, M_ROCK, M_VEG } from '../../terrain/terrainTextureForge';
+import { createPixelRockMaterial } from './services/rockSystem';
+import { ROCK_BIOMES } from './constants/rockBiomes';
 import { WIND_U, GRASS_PUSHER } from '../../../atmosphere/wind.ts';
+import { SHADOW_LIFT } from '../../../atmosphere/shadowLift.ts';
 
 /**
  * Árvores do Pixel_Tree no formato do jogo: para cada espécie, algumas variações (sementes
@@ -25,8 +28,11 @@ export type GameTreeKind =
   | 'sakuraSapling' | 'korokSapling' | 'deadSapling' | 'snowPineSapling'
   // plantas rasteiras do Pixel_Tree: samambaia, junco e canteiros de flores (um por clima)
   | 'fernPlant' | 'reedClump'
-  // troncos e tocos do Pixel_Tree
+  // troncos e tocos do Pixel_Tree: as quatro formas, uma para cada madeira (logFallen_hyrule_oak, logStump_faron_palm...)
   | 'logFallen' | 'logHollow' | 'logRooted' | 'logStump'
+  | `${'logFallen' | 'logHollow' | 'logRooted' | 'logStump'}_${LogWood}`
+  // ... e a mesma, com o chão (relva, terra) na paleta de outro bioma (o número é o do bioma na lista BIOMES do terreno, 0 = temperado) e/ou a pedra de outro bioma (@3~gerudo)
+  | `${'logFallen' | 'logHollow' | 'logRooted' | 'logStump'}_${LogWood}@${string}`
   // pedras e pedrinhas do Pixel_Tree: uma de cada bioma
   | `rock_${RockBiomeKey}` | `gravel_${RockBiomeKey}` | `ore_${RockBiomeKey}_${OreName}`
   // folhas secas caídas, uma por clima
@@ -36,6 +42,10 @@ export type GameTreeKind =
 
 export type RockBiomeKey = 'hyrule' | 'satori' | 'akkala' | 'hebra' | 'hebra_snowy' | 'faron' | 'korok' | 'swamp' | 'gerudo' | 'savanna' | 'withered' | 'tundra';
 export const ROCK_BIOME_KEYS: RockBiomeKey[] = ['hyrule', 'satori', 'akkala', 'hebra', 'hebra_snowy', 'faron', 'korok', 'swamp', 'gerudo', 'savanna', 'withered', 'tundra'];
+/** As madeiras dos troncos: o gerador do Pixel_Tree cria as quatro formas (caído, oco, com raízes, toco) para cada árvore adulta, com a casca, as proporções e o musgo dela. */
+export const LOG_WOODS = ['hyrule_oak', 'satori_sakura', 'akkala_birch', 'hebra_pine', 'hebra_pine_snowy', 'faron_palm', 'korok_ancient', 'swamp_mangrove', 'savanna_acacia', 'dry_withered', 'maple_red', 'maple_orange', 'maple_yellow'] as const;
+export type LogWood = typeof LOG_WOODS[number];
+export const LOG_FORMS: Record<'logFallen' | 'logHollow' | 'logRooted' | 'logStump', string> = { logFallen: 'fallen_log', logHollow: 'hollow_log', logRooted: 'rooted_log', logStump: 'tree_stump' };
 const SPECIES: Record<GameTreeKind, string> = {
   oak: 'hyrule_oak', pine: 'hebra_pine', birch: 'akkala_birch', acacia: 'savanna_acacia',
   palm: 'faron_palm', mangrove: 'swamp_mangrove', snowPine: 'hebra_pine_snowy', willow: 'arctic_willow',
@@ -50,7 +60,9 @@ const SPECIES: Record<GameTreeKind, string> = {
   cactusSapling: 'gerudo_cactus_sapling', sakuraSapling: 'satori_sakura_sapling', korokSapling: 'korok_ancient_sapling',
   deadSapling: 'dry_withered_sapling', snowPineSapling: 'hebra_pine_snowy_sapling',
   fernPlant: 'fern_plant', reedClump: 'reed_clump',
-  logFallen: 'fallen_log', logHollow: 'hollow_log', logRooted: 'rooted_log', logStump: 'tree_stump',
+  // (os nomes sem madeira ficam como atalho para o carvalho)
+  logFallen: 'fallen_log_hyrule_oak', logHollow: 'hollow_log_hyrule_oak', logRooted: 'rooted_log_hyrule_oak', logStump: 'tree_stump_hyrule_oak',
+  ...(Object.fromEntries(LOG_WOODS.flatMap((w) => (Object.entries(LOG_FORMS) as [string, string][]).map(([k, p]) => [k + '_' + w, p + '_' + w]))) as Record<`${'logFallen' | 'logHollow' | 'logRooted' | 'logStump'}_${LogWood}`, string>),
   flowers_hyrule: 'hyrule_flowers', flowers_satori: 'satori_flowers', flowers_akkala: 'akkala_flowers', flowers_hebra: 'hebra_flowers',
   flowers_hebra_snowy: 'hebra_snowy_flowers', flowers_faron: 'faron_flowers', flowers_korok: 'korok_flowers', flowers_swamp: 'swamp_flowers',
   flowers_gerudo: 'gerudo_flowers', flowers_savanna: 'savanna_flowers', flowers_withered: 'withered_flowers', flowers_tundra: 'tundra_flowers',
@@ -80,7 +92,7 @@ interface LodSpec {
 // (degraus 2 e 3, de 150 m em diante: menos cartões e maiores, na mesma cobertura da copa (keep x cardScale² ficou igual): ~30% menos triângulos,
 // que somavam mais da metade dos 10 milhões de triângulos de uma floresta densa e custavam ~2 ms de GPU)
 const LODS: LodSpec[] = [
-  { wood: { trunk: 6, branch: 4, passes: 0, minRadiusMul: 1, prune: 0.05, canopyKeep: 0.45, cactusRadial: 2 }, keep: 0.7, cardScale: 1.12 },
+  { wood: { trunk: 16, branch: 4, passes: 0, minRadiusMul: 1, prune: 0.05, canopyKeep: 0.45, cactusRadial: 2 }, keep: 0.7, cardScale: 1.12 },   // (tronco de 16 lados, e não 6: com um hexágono os planos dos triângulos vizinhos ficam a 60 graus e a leitura da sombra por célula saía diferente de um triângulo para o outro)
   // Escada de detalhe: a madeira era mais da metade dos triângulos da cena e as árvores distantes tinham quase o mesmo
   // desenho das próximas (uma árvore de 15 mil triângulos a 250 m ocupa poucos pixels). Cada degrau tira os galhos mais
   // finos e parte da copa; o último é só o tronco e os cartões de folha, que é o que se enxerga de longe.
@@ -399,6 +411,39 @@ void main() {
     });
     mat.userData.depthMaterial = depth;
     mat.userData.castsCutShadow = true;
+  } else if ((mat.userData.shadowFat as number | undefined) && /gl_Position\s*=[^;]+;/.test(vs) && vs.includes('instanceMatrix')) {
+    // madeira FINA (galhos de 1 a 2 cm): a sombra dela no chão é lida no centro de cada pixel do chão (4,7 cm), e um galho mais fino que isso acerta o centro de um pixel
+    // e erra o do lado: a sombra saía como quadradinhos soltos e quebrados. Na passagem de sombra o galho é ENGROSSADO (os vértices vão para fora, ao longo da normal) e
+    // empurrado para longe da luz na mesma medida, então o galho engrossado nunca fica na frente do visível (sem sombra em cima do próprio galho) e a sombra no chão é
+    // uma faixa contínua de pelo menos um pixel.
+    const fat = mat.userData.shadowFat as number;
+    // Galhos: engrossa ao longo da normal (suave, sem frestas). Pedras: as faces são planas e soltas (cada triângulo com a sua normal); engrossar cada uma pela normal
+    // as separava e abria frestas por onde a luz passava (a sombra saía furada). Nelas a silhueta cresce para fora a partir do centro da peça, no plano da imagem da luz
+    // (a câmera da luz é ortogonal), o que não abre frestas. Nos dois casos o recuo em profundidade é de uma vez a medida (não duas: recuar demais deixava o chão
+    // perto da base da pedra mais perto da luz que a pedra, e a sombra encostada nela sumia).
+    const radial = !!mat.userData.shadowFatRadial;
+    const dvs = (radial ? 'uniform float uShadowLift; ' : '') + vs.replace(/(gl_Position\s*=[^;]+;)/, radial ? `$1
+    {
+      vec4 fatC = projectionMatrix * viewMatrix * (modelMatrix * instanceMatrix) * vec4(0.0, 0.0, 0.0, 1.0);
+      vec2 fatD = gl_Position.xy - fatC.xy;
+      gl_Position.xy += (dot(fatD, fatD) > 1e-10 ? normalize(fatD) : vec2(0.0)) * ${fat.toFixed(4)} * projectionMatrix[0][0];
+      // A FAIXA CLARA junto da base: o chão só fica na sombra se, no mapa, a pedra estiver mais perto da luz que ele por mais que o viés, e o ponto lido é levantado (normalBias): junto
+      // do contato sobra uma faixa de chão claro. A pedra é SUBIDA no mundo na passagem de sombra (uShadowLift, do shadowClipmap = normalBias + uma folga em metros de chão vezes tan(altura
+      // do sol)): subir D leva a sombra D / tan(altura do sol) para o lado oposto ao sol, a faixa é coberta e a largura que sobra no chão é a mesma em qualquer altura do sol.
+      // (Um empurrão só de profundidade também fechava a faixa, mas a própria pedra ganhava listras de auto-sombra.)
+      gl_Position += projectionMatrix * viewMatrix * vec4(0.0, uShadowLift, 0.0, 0.0);
+    }` : `$1
+    {
+      vec3 fatN = normalize(mat3(viewMatrix) * mat3(modelMatrix * instanceMatrix) * normal);
+      gl_Position.xy += (projectionMatrix * vec4(fatN * ${fat.toFixed(4)}, 0.0)).xy;
+      gl_Position.z -= projectionMatrix[2][2] * ${fat.toFixed(4)};
+    }`);
+    mat.userData.depthMaterial = new THREE.ShaderMaterial({
+      uniforms: radial ? { ...mat.uniforms, uShadowLift: SHADOW_LIFT } : mat.uniforms,
+      vertexShader: dvs,
+      fragmentShader: '#include <packing>'+String.fromCharCode(10)+'void main() { gl_FragColor = packDepthToRGBA(gl_FragCoord.z); }',
+      side: THREE.DoubleSide,
+    });
   } else if (vs.includes('uHFTex')) {
     // madeira que acompanha o relevo (raízes, tronco caído, galhos baixos): o vértice da base é levado até o chão no shader. O desenho da sombra
     // usava o material de profundidade padrão, sem esse ajuste, e a sombra saía de uma madeira mais alta ou mais baixa que a visível (uma faixa de chão
@@ -431,6 +476,11 @@ function materialKey(mat: THREE.Material): string {
 }
 
 const GRASS_TEXEL_DENSITY = 32 / 1.5;
+/**
+ * Texels por metro do CHÃO em volta do jogador (o ChunkManager atualiza: densidade da textura do terreno vezes a escala do pixel). A terra e a relva dos troncos
+ * (bloco de raízes) e das pedras usam a mesma grade do chão, em coordenadas do mundo: os pixels têm o mesmo tamanho e ficam alinhados com os do terreno.
+ */
+export const GROUND_TEXELS = { value: GRASS_TEXEL_DENSITY };
 
 /** Tamanho (m) de uma folha de muda (largura, comprimento): metros por unidade de uv, nas primeiras folhas. */
 function leafQuadSize(geo: THREE.BufferGeometry, q = 0.5): [number, number] {
@@ -647,22 +697,34 @@ function matchSaplingLeafTexels(sm: THREE.ShaderMaterial, geo: THREE.BufferGeome
  */
 type GroundKind = 'grass' | 'dirt' | 'rock';
 const GROUND_RAMPS: Record<GroundKind, { ramp: [number, number, number][]; base: number }> = {
-  grass: { ramp: GRASS, base: 2.7 }, dirt: { ramp: DIRT, base: 2.0 }, rock: { ramp: ROCK, base: 2.4 },
+  grass: { ramp: GRASS, base: 3.0 }, dirt: { ramp: DIRT, base: 2.0 }, rock: { ramp: ROCK, base: 2.0 },
 };
+/** A rampa de um tipo de chão na paleta de um bioma do terreno (0 = temperado, a de sempre): relva = a vegetação do bioma, terra = o chão dele, pedra = a rocha dele. */
+function groundRamp(kind: GroundKind, palette: number): [number, number, number][] {
+  if (palette <= 0 || !BIOMES[palette]) return GROUND_RAMPS[kind].ramp;
+  const b = BIOMES[palette], r = b.ramps;
+  if (kind === 'rock') return r[M_ROCK];
+  // o chão principal do bioma, como o do terreno: nas dunas (deserto, fontes termais) é areia, e não relva nem terra; na neve é a rampa da neve
+  if (b.ground === 'dunas') return r[M_SHORE];
+  if (b.ground === 'neve') return r[M_GROUND];
+  return kind === 'grass' ? r[M_VEG] : r[M_GROUND];
+}
 function groundKindOf(color: THREE.Color): GroundKind {
   const mx = Math.max(color.r, color.g, color.b), mn = Math.min(color.r, color.g, color.b);
   if (color.g > color.r * 1.05 && color.g >= color.b * 1.2) return 'grass';
   return mx > 0 && (mx - mn) / mx < 0.5 && color.r > 0.1 && Math.abs(color.r - color.b) < 0.12 ? 'rock' : 'dirt';
 }
-function makeGroundMaterial(kind: GroundKind): THREE.ShaderMaterial {
+function makeGroundMaterial(kind: GroundKind, palette = 0): THREE.ShaderMaterial {
   const g = GROUND_RAMPS[kind];
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uRamp: { value: g.ramp.map((c) => new THREE.Vector3(c[0] / 255, c[1] / 255, c[2] / 255)) }, uDensity: { value: GRASS_TEXEL_DENSITY }, uBase: { value: g.base } },
+    uniforms: { uRamp: { value: groundRamp(kind, palette).map((c) => new THREE.Vector3(c[0] / 255, c[1] / 255, c[2] / 255)) }, uDensity: GROUND_TEXELS, uBase: { value: g.base } },
     vertexShader: `varying vec3 vLocal;
 varying vec3 vN;
+varying vec3 vNW;
 void main() {
-  vLocal = position;
+  vLocal = (modelMatrix * vec4(position, 1.0)).xyz;   // no mundo (com a matriz da instância): a grade de pixels é a do terreno, e não gira com o tronco
   vN = normal;
+  vNW = normalize(mat3(modelMatrix) * normal);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }`,
     fragmentShader: `uniform vec3 uRamp[6];
@@ -670,29 +732,208 @@ uniform float uDensity;
 uniform float uBase;
 varying vec3 vLocal;
 varying vec3 vN;
+varying vec3 vNW;
 float h31(vec3 p) {
   p = fract(p * 0.1031);
   p += dot(p, p.zyx + 31.32);
   return fract((p.x + p.y) * p.z);
 }
+// ruído suave (as manchas da textura do terreno: o tom de um pixel segue o dos vizinhos, e não sorteia um por pixel)
+float vn(vec2 p, float z) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h31(vec3(i, z)), h31(vec3(i + vec2(1.0, 0.0), z)), f.x), mix(h31(vec3(i + vec2(0.0, 1.0), z)), h31(vec3(i + vec2(1.0, 1.0), z)), f.x), f.y);
+}
+// o tom como no gerador de texturas do terreno: base + variação por manchas de ~3 pixels (ruído suave) + manchas largas que clareiam ou escurecem; as faces de lado escurecem
+float groundStep(vec3 cell, float base) {
+  float tone = vn(cell.xy * 0.35, cell.z * 17.3);
+  float wide = vn(cell.xy * 0.07, cell.z * 5.1 + 3.0) * 2.0 - 1.0;
+  float off = tone < 0.2 ? -1.0 : (tone < 0.6 ? 0.0 : 1.0);
+  float side = 1.0 - clamp(normalize(vNW).y, 0.0, 1.0);
+  return base + off + (wide > 0.2 ? 1.0 : (wide < -0.22 ? -1.0 : 0.0)) - floor(side * 1.5 + 0.5);
+}
 void main() {
-  vec3 cell = floor(vLocal * uDensity);
-  float n = h31(cell) * 0.45 + h31(floor(cell / 3.0) + 17.0) * 0.55;
-  float lit = normalize(vN).y * 0.9;
-  float t = uBase + (n - 0.5) * 2.6 + lit - 0.4;
+  vec3 nA = abs(vNW);
+  // a grade de pixels no PLANO da face (pelo eixo dominante da normal do mundo), em metros do mundo: no topo é a do terreno, e numa face inclinada os
+  // pixels continuam quadrados (uma grade 3D de cubos cortava a face em triângulos). Uma grade própria por face (no plano real dela) foi pior: cada face
+  // do bloco tem só umas 3 células, e as vizinhas ficavam sem continuidade, um mosaico de triângulos.
+  vec3 cell = (nA.y >= nA.x && nA.y >= nA.z) ? vec3(floor(vLocal.xz * uDensity), 1.0)
+            : (nA.x >= nA.z ? vec3(floor(vLocal.yz * uDensity), 2.0) : vec3(floor(vLocal.xy * uDensity), 3.0));
+  float t = groundStep(cell, uBase);
   int i = int(clamp(floor(t + 0.5), 0.0, 5.0));
   gl_FragColor = vec4(uRamp[i], 1.0);
 }`,
   });
+  mat.userData.groundSrc = { t: 'p', kind };
   return mat;
 }
 
+/**
+ * Terra com cor por vértice (o bloco de raízes do tronco arrancado: solo marrom e relva verde na face que era o chão). Cada face usa a rampa do tipo
+ * da cor dela (a mesma regra de groundKindOf), nos mesmos pixels do chão.
+ */
+function makeVertexGroundMaterial(palette = 0): THREE.ShaderMaterial {
+  const v3 = (r: GroundKind) => groundRamp(r, palette).map((c) => new THREE.Vector3(c[0] / 255, c[1] / 255, c[2] / 255));
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uRampG: { value: v3('grass') }, uRampD: { value: v3('dirt') }, uRampR: { value: v3('rock') }, uDensity: GROUND_TEXELS,
+      uBase: { value: new THREE.Vector3(GROUND_RAMPS.grass.base, GROUND_RAMPS.dirt.base, GROUND_RAMPS.rock.base) } },
+    vertexShader: `attribute vec3 color;
+varying vec3 vLocal;
+varying vec3 vN;
+varying vec3 vNW;
+varying float vKind;
+void main() {
+  vLocal = (modelMatrix * vec4(position, 1.0)).xyz;   // no mundo (com a matriz da instância), como o chão comum
+  vN = normal;
+  vNW = normalize(mat3(modelMatrix) * normal);
+  // 0 = relva, 1 = terra, 2 = pedra (a mesma regra de groundKindOf)
+  float mx = max(color.r, max(color.g, color.b)), mn = min(color.r, min(color.g, color.b));
+  vKind = (color.g > color.r * 1.05 && color.g >= color.b * 1.2) ? 0.0
+        : (mx > 0.0 && (mx - mn) / mx < 0.5 && color.r > 0.1 && abs(color.r - color.b) < 0.12) ? 2.0 : 1.0;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}`,
+    fragmentShader: `uniform vec3 uRampG[6];
+uniform vec3 uRampD[6];
+uniform vec3 uRampR[6];
+uniform float uDensity;
+uniform vec3 uBase;
+varying vec3 vLocal;
+varying vec3 vN;
+varying vec3 vNW;
+varying float vKind;
+float h31(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.zyx + 31.32);
+  return fract((p.x + p.y) * p.z);
+}
+// ruído suave (as manchas da textura do terreno: o tom de um pixel segue o dos vizinhos, e não sorteia um por pixel)
+float vn(vec2 p, float z) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(h31(vec3(i, z)), h31(vec3(i + vec2(1.0, 0.0), z)), f.x), mix(h31(vec3(i + vec2(0.0, 1.0), z)), h31(vec3(i + vec2(1.0, 1.0), z)), f.x), f.y);
+}
+// o tom como no gerador de texturas do terreno: base + variação por manchas de ~3 pixels (ruído suave) + manchas largas que clareiam ou escurecem; as faces de lado escurecem
+float groundStep(vec3 cell, float base) {
+  float tone = vn(cell.xy * 0.35, cell.z * 17.3);
+  float wide = vn(cell.xy * 0.07, cell.z * 5.1 + 3.0) * 2.0 - 1.0;
+  float off = tone < 0.2 ? -1.0 : (tone < 0.6 ? 0.0 : 1.0);
+  float side = 1.0 - clamp(normalize(vNW).y, 0.0, 1.0);
+  return base + off + (wide > 0.2 ? 1.0 : (wide < -0.22 ? -1.0 : 0.0)) - floor(side * 1.5 + 0.5);
+}
+void main() {
+  vec3 nA = abs(vNW);
+  // a grade de pixels no PLANO da face (pelo eixo dominante da normal do mundo), em metros do mundo: no topo é a do terreno, e numa face inclinada os
+  // pixels continuam quadrados (uma grade 3D de cubos cortava a face em triângulos). Uma grade própria por face (no plano real dela) foi pior: cada face
+  // do bloco tem só umas 3 células, e as vizinhas ficavam sem continuidade, um mosaico de triângulos.
+  vec3 cell = (nA.y >= nA.x && nA.y >= nA.z) ? vec3(floor(vLocal.xz * uDensity), 1.0)
+            : (nA.x >= nA.z ? vec3(floor(vLocal.yz * uDensity), 2.0) : vec3(floor(vLocal.xy * uDensity), 3.0));
+  float base = vKind < 0.5 ? uBase.x : (vKind < 1.5 ? uBase.y : uBase.z);
+  float t = groundStep(cell, base);
+  int i = int(clamp(floor(t + 0.5), 0.0, 5.0));
+  vec3 c = vKind < 0.5 ? uRampG[i] : (vKind < 1.5 ? uRampD[i] : uRampR[i]);
+  gl_FragColor = vec4(c, 1.0);
+}`,
+  });
+  mat.userData.groundSrc = { t: 'v' };
+  return mat;
+}
+
+/** O mesmo material de chão na paleta de outro bioma (um por tipo e paleta, para todas as madeiras): só troca as cores, a malha do tronco é a mesma. */
+const PALETTE_GROUND = new Map<string, THREE.ShaderMaterial>();
+function groundForPalette(src: THREE.ShaderMaterial, palette: number): THREE.ShaderMaterial {
+  const g = src.userData.groundSrc as { t: 'p' | 'v'; kind?: GroundKind };
+  const key = g.t + ':' + (g.kind ?? '') + ':' + palette;
+  let m = PALETTE_GROUND.get(key);
+  if (!m) {
+    m = g.t === 'v' ? makeVertexGroundMaterial(palette) : makeGroundMaterial(g.kind!, palette);
+    adaptShaders(m, false, false, false, false, false, false);   // (como no montador: troncos não têm vento nem seguem o relevo)
+    if (src.userData.leafFill !== undefined) m.userData.leafFill = src.userData.leafFill;
+    PALETTE_GROUND.set(key, m);
+  }
+  return m;
+}
+const paletteCache = new Map<GameTreeKind, GameTreeVariant[]>();
+
+/** A pedra presa nas raízes de um tronco, refeita na pedra de outro bioma (a malha é a mesma; só mudam a paleta, o musgo e a neve). */
+const STONE_BY_BIOME = new Map<string, THREE.ShaderMaterial>();
+function stoneForBiome(src: THREE.ShaderMaterial, rockKey: string): THREE.ShaderMaterial {
+  const cfg = src.userData.stoneCfg as { seed: number; species: string };
+  const key = rockKey + '|' + cfg.species + '|' + cfg.seed;
+  let m = STONE_BY_BIOME.get(key);
+  if (!m) {
+    const preset = (ROCK_BIOMES as Record<string, { config: object }>)[rockKey];
+    if (!preset) return src;
+    m = createPixelRockMaterial(cfg as never, preset.config as never).material as THREE.ShaderMaterial;
+    m.userData.stoneCfg = cfg;
+    // a mesma densidade de texels da grama que o resto (ver a passada sobre os materiais, em buildLod)
+    const u = m.uniforms;
+    if (u.uTexelsPerMetre && u.uTexelsPerLobe && u.uTexelsPerMetre.value > 0) u.uTexelsPerLobe.value *= GRASS_TEXEL_DENSITY / u.uTexelsPerMetre.value;
+    if (u.uTexelsPerMetre) u.uTexelsPerMetre.value = GRASS_TEXEL_DENSITY;
+    if (u.uTexelSize) u.uTexelSize.value = 1 / GRASS_TEXEL_DENSITY;
+    adaptShaders(m, false, false, false, false, false, true);
+    m.userData.leafFill = src.userData.leafFill ?? 0.38;
+    STONE_BY_BIOME.set(key, m);
+  }
+  return m;
+}
+
+/** Os materiais "basic" do gerador de troncos (a saia de fibras de raiz da palmeira, o fundo escuro dela) viram toon: o montador só entende toon e shader. */
+const basicToToon = new WeakMap<THREE.Material, THREE.MeshToonMaterial>();
+function toonOfBasic(m: THREE.MeshBasicMaterial): THREE.MeshToonMaterial {
+  let t = basicToToon.get(m);
+  if (!t) {
+    t = new THREE.MeshToonMaterial({ color: m.color, map: m.map, alphaTest: m.alphaTest, side: m.side, transparent: m.transparent, opacity: m.opacity });
+    basicToToon.set(m, t);
+  }
+  return t;
+}
+
 /** Um cartão de sprite do Pixel_Tree (maçã, baga, cogumelo, cogumelo de tronco): sempre de frente para a câmera. */
-interface SpriteCard { tex: THREE.Texture; w: number; h: number; ax: number; ay: number; at: THREE.Vector3; ground: boolean }
+interface SpriteCard {
+  tex: THREE.Texture; w: number; h: number; ax: number; ay: number; at: THREE.Vector3; ground: boolean;
+  /** cogumelo de pedra: a normal da superfície onde nasce e o contorno (casco convexo) dos pixels do chapéu, em unidades do cartão (a origem é a âncora) */
+  rock?: { n: THREE.Vector3; hull: THREE.Vector2[]; hullStart?: number; hullCount?: number };
+}
+
+/** Casco convexo (cadeia monótona) dos pontos do chapéu: o limite de rotação só depende dos pontos extremos, então bastam uns poucos. */
+function convexHull(pts: THREE.Vector3[]): THREE.Vector2[] {
+  const p = pts.map((v) => new THREE.Vector2(v.x, v.y)).sort((a, b) => a.x - b.x || a.y - b.y);
+  const uniq = p.filter((v, i) => i === 0 || v.x !== p[i - 1].x || v.y !== p[i - 1].y);
+  if (uniq.length < 3) return uniq;
+  const cross = (o: THREE.Vector2, a: THREE.Vector2, b: THREE.Vector2) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower: THREE.Vector2[] = [], upper: THREE.Vector2[] = [];
+  for (const v of uniq) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], v) <= 0) lower.pop(); lower.push(v); }
+  for (let i = uniq.length - 1; i >= 0; i--) { const v = uniq[i]; while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], v) <= 0) upper.pop(); upper.push(v); }
+  lower.pop(); upper.pop();
+  return lower.concat(upper);
+}
+const HULL_MAX = 96;
+const dataCanvasCache = new WeakMap<THREE.Texture, THREE.Texture>();
+/** DataTexture (linha 0 embaixo) -> textura de canvas (linha 0 em cima), como o resto dos cartões, preservando a máscara do chapéu. */
+function canvasOfDataTexture(tex: THREE.Texture): THREE.Texture {
+  if ((tex.image as HTMLCanvasElement).getContext) return tex;
+  let c = dataCanvasCache.get(tex);
+  if (c) return c;
+  const im = tex.image as { width: number; height: number; data: Uint8Array };
+  const cv = document.createElement('canvas');
+  cv.width = im.width; cv.height = im.height;
+  const cx = cv.getContext('2d')!;
+  const id = cx.createImageData(im.width, im.height);
+  for (let y = 0; y < im.height; y++) id.data.set(im.data.subarray((im.height - 1 - y) * im.width * 4, (im.height - y) * im.width * 4), y * im.width * 4);
+  cx.putImageData(id, 0, 0);
+  c = new THREE.CanvasTexture(cv);
+  c.userData = tex.userData;
+  dataCanvasCache.set(tex, c);
+  return c;
+}
 
 const SPRITE_VS = `attribute vec3 aCenter;
 attribute vec3 aNrm;
 attribute float aHug;
+// cogumelo de pedra: aRock = normal da superfície (xyz) e início do contorno do chapéu; aHullI = quantos pontos e o tamanho do cartão (qw, qh)
+attribute vec4 aRock;
+attribute vec3 aHullI;
+uniform vec2 uHull[${HULL_MAX}];
 // a sombra recebida usa "normal" (afasta o ponto lido do mapa de sombras): o cartão não tem superfície, então usa a direção
 // para fora da árvore, já no mundo (com a rotação da instância), e não fica "dentro" do que o sombreia
 vec3 sprNormalWorld;
@@ -717,10 +958,63 @@ void main() {
       }
     }
   }
-  vec4 mv = viewMatrix * (im * vec4(ctr, 1.0));
-  mv.xy += position.xy * length(im[0].xyz);
-  vUv = uv;
-  gl_Position = projectionMatrix * mv;
+  if (aHullI.x > 0.5) {
+    // Cogumelo de pedra, as regras do gerador: a guinada acompanha a câmera (livre), e só a INCLINAÇÃO é limitada: o chapéu nunca entra na pedra
+    // (o plano de apoio, com a pedra toda atrás dele). Do pé para cima nada trava: o talo pode entrar na superfície.
+    float sc = length(im[0].xyz);
+    vec3 nW = normalize(mat3(im) * aRock.xyz);
+    vec3 camZ = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+    float yaw = atan(camZ.x, camZ.z);
+    float want = asin(clamp(-camZ.y, -1.0, 1.0));
+    float sy = sin(yaw), cy = cos(yaw);
+    vec3 axX = vec3(cy, 0.0, -sy);
+    int cnt = int(aHullI.x + 0.5);
+    int st = int(aRock.w + 0.5);
+    vec2 qs = aHullI.yz;
+    float clr = 0.008 * sc;
+    float dx0 = dot(nW, axX);
+    float dy0 = nW.y;                       // inclinação 0: o eixo Y do cartão é o vertical
+    float lim[24];
+    for (int i = 0; i < 24; i++) {
+      if (i >= cnt) break;
+      vec2 hp = uHull[st + i] * qs * sc;
+      lim[i] = min(0.0, hp.x * dx0 + hp.y * dy0 + clr);
+    }
+    float pitch = want;
+    bool ok = true;
+    for (int i = 0; i < 24; i++) {
+      if (i >= cnt) break;
+      vec2 hp = uHull[st + i] * qs * sc;
+      vec3 axY = vec3(sin(want) * sy, cos(want), sin(want) * cy);
+      if (hp.x * dot(nW, axX) + hp.y * dot(nW, axY) + clr < lim[i] - 0.000001) { ok = false; break; }
+    }
+    if (!ok) {
+      float lo = 0.0, hi = 1.0;
+      for (int step = 0; step < 12; step++) {
+        float fr = (lo + hi) * 0.5;
+        float pp = want * fr;
+        vec3 axY = vec3(sin(pp) * sy, cos(pp), sin(pp) * cy);
+        bool clear = true;
+        for (int i = 0; i < 24; i++) {
+          if (i >= cnt) break;
+          vec2 hp = uHull[st + i] * qs * sc;
+          if (hp.x * dot(nW, axX) + hp.y * dot(nW, axY) + clr < lim[i] - 0.000001) { clear = false; break; }
+        }
+        if (clear) lo = fr; else hi = fr;
+      }
+      pitch = want * lo;
+    }
+    vec3 axYf = vec3(sin(pitch) * sy, cos(pitch), sin(pitch) * cy);
+    vec3 wpos = (im * vec4(ctr, 1.0)).xyz + axX * (position.x * sc) + axYf * (position.y * sc);
+    vUv = uv;
+    gl_Position = projectionMatrix * viewMatrix * vec4(wpos, 1.0);
+  } else {
+    // (sem "return" antes do fim: o que fecha o main (sombra e névoa do ambiente) tem de rodar nos dois caminhos)
+    vec4 mv = viewMatrix * (im * vec4(ctr, 1.0));
+    mv.xy += position.xy * length(im[0].xyz);
+    vUv = uv;
+    gl_Position = projectionMatrix * mv;
+  }
 }`;
 const SPRITE_FS = `uniform sampler2D uMap;
 varying vec2 vUv;
@@ -769,10 +1063,12 @@ function downsampleSprite(tex: THREE.Texture, tw: number, th: number): THREE.Tex
 function buildSpriteParts(cards: SpriteCard[], brightness: number | undefined): GameTreePart[] {
   const byKey = new Map<string, { tex: THREE.Texture; tw: number; th: number; items: SpriteCard[] }>();
   for (const cd of cards) {
+    if (cd.rock) cd.tex = canvasOfDataTexture(cd.tex);     // o cogumelo de pedra é um desenho de 16 px em DataTexture
     const im = cd.tex.image as { width: number; height: number } | undefined;
     if (!im || !(cd.tex.image as HTMLCanvasElement).getContext) continue;
-    const tw = Math.max(5, Math.min(im.width, Math.round(cd.w * GRASS_TEXEL_DENSITY)));
-    const th = Math.max(5, Math.min(im.height, Math.round(tw * im.height / im.width)));
+    // (o cogumelo de pedra mantém os pixels do desenho: com 16 px o chapéu e o talo perdem a forma ao encolher para a densidade da grama)
+    const tw = cd.rock ? im.width : Math.max(5, Math.min(im.width, Math.round(cd.w * GRASS_TEXEL_DENSITY)));
+    const th = cd.rock ? im.height : Math.max(5, Math.min(im.height, Math.round(tw * im.height / im.width)));
     const key = cd.tex.uuid + ':' + tw + 'x' + th;
     let g = byKey.get(key);
     if (!g) { g = { tex: cd.tex, tw, th, items: [] }; byKey.set(key, g); }
@@ -800,13 +1096,22 @@ function buildSpriteParts(cards: SpriteCard[], brightness: number | undefined): 
   const total = groups.reduce((s, g) => s + g.items.length, 0);
   const pos = new Float32Array(total * 12), uv = new Float32Array(total * 8), ctr = new Float32Array(total * 12), hug = new Float32Array(total * 4);
   const idx = new Uint16Array(total * 6), nrm = new Float32Array(total * 12);
+  const rockA = new Float32Array(total * 16), hullI = new Float32Array(total * 12);
+  const hullPts: THREE.Vector2[] = [];
   const box = new THREE.Box3();
   let i = 0;
   for (const g of groups) {
-    const qw = g.tw / GRASS_TEXEL_DENSITY, qh = g.th / GRASS_TEXEL_DENSITY;
+    const qwG = g.tw / GRASS_TEXEL_DENSITY, qhG = g.th / GRASS_TEXEL_DENSITY;
     const oyg = rect.get(g)!.oy;
     const u1 = g.tw / aw, v0 = 1 - (oyg + g.th) / ah, v1 = 1 - oyg / ah;      // retângulo do cartão no atlas
     for (const cd of g.items) {
+      const qw = cd.rock ? cd.w : qwG, qh = cd.rock ? cd.h : qhG;
+      if (cd.rock) {
+        // o contorno do chapéu entra uma vez por cartão (poucos pontos; o mesmo desenho repete o mesmo contorno)
+        const h = cd.rock.hull.length > 24 ? cd.rock.hull.filter((_, j) => j % Math.ceil(cd.rock!.hull.length / 24) === 0).slice(0, 24) : cd.rock.hull;
+        if (hullPts.length + h.length <= HULL_MAX) { cd.rock.hullStart = hullPts.length; cd.rock.hullCount = h.length; hullPts.push(...h); }
+        else { cd.rock.hullStart = 0; cd.rock.hullCount = 0; }
+      }
       const x0 = -cd.ax * qw, x1 = (1 - cd.ax) * qw, y0 = -cd.ay * qh, y1 = (1 - cd.ay) * qh;
       const corners = [[x0, y0, 0, v0], [x1, y0, u1, v0], [x1, y1, u1, v1], [x0, y1, 0, v1]];
       corners.forEach((cn, k) => {
@@ -815,6 +1120,11 @@ function buildSpriteParts(cards: SpriteCard[], brightness: number | undefined): 
         ctr.set([cd.at.x, cd.at.y, cd.at.z], (i * 4 + k) * 3);
         hug[i * 4 + k] = cd.ground ? 1 : 0;
         const hl = Math.hypot(cd.at.x, cd.at.z) || 1;
+        if (cd.rock) {
+          const hs = cd.rock.hullStart!;
+          rockA.set([cd.rock.n.x, cd.rock.n.y, cd.rock.n.z, hs], (i * 4 + k) * 4);
+          hullI.set([cd.rock.hullCount!, qw, qh], (i * 4 + k) * 3);
+        }
         if (cd.ground) nrm.set([0, 1, 0], (i * 4 + k) * 3);
         else nrm.set([cd.at.x / hl * 0.93, 0.37, cd.at.z / hl * 0.93], (i * 4 + k) * 3);
       });
@@ -829,10 +1139,14 @@ function buildSpriteParts(cards: SpriteCard[], brightness: number | undefined): 
   geo.setAttribute('aCenter', new THREE.BufferAttribute(ctr, 3));
   geo.setAttribute('aHug', new THREE.BufferAttribute(hug, 1));
   geo.setAttribute('aNrm', new THREE.BufferAttribute(nrm, 3));
+  geo.setAttribute('aRock', new THREE.BufferAttribute(rockA, 4));
+  geo.setAttribute('aHullI', new THREE.BufferAttribute(hullI, 3));
   geo.setIndex(new THREE.BufferAttribute(idx, 1));
   geo.boundingBox = box.expandByScalar(0.6);
   geo.boundingSphere = geo.boundingBox.getBoundingSphere(new THREE.Sphere());
-  const mat = new THREE.ShaderMaterial({ uniforms: { uMap: { value: map } }, vertexShader: SPRITE_VS, fragmentShader: SPRITE_FS, side: THREE.DoubleSide });
+  const hullU = Array.from({ length: HULL_MAX }, (_, j) => hullPts[j] ?? new THREE.Vector2());
+  const mat = new THREE.ShaderMaterial({ uniforms: { uMap: { value: map }, uHull: { value: hullU } }, vertexShader: SPRITE_VS, fragmentShader: SPRITE_FS, side: THREE.DoubleSide });
+  mat.userData.leafFill = 0.4;     // luz de preenchimento na sombra: maçãs, bagas e cogumelos ficavam quase pretos sob a copa
   adaptShaders(mat, false);
   if (brightness) mat.userData.brightness = brightness;
   // sombra projetada: o cartão recortado pelo alfa da textura (de frente para a luz, como de frente para a câmera)
@@ -901,17 +1215,19 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
       if (!u) continue;
       // os sulcos da casca (uma crista por "lóbulo") contam em texels: com mais texels por metro a mesma casca ganhava mais sulcos. O lóbulo passa a ter
       // mais texels na mesma proporção, e os sulcos continuam com a largura em metros de antes (só os pixels ficam menores)
-      if (u.uTexelsPerMetre && u.uTexelsPerLobe && u.uTexelsPerMetre.value > 0) u.uTexelsPerLobe.value *= GRASS_TEXEL_DENSITY / u.uTexelsPerMetre.value;
+      const texels = GRASS_TEXEL_DENSITY;
+      if (u.uTexelsPerMetre && u.uTexelsPerLobe && u.uTexelsPerMetre.value > 0) u.uTexelsPerLobe.value *= texels / u.uTexelsPerMetre.value;
       // a casca: o escuro mais fundo fica nos sulcos e na sombra mais forte, mas sem tomar o lado sem sol do tronco inteiro
       if (u.uBarkDarkCoverage) u.uBarkDarkCoverage.value = Math.min(u.uBarkDarkCoverage.value, 0.6);
-      if (u.uTexelsPerMetre) u.uTexelsPerMetre.value = GRASS_TEXEL_DENSITY;
-      if (u.uTexelSize) u.uTexelSize.value = 1 / GRASS_TEXEL_DENSITY;
+      if (u.uTexelsPerMetre) u.uTexelsPerMetre.value = texels;
+      if (u.uTexelSize) u.uTexelSize.value = 1 / texels;
       if (u.uDensity && u.uOrePalette) u.uDensity.value = GRASS_TEXEL_DENSITY;     // os veios de minério também
     }
   });
   inst.group.updateMatrixWorld(true);
   const groups = new Map<string, { mat: THREE.Material; geos: THREE.BufferGeometry[]; baked: boolean; shadow: boolean }>();
   const groundMats = new Map<GroundKind, THREE.ShaderMaterial>();
+  let vertexGround: THREE.ShaderMaterial | undefined;
   const cards: SpriteCard[] = [];
   inst.group.traverse((o) => {
     const mesh = o as THREE.Mesh;
@@ -920,6 +1236,19 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
       if (/Sparkle/.test(spr.name)) return;     // os brilhos dos minérios e cristais são animados (piscam): não viram cartões fixos
       const tex = (spr.material as THREE.SpriteMaterial).map;
       if (tex) cards.push({ tex, w: spr.scale.x, h: spr.scale.y, ax: spr.center.x, ay: spr.center.y, at: new THREE.Vector3().setFromMatrixPosition(spr.matrixWorld), ground: false });
+      return;
+    }
+    if (mesh.isMesh && /^RockMushroom_/.test(mesh.name)) {
+      const tex = (mesh.material as THREE.MeshBasicMaterial).map;
+      const bb = mesh.geometry.boundingBox ?? (mesh.geometry.computeBoundingBox(), mesh.geometry.boundingBox!);
+      const w = (bb.max.x - bb.min.x) * mesh.scale.x, h = (bb.max.y - bb.min.y) * mesh.scale.x;
+      const pts = mesh.userData.collisionPoints as THREE.Vector3[] | undefined;
+      const nrm = (mesh.parent?.userData.surfaceNormal as THREE.Vector3 | undefined)?.clone().normalize();
+      if (tex && w > 0 && pts && nrm) {
+        const at = new THREE.Vector3().setFromMatrixPosition(mesh.matrixWorld);
+        // os pontos já vêm em unidades do cartão (x de 0 a 1 menos a âncora, y de 0 a 1): o shader multiplica pelo tamanho do cartão
+        cards.push({ tex, w, h, ax: -bb.min.x / (bb.max.x - bb.min.x), ay: -bb.min.y / (bb.max.y - bb.min.y), at, ground: false, rock: { n: nrm, hull: convexHull(pts) } });
+      }
       return;
     }
     if (mesh.isMesh && mesh.name === 'TreeMushroom') {
@@ -932,20 +1261,29 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
       }
       return;
     }
-    if (!mesh.isMesh || mesh.name === 'GroundMound' || mesh.name === 'TreeMushroom' || Array.isArray(mesh.material)) return;
+    if (!mesh.isMesh || mesh.name === 'GroundMound' || mesh.name === 'TreeMushroom' || /^RockMushroom_/.test(mesh.name) || Array.isArray(mesh.material)) return;
     let mat = mesh.material as THREE.Material;
     const isShader = (mat as THREE.ShaderMaterial).isShaderMaterial === true;
-    const isToon = (mat as THREE.MeshToonMaterial).isMeshToonMaterial === true;
+    // (só os meshes comuns: os instanciados com material basic, como os cogumelos de tronco, seguem fora, como antes)
+    const isBasic = (mat as THREE.MeshBasicMaterial).isMeshBasicMaterial === true && !(mesh as THREE.InstancedMesh).isInstancedMesh;
+    if (isBasic) mat = toonOfBasic(mat as THREE.MeshBasicMaterial);
+    const isToon = isBasic || (mat as THREE.MeshToonMaterial).isMeshToonMaterial === true;
     let groundKey = '';
     if (!isShader && !isToon) return;
     const g0 = mesh.geometry;
     const tris = g0.index ? g0.index.count / 3 : g0.attributes.position.count / 3;
-    if (isToon && tris <= 30) return;     // a grama e as pedrinhas do chão da apresentação
-    if (isToon && !(mat as THREE.MeshToonMaterial).map) {
-      const gk = groundKindOf((mat as THREE.MeshToonMaterial).color);
-      let gm = groundMats.get(gk);
-      if (!gm) { gm = makeGroundMaterial(gk); groundMats.set(gk, gm); }
-      mat = gm; groundKey = 'ground:' + gk;
+    if (isToon && !isBasic && tris <= 30) return;     // a grama e as pedrinhas do chão da apresentação
+    if (isToon && !isBasic && !(mat as THREE.MeshToonMaterial).map) {
+      if ((mat as THREE.MeshToonMaterial).vertexColors && g0.attributes.color) {
+        // terra com cor por vértice (o bloco de raízes): cada face usa a rampa da sua cor
+        vertexGround ??= makeVertexGroundMaterial();   // (um por montagem, como os de groundMats: o material é adaptado uma vez)
+        mat = vertexGround; groundKey = 'ground:vertex';
+      } else {
+        const gk = groundKindOf((mat as THREE.MeshToonMaterial).color);
+        let gm = groundMats.get(gk);
+        if (!gm) { gm = makeGroundMaterial(gk); groundMats.set(gk, gm); }
+        mat = gm; groundKey = 'ground:' + gk;
+      }
     }
     let geo: THREE.BufferGeometry;
     const instMesh = mesh as THREE.InstancedMesh;
@@ -1001,12 +1339,21 @@ function buildLod(species: string, seed: number, lod: LodSpec, sizeMul = 1, oreN
     if (sm.isShaderMaterial) {
       // samambaia: a textura ORIGINAL do Pixel_Tree, reduzida para a densidade da grama (a borda dos folíolos finos é mantida)
       matchSaplingLeafTexels(sm, geometry, false, species === 'reed_clump', species === 'fern_plant');
+      // galhos finos (arbusto seco, árvore seca e a muda dela): a sombra é engrossada (ver adaptShaders)
+      if (/^(withered_shrub|dry_withered|dry_withered_sapling)$/.test(species)) sm.userData.shadowFat = 0.045;
+      // pedras: a sombra é engrossada em 5 cm e recuada da luz (como os galhos), para encostar na base da pedra, sem a faixa clara de chão entre as duas
+      if ((TREE_PRESETS[species] as { rock?: object }).rock) { sm.userData.shadowFat = 0.075; sm.userData.shadowFatRadial = true; }
       adaptShaders(sm, gp.baked, /_flowers$|_leaves$|^fern_plant$|^reed_clump$|shrub|_sapling$/.test(species), /_flowers$|_leaves$/.test(species), /^fern_plant$|^reed_clump$/.test(species),
-        !((TREE_PRESETS[species] as { rock?: object }).rock || /_log$|stump/.test(species)), !!(TREE_PRESETS[species] as { rock?: object }).rock);
+        !((TREE_PRESETS[species] as { rock?: object }).rock || /_log(_|$)|stump/.test(species)), !!(TREE_PRESETS[species] as { rock?: object }).rock || !!sm.uniforms.uNaturalStone);   // (as pedras presas nas raízes dos troncos também: texels do mundo, na densidade da grama, como as pedras soltas)
       if (BRIGHTNESS[species]) sm.userData.brightness = BRIGHTNESS[species];
       // pedras: na sombra o que sobra é só a luz ambiente, e a paleta escura delas virava quase preto; uma parte da luz do sol chega mesmo na sombra
       // (como nas folhas e plantas), então a pedra à sombra fica cinza-escura, com o relevo à mostra
       if ((TREE_PRESETS[species] as { rock?: object }).rock) sm.userData.leafFill = 0.38;
+      // o que o gerador de troncos traz além da casca (o topo do toco com os anéis, as pedras presas nas raízes e o bloco de terra): sem isso eles ficavam
+      // só com a luz ambiente na sombra, quase pretos (a casca e as folhas já têm essa luz de preenchimento por padrão)
+      else if (sm.uniforms.uRingsPerMetre || sm.uniforms.uNaturalStone || sm.uniforms.uRampG) sm.userData.leafFill = 0.38;
+      // o cacto: a casca dele não declara a textura uStruct, e sem ela o padrão de luz de preenchimento é 0 (a casca das árvores tem 0,35): na sombra ele ficava quase preto
+      else if (/cactus/.test(species) && sm.userData.leafFill === undefined) sm.userData.leafFill = 0.35;
       if (sm.uniforms.uTime) timeUniforms.push(sm.uniforms.uTime);
       if (sigKey) SHARED_MATS.set(sigKey, sm);
     }
@@ -1023,8 +1370,14 @@ function variantCount(kind: GameTreeKind): number {
   return kind.startsWith('shrub') || kind.endsWith('Sapling') || kind.startsWith('flowers_') || kind === 'fernPlant' || kind === 'reedClump' || kind.startsWith('log') || kind.startsWith('gravel_') || kind.startsWith('leaves_') ? 2 : VARIANTS;
 }
 
-/** Gera a variação k de uma espécie (as duas faixas de distância). */
+/** Gera a variação k de uma espécie (todos os degraus de detalhe). */
 function buildVariant(kind: GameTreeKind, k: number): GameTreeVariant {
+  const gen = buildVariantSteps(kind, k);
+  for (;;) { const r = gen.next(); if (r.done) { return r.value; } }
+}
+
+/** O mesmo, em etapas: devolve o controle depois de cada degrau de detalhe, para o pré-aquecimento repartir o trabalho em pedaços curtos. */
+function* buildVariantSteps(kind: GameTreeKind, k: number): Generator<void, GameTreeVariant, void> {
   const species = SPECIES[kind];
   const baseSeed = (TREE_PRESETS[species] as { seed: number }).seed;
   const oreName = kind.startsWith('ore_') ? (kind.slice(kind.lastIndexOf('_') + 1) as OreName) : undefined;
@@ -1033,20 +1386,56 @@ function buildVariant(kind: GameTreeKind, k: number): GameTreeVariant {
   const sizeMul = kind.startsWith('rock_') ? [0.42, 0.68, 1.0][k] : kind.startsWith('ore_') ? [1.3, 1.8, 2.4][k] : 1;   // as de minério são maiores: os veios têm tamanho fixo
   const a = buildLod(species, seed, LODS[0], sizeMul, oreName);
   if (singleLodKind(kind)) return { lods: [{ parts: a.parts }, { parts: a.parts }, { parts: a.parts }, { parts: a.parts }], height: Math.max(a.box.max.y, 0.5) };
+  yield;
   // maçãs, bagas e cogumelos só no desenho mais próximo (até 70 m): de 70 a 150 m cada fruta é menos de um pixel e custava um desenho por variação (~33)
   const m = buildLod(species, seed, LODS[1], sizeMul, oreName, false);
+  yield;
   const b = buildLod(species, seed, LODS[2], sizeMul, oreName, false);
+  yield;
   const c = buildLod(species, seed, LODS[3], sizeMul, oreName, false);
   return { lods: [{ parts: a.parts }, { parts: m.parts }, { parts: b.parts }, { parts: c.parts }], height: Math.max(a.box.max.y, 0.5) };
 }
 
 /** Variações de uma espécie (geradas na primeira vez, e guardadas; as que o pré-aquecimento já fez não se repetem). */
 export function getGameTrees(kind: GameTreeKind): GameTreeVariant[] {
+  const at = kind.indexOf('@');
+  if (at > 0) {
+    let d = paletteCache.get(kind);
+    if (!d) {
+      const [palStr, rockKey] = kind.slice(at + 1).split('~');
+      const palette = Number(palStr) || 0;
+      d = getGameTrees(kind.slice(0, at) as GameTreeKind).map((v) => ({
+        height: v.height,
+        lods: v.lods.map((l) => ({
+          parts: l.parts.map((p) => {
+            const m = p.material as THREE.ShaderMaterial;
+            if (m.userData?.groundSrc && palette > 0) return { ...p, material: groundForPalette(m, palette) };
+            if (m.userData?.stoneCfg && rockKey) return { ...p, material: stoneForBiome(m, rockKey) };
+            return p;
+          }),
+        })) as GameTreeVariant['lods'],
+      }));
+      paletteCache.set(kind, d);
+    }
+    return d;
+  }
   let list = cache.get(kind);
   if (!list) { list = []; cache.set(kind, list); }
   const n = variantCount(kind);
   while (list.length < n) list.push(buildVariant(kind, list.length));
   return list;
+}
+
+/**
+ * Só a variação k (e as anteriores) de uma espécie: quem precisa de UMA árvore (o atlas de impostores) não gera todas as variações.
+ * O que já foi gerado fica na mesma lista do cache, então depois o jogo e o pré-aquecimento só completam o que falta.
+ */
+export function getGameTreeVariant(kind: GameTreeKind, k: number): GameTreeVariant {
+  if (kind.indexOf('@') > 0) return getGameTrees(kind)[k];
+  let list = cache.get(kind);
+  if (!list) { list = []; cache.set(kind, list); }
+  while (list.length <= k) list.push(buildVariant(kind, list.length));
+  return list[k];
 }
 
 /**
@@ -1056,20 +1445,35 @@ export function getGameTrees(kind: GameTreeKind): GameTreeVariant[] {
  */
 const WARM_FIRST: GameTreeKind[] = ['oak', 'birch', 'pine', 'sakura', 'mapleRed', 'mapleOrange', 'mapleYellow', 'korok', 'palm', 'mangrove', 'acacia', 'snowPine', 'willow', 'dead', 'cactus',
   'shrubHyrule', 'shrubBerry', 'shrubFlower', 'shrubBirch', 'shrubPine', 'shrubSakura', 'shrubKorok', 'shrubPalm', 'shrubSwamp', 'shrubSavanna', 'shrubDesert', 'shrubWithered', 'shrubSnow',
-  'fernPlant', 'reedClump', 'logHollow', 'logRooted', 'logStump', 'logFallen'];
-let warmQueue: [GameTreeKind, number][] | null = null;
+  'fernPlant', 'reedClump', 'logHollow_hyrule_oak', 'logRooted_hyrule_oak', 'logStump_hyrule_oak', 'logFallen_hyrule_oak'];
+/** Variações em andamento, uma espécie de cada vez (cada uma avança um degrau de detalhe por chamada de `advanceGameTrees`). */
+const building = new Map<GameTreeKind, { v: number; gen: Generator<void, GameTreeVariant, void> }>();
+
+/**
+ * Faz UM degrau de detalhe do que falta da espécie (a variação seguinte, em etapas) e diz se ela já está completa. Quem precisa da espécie e não pode
+ * esperar chama `getGameTrees` (gera tudo na hora, 0,2 a 1,2 s de quadro parado); quem pode esperar chama isto a cada quadro e planta quando devolver true.
+ */
+export function advanceGameTrees(kind: GameTreeKind): boolean {
+  const at = kind.indexOf('@');
+  if (at > 0) return advanceGameTrees(kind.slice(0, at) as GameTreeKind);
+  let list = cache.get(kind);
+  if (!list) { list = []; cache.set(kind, list); }
+  const n = variantCount(kind);
+  if (list.length >= n) return true;
+  let cur = building.get(kind);
+  if (!cur || cur.v !== list.length) { cur = { v: list.length, gen: buildVariantSteps(kind, list.length) }; building.set(kind, cur); }
+  const r = cur.gen.next();
+  if (r.done) { building.delete(kind); if (list.length === cur.v) list.push(r.value); }   // (se o jogo gerou esta variação no meio, a pronta aqui é descartada)
+  return list.length >= n;
+}
+
+let warmQueue: GameTreeKind[] | null = null;
 export function warmGameTreesStep(): boolean {
-  if (!warmQueue) {
-    const kinds = [...WARM_FIRST, ...(Object.keys(SPECIES) as GameTreeKind[]).filter((k) => !WARM_FIRST.includes(k) && !k.startsWith('ore_'))];
-    warmQueue = kinds.flatMap((k) => Array.from({ length: variantCount(k) }, (_, v) => [k, v] as [GameTreeKind, number]));
-  }
+  if (!warmQueue) warmQueue = [...WARM_FIRST, ...(Object.keys(SPECIES) as GameTreeKind[]).filter((k) => !WARM_FIRST.includes(k) && !k.startsWith('ore_'))];
+  // um degrau de detalhe por chamada (antes a variação inteira, 0,4 a 1,2 s de quadro parado); a espécie sai da fila quando completa
   while (warmQueue.length) {
-    const [kind, v] = warmQueue.shift()!;
-    const list = cache.get(kind) ?? [];
-    if (!cache.has(kind)) cache.set(kind, list);
-    if (list.length > v) continue;            // já foi gerada (pelo jogo ou pelo catálogo)
-    while (list.length <= v) list.push(buildVariant(kind, list.length));
-    return warmQueue.length > 0;
+    if (!advanceGameTrees(warmQueue[0])) return true;
+    warmQueue.shift();
   }
   return false;
 }

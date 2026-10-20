@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { bracketSprite, spriteMaterial } from './pixelSprites';
 import { treeMushroomCard } from './mushroomRotation';
 import { TreeConfig } from '../types';
-import { SCATreeData, SCANode } from './spaceColonization';
+import { SCATreeData } from './spaceColonization';
 
 // Surface-area weighted radius of a linearly tapered tube. A plain average of
 // the two ends is dragged down by the thin end, and the bark shader turns that
@@ -35,7 +35,7 @@ export interface SwampAccessoriesResult {
  */
 export function buildSwampRootsAndAccessories(
   config: TreeConfig,
-  scaData: SCATreeData,
+  scaData: Pick<SCATreeData, 'allNodes'>,
   barkMaterial: THREE.Material,
   sharedUniforms: {
     uTime: { value: number };
@@ -44,7 +44,8 @@ export function buildSwampRootsAndAccessories(
     uLightDir: { value: THREE.Vector3 };
   },
   branchTips: { position: THREE.Vector3; normal: THREE.Vector3; scale: number }[],
-  rnd: () => number
+  rnd: () => number,
+  rootAngleFilter?: (angle: number) => boolean
 ): SwampAccessoriesResult {
   const group = new THREE.Group();
   group.name = 'Swamp_EcosystemGroup';
@@ -92,6 +93,7 @@ export function buildSwampRootsAndAccessories(
   for (let r = 0; r < rootCount; r++) {
     const angleFrac = r / rootCount;
     const angle = angleFrac * Math.PI * 2 + (rnd() - 0.5) * 0.28;
+    if (rootAngleFilter && !rootAngleFilter(angle)) continue;
     const radDir = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle)).normalize();
     const tanDir = new THREE.Vector3(-radDir.z, 0, radDir.x);
 

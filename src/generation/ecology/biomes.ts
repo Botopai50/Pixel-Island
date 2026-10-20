@@ -4,6 +4,8 @@ import { CONFIG } from '../../config.ts';
 import { BiomeType, type BiomeData } from '../types.ts';
 
 type TreeMix = BiomeData['treeTypeDistribution'];
+/** os biomas de mata que sobem a montanha e ganham andares de altitude (evaluateBiome) */
+const LAYERED_BIOMES = new Set<BiomeType>([BiomeType.TEMPERATE_FOREST, BiomeType.AUTUMN_FOREST, BiomeType.SAKURA_GROVE, BiomeType.COASTAL_MEADOW, BiomeType.BOREAL_TAIGA, BiomeType.SAVANNAH, BiomeType.TROPICAL_RAINFOREST]);
 const NO_TREES: TreeMix = { oak: 0, pine: 0, birch: 0, coastalPalm: 0, acacia: 0, autumnMaple: 0, cactus: 0 };
 
 /**
@@ -76,7 +78,38 @@ export class BiomeManager {
     return 92 + (temperature - 0.5) * 50 + this.noise.fbm2D(x * 0.0016 + 77.0, z * 0.0016 - 13.0, 2) * 7;
   }
 
+  /**
+   * Andares de altitude DENTRO do bioma: da base da montanha até a linha das árvores a mata vai ficando mais rala, menor e mais conífera (o carvalho e o
+   * bordo dão lugar ao pinheiro e à bétula), antes de o bioma virar tundra alpina (o corte seco de 20 m abaixo da linha da neve). `altitude` vai de 0 (planície) a 1.
+   */
   public evaluateBiome(
+    x: number,
+    z: number,
+    elevation: number,
+    slope: number,
+    moistureBonus: number = 0.0,
+    isWater: boolean = false,
+    specialEnv?: Parameters<BiomeManager['evaluateBiomeBase']>[6]
+  ): BiomeData {
+    const b = this.evaluateBiomeBase(x, z, elevation, slope, moistureBonus, isWater, specialEnv);
+    if (elevation > 28 && LAYERED_BIOMES.has(b.type)) {
+      const sl = this.snowLine(x, z, b.temperature);
+      const alt = smoothstep(sl - 52, sl - 20, elevation);
+      if (alt > 0.001) {
+        const d = b.treeTypeDistribution;
+        b.altitude = alt;
+        b.vegetationDensity *= 1 - 0.7 * alt;
+        d.oak *= 1 - 0.9 * alt; d.autumnMaple *= 1 - 0.8 * alt; d.coastalPalm *= 1 - 0.95 * alt; d.acacia *= 1 - 0.9 * alt;
+        d.birch *= 1 - 0.35 * alt;
+        d.pine = d.pine * (1 + alt * 1.5) + alt * 0.35;
+        b.shrubDensity *= 1 + 0.4 * alt;
+        b.rockDensity = Math.min(1, b.rockDensity + alt * 0.22);
+      }
+    }
+    return b;
+  }
+
+  private evaluateBiomeBase(
     x: number,
     z: number,
     elevation: number,

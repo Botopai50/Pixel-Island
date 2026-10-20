@@ -1730,22 +1730,6 @@ export class BotanicalGeometryFactory {
     return { body: BufferGeometryUtils.mergeGeometries(parts)! };
   }
 
-  /** Lanterna de pedra japonesa (tōrō): base, haste, caixa de luz com abertura e telhado em pirâmide. ~1,5 m. */
-  public static buildStoneLantern(): { body: THREE.BufferGeometry } {
-    const parts: THREE.BufferGeometry[] = [];
-    const add = (g: THREE.BufferGeometry, y: number, c: number) => { g.translate(0, y, 0); parts.push(this.paintAll(g.toNonIndexed(), c, c * 0.98, c * 0.92)); };
-    add(new THREE.CylinderGeometry(0.34, 0.40, 0.14, 8), 0.07, 0.42);
-    add(new THREE.CylinderGeometry(0.13, 0.16, 0.62, 8), 0.45, 0.50);
-    add(new THREE.CylinderGeometry(0.34, 0.24, 0.12, 8), 0.82, 0.46);
-    add(new THREE.BoxGeometry(0.34, 0.32, 0.34), 1.04, 0.52);
-    const glow = new THREE.BoxGeometry(0.2, 0.18, 0.36); glow.translate(0, 1.04, 0);
-    parts.push(this.paintAll(glow.toNonIndexed(), 0.98, 0.78, 0.42));
-    const roof = new THREE.ConeGeometry(0.46, 0.26, 4); roof.rotateY(Math.PI / 4);
-    add(roof, 1.33, 0.40);
-    add(new THREE.SphereGeometry(0.08, 8, 6), 1.5, 0.48);
-    return { body: BufferGeometryUtils.mergeGeometries(parts)! };
-  }
-
   /** Cacto-barril: bola canelada (12 costelas) verde, com uma coroa de flores rosa no alto. ~0,9 m. */
   public static buildBarrelCactus(): { body: THREE.BufferGeometry } {
     const body = new THREE.SphereGeometry(0.45, 24, 14).toNonIndexed();

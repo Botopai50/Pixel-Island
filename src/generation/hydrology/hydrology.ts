@@ -791,10 +791,13 @@ export class Hydrology {
     if (!any) return null;
     // passagem estreita para o mar (menos que uma célula) some na grade de 20m: a água de uma
     // enseada perto do mar aberto não conta como bacia (evita um degrau no meio da enseada)
+    // (só as células da borda crescem: a 1ª passada parte das células da bacia, a 2ª só das que a 1ª acrescentou - o mesmo resultado
+    // de varrer a grade inteira duas vezes, sem percorrer os N*N pontos)
+    let frontier: number[] = [];
+    for (let s = 0; s < N * N; s++) if (enc[s]) frontier.push(s);
     for (let pass = 0; pass < 2; pass++) {
       const add: number[] = [];
-      for (let s = 0; s < N * N; s++) {
-        if (!enc[s]) continue;
+      for (const s of frontier) {
         const x = s % N, z = (s / N) | 0;
         for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
           const xx = x + dx, zz = z + dz;
@@ -803,7 +806,9 @@ export class Hydrology {
           if (!enc[nb] && !ocean[nb]) add.push(nb);
         }
       }
-      for (const s of add) enc[s] = 1;
+      const fresh: number[] = [];
+      for (const s of add) if (!enc[s]) { enc[s] = 1; fresh.push(s); }
+      frontier = fresh;
     }
     return enc;
   }
@@ -900,23 +905,28 @@ export class Hydrology {
       const R = 2;
       const wat = new Uint8Array(W * Hh);
       for (let i = 0; i < W * Hh; i++) wat[i] = g[i] === 2 ? 1 : 0;
+      // Dilatação (useMax) ou erosão de uma máscara 0/1 com janela de 2R+1, nas duas direções, repetindo a borda para fora da grade.
+      // Janela deslizante (soma que entra e sai): O(1) por ponto, em vez de 5 leituras com limites; o resultado é idêntico.
       const pass = (src: Uint8Array, useMax: boolean) => {
         const tmp = new Uint8Array(W * Hh), out = new Uint8Array(W * Hh);
-        for (let z = 0; z < Hh; z++) for (let x = 0; x < W; x++) {
-          let v = useMax ? 0 : 1;
-          for (let k = -R; k <= R; k++) {
-            const xx = Math.min(W - 1, Math.max(0, x + k)), s2 = src[z * W + xx];
-            v = useMax ? Math.max(v, s2) : Math.min(v, s2);
+        const win = 2 * R + 1;
+        const pick = (c: number) => (useMax ? (c > 0 ? 1 : 0) : (c === win ? 1 : 0));
+        for (let z = 0; z < Hh; z++) {
+          const row = z * W;
+          let c = 0;
+          for (let k = -R; k <= R; k++) c += src[row + Math.min(W - 1, Math.max(0, k))];
+          for (let x = 0; x < W; x++) {
+            tmp[row + x] = pick(c);
+            c += src[row + Math.min(W - 1, x + R + 1)] - src[row + Math.max(0, x - R)];
           }
-          tmp[z * W + x] = v;
         }
-        for (let z = 0; z < Hh; z++) for (let x = 0; x < W; x++) {
-          let v = useMax ? 0 : 1;
-          for (let k = -R; k <= R; k++) {
-            const zz = Math.min(Hh - 1, Math.max(0, z + k)), s2 = tmp[zz * W + x];
-            v = useMax ? Math.max(v, s2) : Math.min(v, s2);
+        for (let x = 0; x < W; x++) {
+          let c = 0;
+          for (let k = -R; k <= R; k++) c += tmp[Math.min(Hh - 1, Math.max(0, k)) * W + x];
+          for (let z = 0; z < Hh; z++) {
+            out[z * W + x] = pick(c);
+            c += tmp[Math.min(Hh - 1, z + R + 1) * W + x] - tmp[Math.max(0, z - R) * W + x];
           }
-          out[z * W + x] = v;
         }
         return out;
       };

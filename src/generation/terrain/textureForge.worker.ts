@@ -59,7 +59,22 @@ function installIslands(seed: number, items: { key: number; data: any }[]): void
   for (const it of items) { g.getHydrology().installIsland(it.key, it.data); sent.add(it.key); }
 }
 
+/** porta para o worker do cache em disco (chunkCache.worker.ts): recebe a cópia dos resultados que valem guardar */
+let cachePort: MessagePort | null = null;
+function copyForCache(v: unknown, bufs: ArrayBuffer[]): unknown {
+  if (ArrayBuffer.isView(v) && !(v instanceof DataView)) { const c = (v as unknown as { slice(): { buffer: ArrayBuffer } }).slice(); bufs.push(c.buffer); return c; }
+  if (Array.isArray(v)) return v.map((x) => copyForCache(x, bufs));
+  if (v && typeof v === 'object') { const o: Record<string, unknown> = {}; for (const k of Object.keys(v as object)) o[k] = copyForCache((v as Record<string, unknown>)[k], bufs); return o; }
+  return v;
+}
+/** Grava o resultado no cache em disco (cópia feita AQUI, antes de o resultado ser transferido à thread principal e deixar de existir neste worker). */
+function cachePut(key: string | undefined, result: Record<string, unknown>): void {
+  if (!cachePort || !key) return;
+  try { const bufs: ArrayBuffer[] = []; const value = copyForCache(result, bufs); cachePort.postMessage({ key, value }, bufs); } catch { /* sem cache */ }
+}
+
 ctx.onmessage = (ev: MessageEvent<any>) => {
+  if (ev.data.type === 'cachePort') { cachePort = ev.data.port as MessagePort; return; }
   // hidrologia de ilhas calculada em outro worker (ou na thread principal): instala e não responde
   if (ev.data.type === 'install') {
     installIslands(ev.data.seed, ev.data.items);
@@ -71,6 +86,7 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
     try {
       const t = buildHorizonTile(getTerrainGen(seed), minX, minZ, size, seg);
       const bufs: ArrayBuffer[] = [t.positions.buffer, t.normals.buffer, t.colors.buffer, t.index.buffer, t.morph.buffer] as ArrayBuffer[];
+      cachePut(ev.data.cacheKey, { texture: undefined, geometry: undefined, horizon: t, impostors: undefined, waterBiome: undefined, vegPlan: undefined });
       ctx.postMessage({ reqId, horizon: t }, bufs);
     } catch (err: any) {
       ctx.postMessage({ reqId, error: err?.message || String(err) });
@@ -119,6 +135,7 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
     const { reqId, seed, minX, minZ, size, originX, originZ } = ev.data;
     try {
       const t = buildImpostorBlock(getTerrainGen(seed), minX, minZ, size, originX, originZ);
+      cachePut(ev.data.cacheKey, { texture: undefined, geometry: undefined, horizon: undefined, impostors: t, waterBiome: undefined, vegPlan: undefined });
       ctx.postMessage({ reqId, impostors: t }, [t.positions.buffer, t.tree.buffer, t.colors.buffer, t.index.buffer] as ArrayBuffer[]);
     } catch (err: any) {
       ctx.postMessage({ reqId, error: err?.message || String(err) });
@@ -172,6 +189,7 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
       msg.hydro = hydro; msg.seed = seed;
     }
 
+    cachePut(ev.data.cacheKey, { texture: msg.texture, geometry: msg.geometry, horizon: undefined, impostors: undefined, waterBiome: undefined, vegPlan: undefined });
     ctx.postMessage(msg, transfer);
   } catch (err: any) {
     ctx.postMessage({ reqId, error: err?.message || String(err) });

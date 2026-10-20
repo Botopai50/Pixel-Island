@@ -176,6 +176,15 @@ export class FarLayer {
   public invalidate(): void { for (const p of this.poses) p.valid = false; }
 
   /**
+   * Aquecimento: a primeira ativação aloca os 3 alvos de desenho (com textura de profundidade), compila o shader da composição e desenha as 3 fatias de uma
+   * vez: ~200 ms num quadro só, na hora em que o jogo já está mais lento (a média cruzou ~10 ms). Feito uma vez, com o jogador parado, o custo some do jogo.
+   */
+  public warmUp(main: THREE.PerspectiveCamera, w: number, h: number, frame: number): void {
+    if (this.begin(main, w, h, frame)) this.finish();
+    void this.renderer.compileAsync(this.mesh, main, this.scene).catch(() => undefined);
+  }
+
+  /**
    * Chamar uma vez por quadro, antes do desenho principal (câmera em perspectiva). Refaz as fatias que precisam e prepara a composição.
    * Devolve true se o campo distante vai ser composto (quem chama esconde-os no desenho principal: já feito aqui; chame finish() depois).
    */
@@ -192,15 +201,21 @@ export class FarLayer {
     this.saved = this.containers.map((o) => o.visible);
     main.getWorldPosition(this._p);
     main.getWorldQuaternion(this._q);
+    // (cada fatia é refeita a cada 4 quadros, e um quadro em cada 4 não refaz nenhuma: antes era a cada 3, uma fatia por quadro, ~1,6 ms de CPU cada;
+    // o campo distante muda devagar e o reaproveitamento corrige a posição e a rotação da câmera, então um quadro a mais de idade não aparece)
+    // Fatia que nunca foi desenhada entra na hora; as que só ficaram velhas (o jogador começou a andar e as três passam do limite juntas) vão uma por quadro,
+    // a mais antiga primeiro: as três de uma vez custavam ~50 ms num quadro só.
+    let oldest = -1;
     for (let k = 0; k < 3; k++) {
       const pose = this.poses[k];
-      // (cada fatia é refeita a cada 4 quadros, e um quadro em cada 4 não refaz nenhuma: antes era a cada 3, uma fatia por quadro, ~1,6 ms de CPU cada;
-      // o campo distante muda devagar e o reaproveitamento corrige a posição e a rotação da câmera, então um quadro a mais de idade não aparece)
-      const stale = !pose.valid || (frame % 4) === k
+      // (nunca desenhada, ou a câmera girou a ponto de a borda do campo distante aparecer: não espera)
+      if (!pose.valid || pose.quat.angleTo(this._q) > this.padAngle * 0.95) { this.renderSlice(k, main, frame); continue; }
+      const stale = (frame % 4) === k
         || pose.quat.angleTo(this._q) > this.padAngle * 0.7
         || pose.pos.distanceToSquared(this._p) > 1.0;
-      if (stale) this.renderSlice(k, main, frame);
+      if (stale && (oldest < 0 || pose.frame < this.poses[oldest].frame)) oldest = k;
     }
+    if (oldest >= 0) this.renderSlice(oldest, main, frame);
     // composição
     const u = this.material.uniforms;
     u.uInvProj.value.copy(main.projectionMatrixInverse);

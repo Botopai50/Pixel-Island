@@ -1,5 +1,6 @@
 import { BiomeType } from '../generation/types.ts';
 import type { TerrainGenerator } from '../generation/terrain/terrainGenerator.ts';
+import { SETTLEMENT_CELL, SETTLEMENT_SCALE } from '../generation/settlements/settlementField.ts';
 import { groveAt } from '../generation/vegetation/vegetationPlanner.ts';
 
 /**
@@ -11,6 +12,14 @@ import { groveAt } from '../generation/vegetation/vegetationPlanner.ts';
 /** Destinos que não são biomas de verdade, mas manchas de uma árvore especial (cerejeiras e árvores ancestrais) */
 const GROVES: { type: string; icon: string; label: string }[] = [
   { type: 'grove:korok', icon: '🍃', label: 'Bosque ancestral' },
+];
+
+/** Destinos que são cidades (sítios de generation/settlements): a lista vem da varredura de células, não da grade de biomas */
+const TOWNS: { type: string; icon: string; label: string }[] = [
+  { type: 'town:hamlet', icon: '🛖', label: 'Aldeia' },
+  { type: 'town:village', icon: '🏘️', label: 'Vila' },
+  { type: 'town:town', icon: '🏙️', label: 'Cidade' },
+  { type: 'town:fortifiedTown', icon: '🏰', label: 'Cidade fortificada' },
 ];
 
 const BIOMES: { type: string; icon: string; label: string }[] = [
@@ -36,6 +45,7 @@ const BIOMES: { type: string; icon: string; label: string }[] = [
   { type: BiomeType.VOLCANIC_CALDERA, icon: '🔥', label: 'Caldeira vulcânica' },
   { type: BiomeType.GEOTHERMAL_VALLEY, icon: '♨️', label: 'Fontes termais' },
   ...GROVES,
+  ...TOWNS,
 ];
 
 const RANGE = 9600;     // metros em volta da origem que a busca cobre
@@ -128,6 +138,7 @@ export class BiomeWidget {
   /** Varre a grade em fatias; os botões vão acendendo à medida que cada bioma aparece. */
   private scan(): void {
     this.scanning = true;
+    this.scanTowns();
     const n = Math.floor((RANGE * 2) / STEP) + 1;
     // ordem do grosso para o fino (a cada 8, 4, 2, 1 pontos da grade): os biomas grandes aparecem
     // logo e o resto vai sendo refinado
@@ -167,6 +178,28 @@ export class BiomeWidget {
     tick();
   }
 
+  /** Cidades: uma varredura própria das células de 1 km (cada uma custa poucos ms; uma fatia por quadro). */
+  private scanTowns(): void {
+    const field = this.terrain.settlements;
+    const R = Math.floor(RANGE / SETTLEMENT_CELL);
+    const cells: [number, number][] = [];
+    for (let cz = -R; cz <= R; cz++) for (let cx = -R; cx <= R; cx++) cells.push([cx, cz]);
+    let i = 0;
+    const tick = () => {
+      const start = performance.now();
+      for (; i < cells.length && performance.now() - start < BUDGET_MS; i++) {
+        const s = field.siteAt(cells[i][0], cells[i][1]);
+        if (!s) continue;
+        const key = 'town:' + s.kind;
+        let list = this.found.get(key);
+        if (!list) { this.found.set(key, list = []); const b = this.btns.get(key); if (b) b.disabled = false; }
+        list.push({ x: s.x, z: s.z });
+      }
+      if (i < cells.length) requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
   private markMissing(): void {
     const missing = BIOMES.filter((b) => !this.found.has(b.type)).map((b) => b.label);
     if (missing.length) this.status.textContent = `Não encontrados neste mundo: ${missing.join(', ')}`;
@@ -180,6 +213,7 @@ export class BiomeWidget {
     // o mais próximo cujo entorno (40 m) é do mesmo bioma; se nenhum, o mais próximo mesmo
     const same = (x: number, z: number) => {
       const bio = this.terrain.getPointFast(x, z).biome;
+      if (type.startsWith('town:')) return true;
       if (type.startsWith('grove:')) return groveAt(x, z, bio.type, bio.moisture) === type.slice(6);
       return bio.type === type;
     };
@@ -188,7 +222,13 @@ export class BiomeWidget {
       const c = sorted[k];
       if (same(c.x + 40, c.z) && same(c.x - 40, c.z) && same(c.x, c.z + 40) && same(c.x, c.z - 40)) { pick = c; break; }
     }
-    this.teleport(pick.x, pick.z);
+    let { x, z } = pick;
+    if (type.startsWith('town:')) {
+      // se o plano já chegou, desce na praça (a origem do sítio pode cair dentro de uma casa)
+      const e = this.terrain.settlements.entry(Math.floor(x / SETTLEMENT_CELL), Math.floor(z / SETTLEMENT_CELL));
+      if (e) { x = e.site.x + (e.plan.plaza.x + e.plan.plaza.radius * 0.5) * SETTLEMENT_SCALE; z = e.site.z + e.plan.plaza.z * SETTLEMENT_SCALE; }
+    }
+    this.teleport(x, z);
     this.toggle(false);
   }
 }

@@ -273,20 +273,33 @@ export class VegetationTextures {
    * grama escurecia de longe.
    */
   private static bleedTransparent(px: Uint8ClampedArray, w: number, h: number): void {
+    // (cada pixel colorido espalha a cor para os 8 vizinhos transparentes: só os poucos pixels coloridos trabalham, em vez de
+    // cada pixel olhar os 9 em volta - o mesmo resultado, em uma fração do tempo no carregamento)
+    const n = w * h;
+    const sr = new Float32Array(n), sg = new Float32Array(n), sb = new Float32Array(n), cnt = new Uint8Array(n);
     for (let pass = 0; pass < 4; pass++) {
+      sr.fill(0); sg.fill(0); sb.fill(0); cnt.fill(0);
       const src = px.slice();
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        if (src[i + 3] > 0) continue;
-        let r = 0, g = 0, b = 0, n = 0;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx, yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
-          const j = (yy * w + xx) * 4;
-          if (src[j + 3] === 0 && !(src[j] | src[j + 1] | src[j + 2])) continue;
-          r += src[j]; g += src[j + 1]; b += src[j + 2]; n++;
+        const j = (y * w + x) * 4;
+        if (src[j + 3] === 0 && !(src[j] | src[j + 1] | src[j + 2])) continue;     // sem cor: não espalha nada
+        const r = src[j], g = src[j + 1], b = src[j + 2];
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= h) continue;
+          for (let dx = -1; dx <= 1; dx++) {
+            const xx = x + dx;
+            if (xx < 0 || xx >= w) continue;
+            const q = yy * w + xx;
+            if (src[q * 4 + 3] > 0) continue;                                       // só pixels transparentes recebem
+            sr[q] += r; sg[q] += g; sb[q] += b; cnt[q]++;
+          }
         }
-        if (n) { px[i] = r / n; px[i + 1] = g / n; px[i + 2] = b / n; }
+      }
+      for (let q = 0; q < n; q++) {
+        if (!cnt[q]) continue;
+        const i = q * 4;
+        px[i] = sr[q] / cnt[q]; px[i + 1] = sg[q] / cnt[q]; px[i + 2] = sb[q] / cnt[q];
       }
     }
   }
