@@ -9,7 +9,7 @@ import type * as THREE from 'three';
 interface BenchEnv { world: any; player: any; renderer: THREE.WebGLRenderer }
 
 /** Marcas de fase do quadro (só gravam durante uma medição): cada `phase('nome')` soma o tempo desde a marca anterior. */
-export const PHASES: { gl?: WebGL2RenderingContext; armed: boolean; on: boolean; last: number; cur: Record<string, number>; frames: { dt: number; t: number; ph: Record<string, number> }[]; ext: { name: string; t: number; ms: number }[] } = { armed: false, on: false, last: 0, cur: {}, frames: [], ext: [] };
+export const PHASES: { gl?: WebGL2RenderingContext; armed: boolean; on: boolean; last: number; cur: Record<string, number>; frames: { dt: number; t: number; ph: Record<string, number> }[]; ext: { name: string; t: number; ms: number }[] } = { armed: false, on: typeof location !== 'undefined' && /[?&]trace=1/.test(location.search), last: 0, cur: {}, frames: [], ext: [] };
 /** trabalho que roda FORA do quadro (timers, ociosidade): entra na linha do tempo dos quadros longos */
 export function external(name: string, t0: number): void { if (PHASES.on) PHASES.ext.push({ name, t: t0, ms: performance.now() - t0 }); }
 /** marca instantânea (acontecimento): aparece junto dos quadros longos que vieram logo depois */
@@ -36,6 +36,8 @@ export interface BenchResult {
 export function installBench(env: BenchEnv): void {
   const results: Record<string, BenchResult> = {};
   PHASES.gl = env.renderer.getContext() as WebGL2RenderingContext;
+  // ?trace=1: grava as fases de TODOS os quadros desde o primeiro (carregamento); lê-se em `__bench.trace()`
+  if (/[?&]trace=1/.test(location.search)) { PHASES.on = true; PHASES.gl = undefined; }
   const key = (type: string): void => { window.dispatchEvent(new KeyboardEvent(type, { code: 'KeyW', key: 'w', bubbles: true })); };
   const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -160,5 +162,9 @@ export function installBench(env: BenchEnv): void {
       return `@${((f.t - PHASES.frames[0].t) / 1000).toFixed(1)}s ${f.dt.toFixed(0)} ms | ${ph.join(', ')}${ext.length ? ' | fora do quadro: ' + ext.join(', ') : ''}`;
     });
   }
-  (window as any).__bench = { run, results, phases, gpu, goto, worst };
+  /** Fases dos primeiros quadros (com ?trace=1 na URL): para ver o que enche os quadros do carregamento. */
+  function trace(n = 12): string[] {
+    return PHASES.frames.slice(0, n).map((f, i) => `quadro ${i}: ${f.dt.toFixed(0)} ms | ` + Object.entries(f.ph).filter(([, v]) => v >= 3).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(', '));
+  }
+  (window as any).__bench = { run, results, phases, gpu, goto, worst, trace, state: () => ({ on: PHASES.on, n: PHASES.frames.length, gl: !!PHASES.gl }) };
 }

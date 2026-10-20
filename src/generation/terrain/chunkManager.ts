@@ -345,6 +345,7 @@ export class ChunkManager {
    * por quadro deixava só ~2 chunks por quadro irem para os workers, que ficavam ociosos.
    */
   private initialVegetationDone = false;
+  public get vegetationLoaded(): boolean { return this.initialVegetationDone; }
   private initialVegSince = 0;
   private vegStarve = 0;
   /** quadros que dá para pular a busca por chunks sem vegetação: ela percorre centenas de chunks (~1,5 ms) e quase sempre não acha nada */
@@ -394,7 +395,7 @@ export class ChunkManager {
       }
       if (inflight < 10 && want.length > 0) {
         want.sort((a, b) => a.d - b.d);
-        for (let i = 0; i < want.length && inflight < 10; i++, inflight++) want[i].chunk.requestVegPlan(seed, want[i].d <= 16, 0.1);
+        for (let i = 0; i < want.length && inflight < 10; i++, inflight++) want[i].chunk.requestVegPlan(seed, want[i].d <= 16, Math.sqrt(want[i].d) + 0.4);   // (pela distância, logo depois do chão do próprio chunk: com prioridade fixa 0,1 os ~150 planos passavam na frente de TODAS as texturas e o chão perto só saía depois de ~3 s de planos)
       }
     }
     // Procura sempre o mais perto que falta (poucas centenas de chunks: custo desprezível)
@@ -410,7 +411,7 @@ export class ChunkManager {
         if (d < bestD) { bestD = d; best = chunk; }
       }
       if (!best) { if (!waiting && this.buildQueue.length === 0) { this.initialVegetationDone = true; this.vegIdleFrames = 12; } return; }
-      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16, this.initialVegetationDone ? Math.max(0.6, Math.min(1.5, budgetLeft(4))) : Infinity);
+      best.populateVegetation(this.vegetationMgr, this.terrainGen, bestD <= 16, this.initialVegetationDone ? Math.max(0.6, Math.min(1.5, budgetLeft(4))) : 10);   // (no carregamento inicial também fatia: a geração das espécies de árvore da região, de uma vez, travava o jogo por ~4 s)
       // depois do carregamento inicial, um passo (plano OU instanciação) por quadro: dois passos juntos davam 6 a 13 ms
       if (this.initialVegetationDone) return;
       if (performance.now() - startTime >= budget) return;
@@ -525,6 +526,30 @@ export class ChunkManager {
     const full = CONFIG.CHUNK_SEGMENTS;
     const ring = Math.max(Math.abs(dx), Math.abs(dz));
     return ring <= 4 ? full : ring <= NEAR_RING ? Math.max(8, full / 2) : Math.max(8, full / 4);
+  }
+
+  /** Quantos chunks até `radius` chunks do centro já têm textura e malha prontas (marcas do carregamento em main.ts). */
+  public getReadyCount(radius: number): { ready: number; total: number } {
+    let ready = 0, total = 0;
+    for (const c of this.chunks.values()) {
+      const dx = c.cx - this.currentCenterCx, dz = c.cz - this.currentCenterCz;
+      if (dx * dx + dz * dz > radius * radius) continue;
+      total++;
+      if (c.isReady()) ready++;
+    }
+    return { ready, total };
+  }
+
+  /** Quantos chunks até `radius` (fora d'água) já têm a vegetação plantada. */
+  public getPlantedCount(radius: number): { planted: number; total: number } {
+    let planted = 0, total = 0;
+    for (const c of this.chunks.values()) {
+      const dx = c.cx - this.currentCenterCx, dz = c.cz - this.currentCenterCz;
+      if (dx * dx + dz * dz > radius * radius || c.isSubmerged) continue;
+      total++;
+      if (c.hasVegetation) planted++;
+    }
+    return { planted, total };
   }
 
   public getSceneVersion(): number {

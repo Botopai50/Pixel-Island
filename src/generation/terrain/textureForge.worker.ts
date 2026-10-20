@@ -1,4 +1,4 @@
-import { genChunkTexture, makePerlin, ForgeParams } from './terrainTextureForge.ts';
+import { genChunkTexture, makePerlin, buildWallAtlas, ForgeParams } from './terrainTextureForge.ts';
 import { TerrainGenerator } from './terrainGenerator.ts';
 import { buildChunkGeometry } from './chunkGeometry.ts';
 import { buildHorizonTile } from './horizonGeometry.ts';
@@ -75,6 +75,12 @@ function cachePut(key: string | undefined, result: Record<string, unknown>): voi
 
 ctx.onmessage = (ev: MessageEvent<any>) => {
   if (ev.data.type === 'cachePort') { cachePort = ev.data.port as MessagePort; return; }
+  // atlas de paredes do terreno (ver TerrainTextureForge): pura função dos parâmetros
+  if (ev.data.type === 'wallAtlas') {
+    const { reqId, params, slot, shade } = ev.data;
+    try { const out = buildWallAtlas(params, slot, shade); ctx.postMessage({ reqId, wallAtlas: out }, [out.buffer] as ArrayBuffer[]); } catch (err: any) { ctx.postMessage({ reqId, error: err?.message || String(err) }); }
+    return;
+  }
   // hidrologia de ilhas calculada em outro worker (ou na thread principal): instala e não responde
   if (ev.data.type === 'install') {
     installIslands(ev.data.seed, ev.data.items);
@@ -195,3 +201,6 @@ ctx.onmessage = (ev: MessageEvent<any>) => {
     ctx.postMessage({ reqId, error: err?.message || String(err) });
   }
 };
+
+// o módulo terminou de carregar: o pool mede quanto tempo os workers levam para ficar prontos
+ctx.postMessage({ type: 'ready' });

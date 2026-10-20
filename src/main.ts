@@ -170,6 +170,9 @@ class App {
   }
 
   private init(): void {
+    // marcas da linha do tempo do carregamento (performance.getEntriesByType('mark')): onde vai o tempo antes do primeiro quadro
+    const mk = (n: string): void => { performance.mark('pie:' + n); };
+    mk('init-inicio');
     const container = document.getElementById('canvas-container')!;
 
     // Configuração do Renderizador WebGL otimizada para Pixel Art 60+ FPS
@@ -194,6 +197,7 @@ class App {
     // Precisa vir antes do WorldEngine: o forge cria os atlas de parede no construtor.
     setForgeTextureAnisotropy(Math.min(8, this.renderer.capabilities.getMaxAnisotropy()));
 
+    mk('renderer');
     // Criação da Cena Three.js
     this.scene = new THREE.Scene();
 
@@ -201,9 +205,11 @@ class App {
     this.atmosphere = new SkyAtmosphere(this.scene);
     this.ambience = new BiomeAmbience(this.scene);
 
+    mk('atmosfera');
     // Inicialização do Motor de Geração Procedural do Mundo
     installMultiDraw(this.renderer);   // antes do mundo: as árvores escolhem o multi-draw ao serem plantadas
     this.worldEngine = new WorldEngine(this.scene);
+    mk('mundo');
     {
       const fm = new URLSearchParams(window.location.search).get('far');
       this.farMode = fm === '0' ? 'off' : fm === '1' ? 'on' : 'auto';
@@ -213,6 +219,7 @@ class App {
     // pingos de chuva na água viram anelzinhos (as mesmas ondulações do clique, bem menores)
     this.ambience.setRainRippleSink((x, z) => this.worldEngine.addRipple(x, z, 0.7, 0.8, 1.8, 0.955));
     this.worldEngine.initTreeImpostors(this.renderer);
+    mk('impostores');
     this.worldEngine.setSettlementPrecompiler((obj) => this.renderer.compileAsync(obj, this.playerController.getCamera(), this.scene));
     this.syncAtmosphereWithWorld();
 
@@ -327,6 +334,7 @@ class App {
 
     const aspect = window.innerWidth / window.innerHeight;
 
+    mk('alvos-de-render');
     // Configuração dos Render Targets e Câmeras de Reflexão Planar (LinearFilter para eliminar shimmer/flicker)
     this.reflectionRenderTarget = new THREE.WebGLRenderTarget(256, 256, {
       minFilter: THREE.NearestFilter,
@@ -374,12 +382,14 @@ class App {
       this.worldEngine.reseed(urlSeed);
     }
 
+    mk('qualidade-e-pixel');
     // Inicialização do Controlador de Movimentação e Câmera do Jogador
     this.playerController = new PlayerController(aspect);
 
     // Posiciona o jogador nas coordenadas seguras de terra firme da ilha gerada
     this.spawnPlayer();
 
+    mk('jogador-posicionado');
     // Inicialização do Retículo 3D de Pouso do Pegman
     this.dropReticle = new DropReticle();
     this.scene.add(this.dropReticle.group);
@@ -430,6 +440,7 @@ class App {
       },
     );
 
+    mk('widgets');
     // Globais para depuração e automação de testes
     const waterfallView=new URLSearchParams(location.search).get('waterfall');
     if(waterfallView==='close'||waterfallView==='spring'){
@@ -478,6 +489,7 @@ class App {
     window.addEventListener('resize', () => this.onWindowResize());
 
     // Inicia loop de renderização
+    mk('init-fim');
     this.animate();
   }
 
@@ -654,9 +666,17 @@ class App {
   private fpsWorst = 0;
   private fpsOn = true;
   private farWarmed = false;
+  private firstFrameMarked = false;
+  private loadMarks = 0;
+  private frameCount = 0;
+  private markedR3 = false;
+  private markedR6 = false;
+  private markedVeg = false;
   private readonly _lastMovePos = new THREE.Vector3(1e9, 0, 1e9);
   private lastMovedAt = 0;
   /** o jogador andou (ou a câmera se mexeu) há menos de ~0,6 s: trabalho de fundo que trava o quadro espera */
+  /** as árvores dos chunks em volta do ponto de nascimento já foram plantadas */
+  public initialTreesPlanted(): boolean { return this.markedVeg; }
   public isMoving(): boolean { return performance.now() - this.lastMovedAt < 600; }
   private tickFpsCounter(ms: number): void {
     if (!this.fpsEl) {
@@ -708,6 +728,16 @@ class App {
 
   private animate = (): void => {
     requestAnimationFrame(this.animate);
+    if (!this.firstFrameMarked) { this.firstFrameMarked = true; performance.mark('pie:primeiro-quadro'); }
+    // marcas do carregamento: quando o chão em volta do jogador está pronto (3 e 6 chunks de raio) e a vegetação inicial plantada
+    if (this.loadMarks < 3 && (this.frameCount++ & 7) === 0) {
+      const cm = this.worldEngine.getChunkManager();
+      const r3 = cm.getReadyCount(3), r6 = cm.getReadyCount(6);
+      if (!this.markedR3 && r3.total > 0 && r3.ready === r3.total) { this.markedR3 = true; this.loadMarks++; performance.mark('pie:chao-3-chunks'); }
+      if (!this.markedR6 && r6.total > 0 && r6.ready === r6.total) { this.markedR6 = true; this.loadMarks++; performance.mark('pie:chao-6-chunks'); }
+      const p3 = cm.getPlantedCount(3);
+      if (!this.markedVeg && p3.total > 0 && p3.planted === p3.total) { this.markedVeg = true; this.loadMarks++; performance.mark('pie:arvores-3-chunks'); }
+    }
 
     const rawDt = this.clock.getDelta();
     phaseEnd(rawDt * 1000);
@@ -1138,11 +1168,16 @@ window.addEventListener('DOMContentLoaded', () => {
   const idle = (cb: () => void) => ((window as unknown as { requestIdleCallback?: (f: () => void, o: { timeout: number }) => void }).requestIdleCallback ?? ((f: () => void) => setTimeout(f, 60)))(cb, { timeout: 1500 });
   const warm = () => {
     if (document.hidden) { setTimeout(() => idle(warm), 1000); return; }
+    // o pré-aquecimento gera TODAS as espécies do jogo; no carregamento isso disputava a thread principal com as poucas que o plantio inicial precisa. Espera as árvores iniciais
+    // (ou 30 s) e então roda em ritmo contínuo até o fim do carregamento.
+    if (!app.initialTreesPlanted() && performance.now() < 30000) { setTimeout(() => idle(warm), 300); return; }
     // cada passo custa 50 a 210 ms de quadro parado: só com o jogador parado (andando, quem precisa de uma espécie nova a gera aos poucos por conta própria)
     if (app.isMoving()) { setTimeout(() => idle(warm), 400); return; }
     let more = true;
     try { more = warmGameTreesStep(); } catch { more = false; }
+    // no carregamento (primeiros 25 s) um passo logo após o outro: a thread principal espera os workers do chão e da vegetação sem fazer nada, e as árvores do
+    // começo (que o plantio precisa) já saem prontas; depois, um passo a cada 120 ms só com o jogo ocioso
     if (more) setTimeout(() => idle(warm), 120);
   };
-  setTimeout(() => idle(warm), 8000);
+  setTimeout(() => idle(warm), 1500);
 });

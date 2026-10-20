@@ -22,6 +22,8 @@ export interface ChunkJobResult {
   waterBiome?: Uint8Array;
   /** plano da vegetação de um chunk, em dados simples (vegetationPlanWire.ts) */
   vegPlan?: unknown;
+  /** atlas de paredes pronto (terrainTextureForge.buildWallAtlas) */
+  wallAtlas?: Uint8ClampedArray;
 }
 
 /**
@@ -52,6 +54,8 @@ interface PendingReq {
   waterBiome?: { originX: number; originZ: number };
   /** plano da vegetação de um chunk (em vez de textura/malha) */
   vegPlan?: { cx: number; cz: number; detail: boolean };
+  /** atlas das paredes do terreno (em vez de um chunk): qual faixa e qual tom; os parâmetros vão em `params` */
+  wallAtlas?: { slot: 'wallHi' | 'wallLo'; shade: number };
   /** chave do cache em disco: o worker de geração grava o resultado nele (por conta própria, sem passar pela thread principal) */
   cacheKey?: string;
   resolve: (r: ChunkJobResult) => void;
@@ -213,6 +217,22 @@ export class TextureWorkerPool {
     return { promise, reqId };
   }
 
+  /**
+   * Atlas das paredes do terreno (um por faixa/tom): custava ~1,5 s síncronos no boot (4 atlas de 128 x 384 px por bioma); nos workers saem em paralelo
+   * enquanto o resto do jogo inicia. Passa na frente de tudo na fila.
+   */
+  public requestWallAtlas(params: ForgeParams, slot: 'wallHi' | 'wallLo', shade: number): { promise: Promise<ChunkJobResult>; reqId: number } {
+    const reqId = ++this.reqCounter;
+    const promise = new Promise<ChunkJobResult>((resolve, reject) => {
+      this.queue.push({
+        reqId, seed: params.seed, params: { ...params }, minWorldX: 0, minWorldZ: 0, chunkSize: 0, density: 0, segments: 0,
+        priority: -100, wallAtlas: { slot, shade }, resolve, reject,
+      });
+      this.pump();
+    });
+    return { promise, reqId };
+  }
+
   /** Árvores distantes (impostores) de um pedaço do mundo, com posições locais a (originX, originZ). */
   public requestImpostors(seed: number, minX: number, minZ: number, size: number, originX: number, originZ: number, priority: number): { promise: Promise<ChunkJobResult>; reqId: number } {
     const reqId = ++this.reqCounter;
@@ -319,7 +339,7 @@ export class TextureWorkerPool {
    * pegava um chunk dali calculava a mesma ilha de novo (0.3-1.5s jogados fora, por worker).
    */
   private waitsForIsland(item: PendingReq): boolean {
-    if (item.island || item.horizonSeg || item.impostor) return false;   // (o mapa da água não entra aqui: ele depende das ilhas como um chunk, pela área que cobre)
+    if (item.island || item.horizonSeg || item.impostor || item.wallAtlas) return false;   // (o mapa da água não entra aqui: ele depende das ilhas como um chunk, pela área que cobre)
     const G = CONFIG.ISLAND_GRID_SIZE;
     const c0 = Math.ceil((item.minWorldX - ISLAND_REACH) / G), c1 = Math.floor((item.minWorldX + item.chunkSize + ISLAND_REACH) / G);
     const r0 = Math.ceil((item.minWorldZ - ISLAND_REACH) / G), r1 = Math.floor((item.minWorldZ + item.chunkSize + ISLAND_REACH) / G);
@@ -368,6 +388,10 @@ export class TextureWorkerPool {
         this.workers[workerIndex].postMessage({ type: 'waterBiome', reqId: item.reqId, seed: item.seed, originX: item.waterBiome.originX, originZ: item.waterBiome.originZ });
         continue;
       }
+      if (item.wallAtlas) {
+        this.workers[workerIndex].postMessage({ type: 'wallAtlas', reqId: item.reqId, params: item.params, slot: item.wallAtlas.slot, shade: item.wallAtlas.shade });
+        continue;
+      }
       if (item.impostor) {
         this.workers[workerIndex].postMessage({ type: 'impostors', reqId: item.reqId, seed: item.seed, minX: item.minWorldX, minZ: item.minWorldZ, size: item.chunkSize, originX: item.impostor.originX, originZ: item.impostor.originZ, cacheKey: item.cacheKey });
         continue;
@@ -387,7 +411,11 @@ export class TextureWorkerPool {
     }
   }
 
+  /** quando cada worker terminou de carregar o módulo (performance.now da thread principal) */
+  public readyAt: number[] = [];
+
   private handleMessage(workerIndex: number, data: any): void {
+    if (data.type === 'ready') { this.readyAt[workerIndex] = performance.now(); return; }
     this.freeWorkers.push(workerIndex);
     // antes de resolver o chunk: quem consultar a altura dele já acha a ilha pronta
     if (data.hydro) {
@@ -418,7 +446,7 @@ export class TextureWorkerPool {
       } else if (data.error) {
         item.reject(new Error(data.error));
       } else {
-        item.resolve({ texture: data.texture, geometry: data.geometry, horizon: data.horizon, impostors: data.impostors, waterBiome: data.waterBiome, vegPlan: data.vegPlan });
+        item.resolve({ texture: data.texture, geometry: data.geometry, horizon: data.horizon, impostors: data.impostors, waterBiome: data.waterBiome, vegPlan: data.vegPlan, wallAtlas: data.wallAtlas });
       }
     }
     this.pump();

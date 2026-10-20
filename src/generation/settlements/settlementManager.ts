@@ -75,6 +75,10 @@ export class SettlementManager {
 
   /** Compila os shaders da cidade em segundo plano (compilação paralela) para o primeiro desenho não travar o quadro. */
   public setPrecompiler(fn: (obj: THREE.Object3D) => Promise<unknown>): void { this.precompile = fn; }
+
+  /** O aquecimento dos modelos e a montagem das cidades só começam quando isto devolve true (no carregamento, depois do chão e da vegetação iniciais). */
+  public setStartGate(fn: () => boolean): void { this.startGate = fn; }
+  private startGate: (() => boolean) | null = null;
   private precompile: ((obj: THREE.Object3D) => Promise<unknown>) | null = null;
 
   private startWorker(): void {
@@ -136,7 +140,7 @@ export class SettlementManager {
       const hasWork = !town.tasks || town.tasks.length > 0 || d <= BUILD_RADIUS;
       if (d <= WARM_RADIUS && hasWork && (!target || d < target.d)) target = { key, town, d };
     }
-    if (target && this.clock >= this.nextWork) {
+    if (target && this.clock >= this.nextWork && (this.startGate?.() ?? true)) {
       const { key, town } = target;
       const e = town.entry;
       if (!town.tasks) town.tasks = settlementWarmupTasks(e.plan, this.library, e.site.biome);

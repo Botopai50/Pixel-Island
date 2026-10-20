@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import GEN_HASH from 'virtual:gen-hash';
 import { FADE } from './shaders/fadeDither.ts';
 import { AERIAL, linearToDisplay } from '../atmosphere/atmosphericFog.ts';
 import { SeedManager } from './seed/seedManager.ts';
@@ -71,11 +72,13 @@ export class WorldEngine {
   private lastObserverZ: number = 0;
 
   constructor(scene: THREE.Scene) {
+    const mk = (n: string): void => { performance.mark('pie:mundo.' + n); };
     this.scene = scene;
     this.seedManager = SeedManager.getInstance();
 
     const numericSeed = this.seedManager.getNumericSeed();
     this.terrainGen = new TerrainGenerator(numericSeed);
+    mk('terrainGen');
     // Hidrologia das ilhas: calculada nos workers dos chunks e instalada aqui (calcular na thread
     // principal travava o jogo por 0.3-1s ao chegar numa ilha nova)
     this.terrainGen.getHydrology().setDeferMissing(true);
@@ -85,14 +88,19 @@ export class WorldEngine {
       if (seed === this.terrainGen.getSeed()) this.terrainGen.getHydrology().installIsland(key, data);
     };
     this.vegetationMgr = new VegetationManager();
+    mk('vegetationMgr');
 
     this.forge = TerrainTextureForge.getInstance(numericSeed);
+    mk('forge');
     this.terrainMaterial = createTerrainMaterial();
+    mk('terrainMaterial');
     this.waterMaterial = createWaterMaterial();
+    mk('waterMaterial');
     this.waterBiomeMap = new WaterBiomeMap(this.terrainGen);
     this.waterMaterial.uniforms.uBiomeMap.value = this.waterBiomeMap.texture;
     this.waterMaterial.uniforms.uBiomeMapOrigin.value = this.waterBiomeMap.origin;
     this.waterMaterial.uniforms.uBiomeMapSpan.value = this.waterBiomeMap.span;
+    mk('waterBiomeMap');
     // correnteza dos rios (direção rio abaixo e velocidade)
     this.riverFlowMap = new RiverFlowMap(this.terrainGen);
     this.waterMaterial.uniforms.uFlowMap.value = this.riverFlowMap.texture;
@@ -101,6 +109,7 @@ export class WorldEngine {
     this.waterMaterial.uniforms.uFlowMaxSpeed.value = FLOW_MAX_SPEED;
     this.waterMaterial.uniforms.uFlowLines.value = this.riverFlowMap.lineTexture;
     this.waterMaterial.uniforms.uFlowPeriod.value = FLOW_PHASE_PERIOD;
+    mk('riverFlowMap');
 
     this.chunkMgr = new ChunkManager(
       this.scene,
@@ -110,16 +119,21 @@ export class WorldEngine {
       this.waterMaterial,
       this.forge
     );
+    mk('chunkMgr');
     // terreno distante (horizonte) além dos chunks detalhados
     this.horizon = new HorizonTerrain(this.scene, this.forge.gradMap, numericSeed);
+    mk('horizon');
     this.landmarks = new LandmarkManager(this.scene, this.terrainGen);
+    mk('landmarks');
     this.settlementMgr = new SettlementManager(this.scene, this.terrainGen, this.waterMaterial, () => this.chunkMgr.notifySceneChanged());
 
+    mk('settlementMgr');
     // Inicializa todos os subsistemas especiais do mundo de forma 100% procedural
     this.geothermalMgr = new GeothermalManager(this.scene, this.terrainGen.getGeothermalGenerator());
     this.glacialIceMgr = new GlacialIceManager(this.scene, numericSeed, this.terrainGen);
     this.lavaFluidMgr = new LavaFluidManager(this.scene, this.terrainGen.getVolcanoGenerator());
 
+    mk('geo-glacial-lava');
     // Grupo de água dedicado para controle no passe de renderização
     this.waterGroup = new THREE.Group();
     this.waterGroup.name = 'pixel_water_system';
@@ -135,8 +149,20 @@ export class WorldEngine {
     this.globalOcean = this.localWater; // Alias para compatibilidade
     this.waterGroup.add(this.localWater);
 
+    mk('agua-geometria');
     this.scene.add(this.waterGroup);
     this.settlementMgr.attachWater(this.waterGroup);
+    // as cidades (modelos e montagem: mais da metade da CPU enquanto as árvores do começo são plantadas) esperam essas árvores; se demorar, começam aos 30 s de qualquer jeito
+    let gateOpen = false, gateAt = 0;
+    this.settlementMgr.setStartGate(() => {
+      if (gateOpen) return true;
+      const n = performance.now();
+      if (n - gateAt < 250) return false;
+      gateAt = n;
+      const p = this.chunkMgr.getPlantedCount(3);
+      if ((p.total > 0 && p.planted === p.total) || n > 30000) gateOpen = true;
+      return gateOpen;
+    });
     this.inlandWaterMgr = new InlandWaterManager(this.waterGroup, this.terrainGen.getHydrology(), this.waterMaterial);
     this.inlandWaterMgr.reflectionLod = new ReflectionLod(this.scene, () => this.chunkMgr.getSceneVersion(), () => this.chunkMgr.farGroup);
     this.inlandWaterMgr.onRipple = (x, z) => this.addRipple(x, z, 0.7, 2.2, 2.0, 0.93);
@@ -199,6 +225,9 @@ export class WorldEngine {
   public stepTreeImpostors(): void {
     if (!this.impostorStep) return;
     const now = performance.now();
+    // As árvores distantes (horizonte) esperam o plantio inicial em volta do jogador: cada espécie custa 100 a 900 ms de quadro, e no carregamento isso
+    // disputava a thread principal com o chão e a vegetação que aparecem primeiro (passam de 25 s: começa de qualquer jeito).
+    if (!this.chunkMgr.vegetationLoaded && now < 25000) return;
     if (now - this.impostorAt < 250) return;   // uma espécie por vez, com folga: cada uma custa algumas centenas de ms
     this.impostorAt = now;
     if (!this.impostorStep()) this.impostorStep = null;
@@ -258,6 +287,16 @@ export class WorldEngine {
 
   // Algoritmo de busca por ponto de nascimento seguro em terra firme com vista panorâmica
   public getSpawnCoordinate(): WorldSpawnPoint {
+    // O ponto depende só da semente e do código de geração: depois da primeira vez fica guardado e a busca (que calcula a hidrologia da ilha inicial na
+    // thread principal, ~0,55 s) é pulada; a hidrologia vem dos workers, que já a pedem ao posicionar o jogador.
+    const spawnKey = 'pie.spawn.' + GEN_HASH + '.' + this.terrainGen.getSeed();
+    try {
+      const saved = localStorage.getItem(spawnKey);
+      if (saved) {
+        const [sx, sz] = JSON.parse(saved) as [number, number];
+        if (Number.isFinite(sx) && Number.isFinite(sz)) return { x: sx, z: sz, elevation: this.terrainGen.getHeight(sx, sz) };
+      }
+    } catch { /* sem armazenamento: busca normal */ }
     // Inicia a busca a partir da origem do continente inicial (0, 0)
     const startX = 0;
     const startZ = 0;
@@ -307,6 +346,10 @@ export class WorldEngine {
     hydro.setDeferMissing(true);
     // as ilhas calculadas aqui vão prontas para os workers
     getTextureWorkerPool().broadcastIslands(this.terrainGen.getSeed(), hydro.exportIslands(this.islandsSentToWorkers));
+    try {
+      for (let i = localStorage.length - 1; i >= 0; i--) { const k = localStorage.key(i); if (k && k.startsWith('pie.spawn.') && !k.startsWith('pie.spawn.' + GEN_HASH + '.')) localStorage.removeItem(k); }
+      localStorage.setItem(spawnKey, JSON.stringify([bestX, bestZ]));
+    } catch { /* ok */ }
     return {
       x: bestX,
       z: bestZ,

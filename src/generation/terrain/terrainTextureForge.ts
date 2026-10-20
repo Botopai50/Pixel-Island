@@ -1956,10 +1956,21 @@ export class TerrainTextureForge {
 
     // Atlas de paredes verticais (128 de largura, 128 * 3 = 384 de altura)
     const AH = WALL * NB;
-    this.wallA = makeTexture(buildWallAtlas(this.params, 'wallHi', 0), WALL, AH, true, 'pixel');
-    this.wallB = makeTexture(buildWallAtlas(this.params, 'wallLo', 0), WALL, AH, true, 'pixel');
-    this.wallC = makeTexture(buildWallAtlas(this.params, 'wallLo', 2), WALL, AH, true, 'pixel');
-    this.wallD = makeTexture(buildWallAtlas(this.params, 'wallHi', 1), WALL, AH, true, 'pixel');
+    // Os atlas nascem vazios e são preenchidos pelos workers (~1,5 s a menos no boot, na thread principal); os chunks levam mais que isso para aparecer.
+    // Se um worker falhar, o atlas sai na própria thread.
+    const blank = () => new Uint8ClampedArray(WALL * AH * 4);
+    this.wallA = makeTexture(blank(), WALL, AH, true, 'pixel');
+    this.wallB = makeTexture(blank(), WALL, AH, true, 'pixel');
+    this.wallC = makeTexture(blank(), WALL, AH, true, 'pixel');
+    this.wallD = makeTexture(blank(), WALL, AH, true, 'pixel');
+    const jobs: [THREE.DataTexture, 'wallHi' | 'wallLo', number][] = [[this.wallA, 'wallHi', 0], [this.wallB, 'wallLo', 0], [this.wallC, 'wallLo', 2], [this.wallD, 'wallHi', 1]];
+    const version = this.wallVersion;
+    for (const [tex, slot, shade] of jobs) {
+      const fill = (data: Uint8ClampedArray): void => { if (version !== this.wallVersion) return; (tex.image as { data: Uint8ClampedArray }).data.set(data); tex.needsUpdate = true; };
+      let started = false;
+      try { getTextureWorkerPool().requestWallAtlas({ ...this.params }, slot, shade).promise.then((r) => { if (r.wallAtlas) fill(r.wallAtlas); else fill(buildWallAtlas(this.params, slot, shade)); }).catch(() => fill(buildWallAtlas(this.params, slot, shade))); started = true; } catch { /* sem worker */ }
+      if (!started) fill(buildWallAtlas(this.params, slot, shade));
+    }
 
     for (const t of [this.wallA, this.wallB, this.wallC, this.wallD]) {
       t.wrapT = THREE.ClampToEdgeWrapping;
@@ -1988,7 +1999,11 @@ export class TerrainTextureForge {
     this.rebuildWallAtlases();
   }
 
+  /** muda quando os atlas são refeitos na hora (painel de texturas): resultados de worker antigos não podem sobrescrevê-los */
+  private wallVersion = 0;
+
   public rebuildWallAtlases(): void {
+    this.wallVersion++;
     const a = buildWallAtlas(this.params, 'wallHi', 0);
     const b = buildWallAtlas(this.params, 'wallLo', 0);
     const c = buildWallAtlas(this.params, 'wallLo', 2);
